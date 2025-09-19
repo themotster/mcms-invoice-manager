@@ -791,6 +791,14 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const [addingSinger, setAddingSinger] = useState(false);
   const [addError, setAddError] = useState('');
   const [showAddSingerModal, setShowAddSingerModal] = useState(false);
+  const [showEditSingerModal, setShowEditSingerModal] = useState(false);
+  const [editSingerId, setEditSingerId] = useState('');
+  const [editSingerName, setEditSingerName] = useState('');
+  const [editSingerBaseFee, setEditSingerBaseFee] = useState('');
+  const [editSingerServiceFees, setEditSingerServiceFees] = useState({});
+  const [editSingerDefaultIncluded, setEditSingerDefaultIncluded] = useState(false);
+  const [editingSinger, setEditingSinger] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const resetAddSingerForm = useCallback(() => {
     setNewSingerName('');
@@ -811,6 +819,46 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     resetAddSingerForm();
     setShowAddSingerModal(false);
   }, [addingSinger, resetAddSingerForm]);
+
+  const handleOpenEditSingerModal = useCallback((singer) => {
+    if (!singer || !canManagePool) return;
+    setEditSingerId(singer.id);
+    setEditSingerName(singer.name || '');
+    setEditSingerBaseFee(
+      singer.fee !== undefined && singer.fee !== null && singer.fee !== ''
+        ? String(singer.fee)
+        : ''
+    );
+    const initialServiceFees = {};
+    serviceTypes.forEach(service => {
+      const serviceId = service.id != null ? String(service.id) : '';
+      const existing = singer.serviceFees?.[serviceId] || null;
+      if (!serviceId) return;
+      const feeValue = existing?.fee !== undefined && existing?.fee !== null
+        ? String(existing.fee)
+        : '';
+      initialServiceFees[serviceId] = {
+        fee: feeValue,
+        defaultIncluded: Boolean(existing?.defaultIncluded)
+      };
+    });
+    setEditSingerServiceFees(initialServiceFees);
+    setEditSingerDefaultIncluded(Boolean(singer.defaultIncluded));
+    setEditError('');
+    setShowAddSingerModal(false);
+    setShowEditSingerModal(true);
+  }, [canManagePool, serviceTypes]);
+
+  const handleCloseEditSingerModal = useCallback(() => {
+    if (editingSinger) return;
+    setEditSingerId('');
+    setEditSingerName('');
+    setEditSingerBaseFee('');
+    setEditSingerServiceFees({});
+    setEditSingerDefaultIncluded(false);
+    setEditError('');
+    setShowEditSingerModal(false);
+  }, [editingSinger]);
 
   const handleAddSingerToPool = useCallback(async () => {
     if (typeof onUpdateSingerPool !== 'function') return;
@@ -860,6 +908,96 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId, resetAddSingerForm]);
 
   const confirmDisabled = !canManagePool || !newSingerName.trim().length || addingSinger;
+
+  const handleEditServiceFeeChange = useCallback((serviceId, field, value) => {
+    setEditSingerServiceFees(prev => ({
+      ...prev,
+      [serviceId]: {
+        fee: field === 'fee' ? value : (prev[serviceId]?.fee ?? ''),
+        defaultIncluded: field === 'defaultIncluded'
+          ? Boolean(value)
+          : Boolean(prev[serviceId]?.defaultIncluded)
+      }
+    }));
+  }, []);
+
+  const handleSaveEditedSinger = useCallback(async () => {
+    if (!canManagePool || !editSingerId.trim()) return;
+    const trimmedName = editSingerName.trim();
+    if (!trimmedName) {
+      setEditError('Name is required');
+      return;
+    }
+
+    const baseFeeNumber = Number(editSingerBaseFee);
+    const normalizedBaseFee = editSingerBaseFee === ''
+      ? 0
+      : Number.isFinite(baseFeeNumber) && baseFeeNumber >= 0 ? baseFeeNumber : 0;
+
+    const serviceFeeEntries = {};
+    Object.entries(editSingerServiceFees).forEach(([serviceId, config]) => {
+      if (!serviceId) return;
+      const feeNumber = Number(config?.fee);
+      const feeValue = config?.fee === ''
+        ? undefined
+        : Number.isFinite(feeNumber) && feeNumber >= 0 ? feeNumber : undefined;
+      if (feeValue === undefined && !config?.defaultIncluded) {
+        serviceFeeEntries[serviceId] = {
+          fee: undefined,
+          defaultIncluded: Boolean(config?.defaultIncluded)
+        };
+      } else {
+        serviceFeeEntries[serviceId] = {
+          fee: feeValue !== undefined ? feeValue : normalizedBaseFee,
+          defaultIncluded: Boolean(config?.defaultIncluded)
+        };
+      }
+    });
+
+    const nextPool = existingPool.map(singer => (
+      singer.id === editSingerId
+        ? {
+            ...singer,
+            name: trimmedName,
+            fee: normalizedBaseFee,
+            defaultIncluded: Boolean(editSingerDefaultIncluded),
+            serviceFees: serviceFeeEntries
+          }
+        : singer
+    ));
+
+    try {
+      setEditingSinger(true);
+      setEditError('');
+      await onUpdateSingerPool(nextPool);
+      handleCloseEditSingerModal();
+    } catch (err) {
+      console.error('Failed to update singer', err);
+      setEditError(err?.message || 'Unable to update singer');
+    } finally {
+      setEditingSinger(false);
+    }
+  }, [canManagePool, editSingerId, editSingerName, editSingerBaseFee, editSingerServiceFees, editSingerDefaultIncluded, existingPool, onUpdateSingerPool, handleCloseEditSingerModal]);
+
+  const handleDeleteSinger = useCallback(async () => {
+    if (!canManagePool || !editSingerId.trim()) return;
+    const nextPool = existingPool.filter(singer => singer.id !== editSingerId);
+    try {
+      setEditingSinger(true);
+      setEditError('');
+      await onUpdateSingerPool(nextPool);
+      handleCloseEditSingerModal();
+      const updatedSelection = selectedEntries.filter(entry => entry.id !== editSingerId);
+      if (updatedSelection.length !== selectedEntries.length) {
+        updateSelected(updatedSelection);
+      }
+    } catch (err) {
+      console.error('Failed to delete singer from pool', err);
+      setEditError(err?.message || 'Unable to delete singer');
+    } finally {
+      setEditingSinger(false);
+    }
+  }, [canManagePool, editSingerId, existingPool, onUpdateSingerPool, handleCloseEditSingerModal, selectedEntries, updateSelected]);
 
   return (
     <>
@@ -937,6 +1075,18 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                 >
                   <div className="flex items-start justify-between">
                     <span className={`text-sm font-medium leading-tight ${isSelected ? 'text-white' : 'text-slate-700'}`}>{singer.name || 'Unnamed singer'}</span>
+                    {canManagePool ? (
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          handleOpenEditSingerModal(singer);
+                        }}
+                        className={`text-[11px] font-medium ${isSelected ? 'text-indigo-100 hover:text-white' : 'text-indigo-600 hover:text-indigo-500'}`}
+                      >
+                        Edit
+                      </button>
+                    ) : null}
                   </div>
                   <div className={`mt-1 text-xs ${isSelected ? 'text-indigo-100' : 'text-slate-500'}`}>Fee {toCurrency(displayFee)}</div>
                 </button>
@@ -1081,6 +1231,134 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             {!canManagePool ? (
               <p className="mt-3 text-xs text-slate-500">Pool updates are unavailable in this view.</p>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {showEditSingerModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+          <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Edit singer</h3>
+                <p className="text-sm text-slate-500">Update singer details and service pricing.</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseEditSingerModal}
+                className="text-slate-400 hover:text-slate-600"
+                aria-label="Close edit singer modal"
+                disabled={editingSinger}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 space-y-4">
+              <label className="block text-sm font-medium text-slate-600">
+                Name
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={editSingerName}
+                  onChange={event => setEditSingerName(event.target.value)}
+                  placeholder="Singer name"
+                  disabled={editingSinger}
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-600">
+                Base fee (£)
+                <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                  <span className="text-xs text-slate-500">£</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
+                    value={editSingerBaseFee}
+                    onChange={event => setEditSingerBaseFee(event.target.value)}
+                    placeholder="0.00"
+                    disabled={editingSinger}
+                  />
+                </div>
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={editSingerDefaultIncluded}
+                  onChange={event => setEditSingerDefaultIncluded(event.target.checked)}
+                  disabled={editingSinger}
+                />
+                Default lineup when no service is selected
+              </label>
+              <div className="space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Service pricing</div>
+                {serviceTypes.map(service => {
+                  const serviceId = service.id != null ? String(service.id) : '';
+                  if (!serviceId) return null;
+                  const config = editSingerServiceFees[serviceId] || { fee: '', defaultIncluded: false };
+                  return (
+                    <div key={service.id} className="rounded border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-slate-700">{service.label}</span>
+                        <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            checked={Boolean(config.defaultIncluded)}
+                            onChange={event => handleEditServiceFeeChange(serviceId, 'defaultIncluded', event.target.checked)}
+                            disabled={editingSinger}
+                          />
+                          Default lineup
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                        <span className="text-xs text-slate-500">£</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
+                          value={config.fee ?? ''}
+                          onChange={event => handleEditServiceFeeChange(serviceId, 'fee', event.target.value)}
+                          placeholder="Defaults to base fee"
+                          disabled={editingSinger}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              {editError ? (
+                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{editError}</div>
+              ) : null}
+            </div>
+            <div className="mt-6 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={handleDeleteSinger}
+                disabled={editingSinger}
+                className="text-sm font-medium text-red-600 hover:text-red-500 disabled:opacity-60"
+              >
+                Delete singer
+              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={handleCloseEditSingerModal}
+                  className="text-sm font-medium text-slate-600 hover:text-slate-800 disabled:opacity-60"
+                  disabled={editingSinger}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveEditedSinger}
+                  disabled={editingSinger || !editSingerName.trim()}
+                  className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
+                >
+                  {editingSinger ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
