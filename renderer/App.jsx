@@ -371,7 +371,18 @@ function BusinessChooser({ businesses, loading, error, onSelect }) {
   );
 }
 
-function JobsheetList({ jobsheets, onOpen, onNew, onDelete, loading, deletingId, sortConfig, onSort }) {
+function JobsheetList({
+  jobsheets,
+  onOpen,
+  onNew,
+  onDelete,
+  onStatusChange,
+  loading,
+  deletingId,
+  statusUpdatingId,
+  sortConfig,
+  onSort
+}) {
   const sortedJobsheets = useMemo(() => {
     const list = [...jobsheets];
     const { key, direction } = sortConfig || {};
@@ -473,8 +484,8 @@ function JobsheetList({ jobsheets, onOpen, onNew, onDelete, loading, deletingId,
               <tbody className="divide-y divide-slate-100">
                 {sortedJobsheets.map(sheet => {
                   const statusKey = normalizeStatus(sheet.status) || 'enquiry';
-                  const statusOption = STATUS_OPTIONS.find(opt => opt.value === statusKey);
                   const statusStyles = STATUS_STYLES[statusKey] || 'bg-slate-200 text-slate-700 border border-slate-300';
+                  const statusDisabled = statusUpdatingId === sheet.jobsheet_id;
                   const statusRowClass = STATUS_ROW_CLASSES[statusKey] || 'bg-white';
                   return (
                     <tr
@@ -491,9 +502,23 @@ function JobsheetList({ jobsheets, onOpen, onNew, onDelete, loading, deletingId,
                         {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
                       </td>
                       <td className="px-4 py-3">
-                        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusStyles}`}>
-                          {statusOption?.label || 'Unknown'}
-                        </span>
+                        <select
+                          value={statusKey}
+                          disabled={statusDisabled}
+                          className={`rounded-full px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 ${statusStyles} ${statusDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                          onClick={event => event.stopPropagation()}
+                          onMouseDown={event => event.stopPropagation()}
+                          onChange={event => {
+                            event.stopPropagation();
+                            const nextStatus = event.target.value;
+                            if (!nextStatus || nextStatus === statusKey) return;
+                            onStatusChange?.(sheet.jobsheet_id, nextStatus);
+                          }}
+                        >
+                          {STATUS_OPTIONS.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
                       </td>
                       <td className="px-4 py-3 text-right text-sm text-slate-600">{toCurrency(sheet.ahmen_fee)}</td>
                       <td className="px-4 py-3 text-right text-sm">
@@ -569,7 +594,7 @@ function equalSingerEntries(a, b) {
   return true;
 }
 
-function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
+function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasExisting = false }) {
   const serviceTypes = pricingConfig?.serviceTypes ?? [];
   const selectedService = serviceTypes.find(type => type.id === formState.pricing_service_id);
 
@@ -602,7 +627,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
     }
 
     const currentServiceId = selectedService.id;
-    if (currentServiceId !== lastServiceIdRef.current) {
+    const previousServiceId = lastServiceIdRef.current;
+    const isServiceChange = previousServiceId !== null && currentServiceId !== previousServiceId;
+
+    if (currentServiceId !== previousServiceId) {
       lastServiceIdRef.current = currentServiceId;
       initializedRef.current = false;
     }
@@ -619,7 +647,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
         return { id: entry.id, fee };
       });
 
-    if (previousServiceIdRef.current !== currentServiceId) {
+    const isFirstVisit = previousServiceIdRef.current === null;
+    if (isFirstVisit && hasExisting) {
+      previousServiceIdRef.current = currentServiceId;
+    } else if (previousServiceIdRef.current !== currentServiceId) {
       serviceSingers.forEach(singer => {
         if (!singer.defaultIncluded) return;
         const singerId = String(singer.id);
@@ -633,6 +664,14 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
     if (!initializedRef.current) {
       initializedRef.current = true;
       if (!selectedEntries.length && !next.length) {
+        const shouldSeedDefaults = (!hasExisting && currentServiceId != null) || isServiceChange;
+        if (!shouldSeedDefaults) {
+          const normalized = normalizeSingerEntries(next);
+          if (!equalSingerEntries(normalized, selectedEntries)) {
+            updateSelected(normalized);
+          }
+          return;
+        }
         next = serviceSingers
           .filter(singer => singer.defaultIncluded)
           .map(singer => ({ id: String(singer.id), fee: singer.fee != null ? String(singer.fee) : '' }));
@@ -643,7 +682,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
     if (!equalSingerEntries(normalized, selectedEntries)) {
       updateSelected(normalized);
     }
-  }, [selectedService, selectedEntries, updateSelected]);
+  }, [selectedService, selectedEntries, updateSelected, serviceSingers, hasExisting]);
 
   const internalTotals = useMemo(() => {
     if (!selectedService) return { base: 0, singerCount: 0 };
@@ -1065,6 +1104,7 @@ function JobsheetEditor({
                         pricingTotals={pricingTotals}
                         formState={formState}
                         onChange={handleFieldChange}
+                        hasExisting={hasExisting}
                       />
                     );
                   }
@@ -1233,6 +1273,7 @@ function BusinessWorkspace({ business, onSwitch }) {
   const [listLoading, setListLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState({ key: 'event_date', direction: 'desc' });
   const [deletingId, setDeletingId] = useState(null);
+  const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
@@ -1349,6 +1390,42 @@ function BusinessWorkspace({ business, onSwitch }) {
     }
   }, [refreshJobsheets, business.id]);
 
+  const handleStatusChange = useCallback(async (jobsheetId, nextStatus) => {
+    if (!jobsheetId || !nextStatus) return;
+    const normalized = normalizeStatus(nextStatus) || 'enquiry';
+    setStatusUpdatingId(jobsheetId);
+    setError('');
+    try {
+      const api = window.api;
+      if (!api || !api.updateAhmenJobsheetStatus) {
+        setError('Unable to update status: API unavailable');
+        return;
+      }
+      await api.updateAhmenJobsheetStatus(jobsheetId, normalized);
+      setJobsheets(prev => prev.map(job => (
+        job.jobsheet_id === jobsheetId
+          ? normalizeJobsheet({ ...job, status: normalized })
+          : job
+      )));
+      setMessage('Status updated');
+      setTimeout(() => setMessage(''), 1500);
+      window.api?.notifyJobsheetChange?.({
+        type: 'jobsheet-updated',
+        businessId: business.id,
+        jobsheetId,
+        snapshot: {
+          jobsheet_id: jobsheetId,
+          status: normalized
+        }
+      });
+    } catch (err) {
+      console.error('Failed to update jobsheet status', err);
+      setError(err?.message || 'Unable to update status');
+    } finally {
+      setStatusUpdatingId(null);
+    }
+  }, [business.id, normalizeJobsheet]);
+
   const handleSort = useCallback((columnKey) => {
     if (!columnKey) return;
     setSortConfig(prev => {
@@ -1388,8 +1465,10 @@ function BusinessWorkspace({ business, onSwitch }) {
               onOpen={handleOpenExisting}
               onNew={handleNew}
               onDelete={handleDelete}
+              onStatusChange={handleStatusChange}
               loading={listLoading}
               deletingId={deletingId}
+              statusUpdatingId={statusUpdatingId}
               sortConfig={sortConfig}
               onSort={handleSort}
             />

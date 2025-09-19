@@ -89,6 +89,8 @@ const AHMEN_JOBSHEET_INTEGER_FIELDS = new Set([
   'venue_id'
 ]);
 
+const AHMEN_JOBSHEET_STATUS_VALUES = new Set(['enquiry', 'quoted', 'confirmed', 'completed']);
+
 const AHMEN_VENUE_FIELDS = [
   'business_id',
   'name',
@@ -403,6 +405,12 @@ function buildAhmenJobsheetValues(data) {
   return AHMEN_JOBSHEET_FIELDS.map(field => sanitizeAhmenJobsheetValue(field, data?.[field]));
 }
 
+function normalizeAhmenStatus(value) {
+  if (typeof value !== 'string') return 'enquiry';
+  const normalized = value.trim().toLowerCase();
+  return AHMEN_JOBSHEET_STATUS_VALUES.has(normalized) ? normalized : 'enquiry';
+}
+
 function mapAhmenJobsheetRow(row) {
   if (!row) return row;
   const mapped = { ...row };
@@ -523,6 +531,27 @@ function updateAhmenJobsheet(jobsheetId, data) {
     db.run(
       `UPDATE ahmen_jobsheets SET ${setClause}, updated_at = datetime('now') WHERE jobsheet_id = ?`,
       [...values, id],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes);
+      }
+    );
+  });
+}
+
+function updateAhmenJobsheetStatus(jobsheetId, status) {
+  return new Promise((resolve, reject) => {
+    const id = Number(jobsheetId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid jobsheet id'));
+      return;
+    }
+
+    const normalizedStatus = normalizeAhmenStatus(status);
+
+    db.run(
+      "UPDATE ahmen_jobsheets SET status = ?, updated_at = datetime('now') WHERE jobsheet_id = ?",
+      [normalizedStatus, id],
       function (err) {
         if (err) reject(err);
         else resolve(this.changes);
@@ -1468,6 +1497,7 @@ module.exports = {
   getAhmenJobsheet,
   addAhmenJobsheet,
   updateAhmenJobsheet,
+  updateAhmenJobsheetStatus,
   deleteAhmenJobsheet,
   getAhmenVenues,
   saveAhmenVenue

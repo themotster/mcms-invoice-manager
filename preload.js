@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld('api', {
   getAhmenJobsheet: async (jobsheetId) => await db.getAhmenJobsheet(jobsheetId),
   addAhmenJobsheet: async (data) => await db.addAhmenJobsheet(data),
   updateAhmenJobsheet: async (jobsheetId, data) => await db.updateAhmenJobsheet(jobsheetId, data),
+  updateAhmenJobsheetStatus: async (jobsheetId, status) => await db.updateAhmenJobsheetStatus(jobsheetId, status),
   deleteAhmenJobsheet: async (jobsheetId) => await db.deleteAhmenJobsheet(jobsheetId),
   getAhmenVenues: async (options) => await db.getAhmenVenues(options),
   saveAhmenVenue: async (data) => await db.saveAhmenVenue(data),
