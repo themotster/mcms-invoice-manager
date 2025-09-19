@@ -39,6 +39,29 @@ const STATUS_ORDER = STATUS_OPTIONS.reduce((acc, option, index) => {
   return acc;
 }, {});
 
+const LAST_BUSINESS_STORAGE_KEY = 'invoiceMaster:lastBusinessId';
+
+function readLastBusinessId() {
+  try {
+    return window.localStorage.getItem(LAST_BUSINESS_STORAGE_KEY);
+  } catch (err) {
+    console.warn('Unable to read last business id', err);
+    return null;
+  }
+}
+
+function storeLastBusinessId(id) {
+  try {
+    if (id) {
+      window.localStorage.setItem(LAST_BUSINESS_STORAGE_KEY, String(id));
+    } else {
+      window.localStorage.removeItem(LAST_BUSINESS_STORAGE_KEY);
+    }
+  } catch (err) {
+    console.warn('Unable to persist last business id', err);
+  }
+}
+
 function normalizeStatus(value) {
   if (!value) return '';
   if (typeof value === 'string') return value.toLowerCase();
@@ -99,6 +122,7 @@ const FORM_GROUPS = [
     key: 'client',
     title: 'Client Details',
     description: 'Captured during the initial enquiry.',
+    defaultOpen: true,
     fields: [
       {
         name: 'status',
@@ -120,6 +144,7 @@ const FORM_GROUPS = [
     key: 'event',
     title: 'Event Details',
     description: 'What, when, and how the event will run.',
+    defaultOpen: false,
     fields: [
       { name: 'event_type', label: 'Event Type' },
       { name: 'event_date', label: 'Event Date', type: 'date' },
@@ -130,8 +155,10 @@ const FORM_GROUPS = [
   {
     key: 'venue',
     title: 'Venue Details',
-    description: 'Where your team will be performing.',
+    description: 'Where your team will be performing and saved venue options.',
+    defaultOpen: false,
     fields: [
+      { name: 'saved_venue', label: 'Saved Venue', component: 'savedVenueSelector' },
       { name: 'venue_same_as_client', label: 'Use client address (private residence)', type: 'checkbox', hint: 'Copies the client address and does not save the venue to the shared directory.' },
       { name: 'venue_name', label: 'Venue Name' },
       { name: 'venue_address1', label: 'Address Line 1' },
@@ -145,6 +172,7 @@ const FORM_GROUPS = [
     key: 'billing',
     title: 'Billing Details',
     description: 'Financial breakdown that feeds quotes and invoices.',
+    defaultOpen: false,
     fields: [
       { name: 'ahmen_fee', label: 'AhMen Fee (£)', type: 'number', step: '0.01', hint: 'Total fee for the booking.' },
       { name: 'specialist_fees', label: 'Specialist Singers / Other Fees (£)', type: 'number', step: '0.01' },
@@ -159,6 +187,7 @@ const FORM_GROUPS = [
     key: 'services',
     title: 'Services & Notes',
     description: 'Additional requirements and context for the booking.',
+    defaultOpen: false,
     fields: [
       { name: 'service_types', label: 'Service Type(s)', type: 'textarea', rows: 2 },
       { name: 'specialist_singers', label: 'Specialist Singers', type: 'textarea', rows: 2 },
@@ -598,76 +627,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
   );
 }
 
-function SavedVenues({ venues, formState, onChange, onSaveVenue, saving }) {
-  const [selectedVenueId, setSelectedVenueId] = useState('');
-
-  useEffect(() => {
-    if (!venues.length) {
-      setSelectedVenueId('');
-      return;
-    }
-    if (formState.venue_id) {
-      setSelectedVenueId(String(formState.venue_id));
-    } else {
-      setSelectedVenueId('');
-    }
-  }, [formState.venue_id, venues]);
-
-  const handleSelectVenue = (event) => {
-    const value = event.target.value;
-    setSelectedVenueId(value);
-    if (!value) {
-      onChange('venue_id', null);
-      return;
-    }
-    const venue = venues.find(v => String(v.venue_id) === value);
-    if (!venue) return;
-    onChange('venue_id', venue.venue_id);
-    onChange('venue_name', venue.name || '');
-    onChange('venue_address1', venue.address1 || '');
-    onChange('venue_address2', venue.address2 || '');
-    onChange('venue_address3', venue.address3 || '');
-    onChange('venue_town', venue.town || '');
-    onChange('venue_postcode', venue.postcode || '');
-  };
-
-  const handleSave = () => {
-    onSaveVenue();
-  };
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
-      <div>
-        <h3 className="text-base font-semibold text-slate-700">Saved Venues</h3>
-        <p className="text-sm text-slate-500">Load previous venues or capture the current venue for reuse.</p>
-      </div>
-      <label className="block text-sm font-medium text-slate-600">
-        Select saved venue
-        <select
-          className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
-          value={selectedVenueId}
-          onChange={handleSelectVenue}
-        >
-          <option value="">Choose a venue…</option>
-          {venues.map(venue => (
-            <option key={venue.venue_id} value={venue.venue_id}>
-              {venue.name || 'Untitled venue'}
-            </option>
-          ))}
-        </select>
-      </label>
-      <button
-        onClick={handleSave}
-        disabled={saving}
-        className="inline-flex items-center justify-center rounded bg-slate-800 text-white text-sm font-medium px-3 py-2 hover:bg-slate-700 disabled:opacity-60"
-      >
-        {saving ? 'Saving…' : 'Save current venue'}
-      </button>
-    </div>
-  );
-}
-
-function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options }) {
+function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options, secondaryAction, secondaryDisabled }) {
   const common = {
     className: 'mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500',
     value: value ?? '',
@@ -689,6 +649,31 @@ function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
+    );
+  } else if (component === 'savedVenueSelector') {
+    input = (
+      <div className="space-y-2">
+        <select
+          className='mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
+          value={value || ''}
+          onChange={event => onChange(event.target.value)}
+        >
+          <option value="">Select saved venue…</option>
+          {options?.map(venue => (
+            <option key={venue.venue_id} value={venue.venue_id}>
+              {venue.name || 'Untitled venue'}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={() => secondaryAction?.('SAVE_CURRENT_VENUE')}
+          disabled={secondaryDisabled}
+          className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {secondaryDisabled ? 'Saving…' : 'Save current venue'}
+        </button>
+      </div>
     );
   } else if (type === 'textarea') {
     input = <textarea {...common} rows={rows} />;
@@ -739,6 +724,29 @@ function JobsheetEditor({
     onChange(next);
   };
 
+  const [savedVenueId, setSavedVenueId] = useState(() => (
+    formState.venue_id ? String(formState.venue_id) : ''
+  ));
+
+  useEffect(() => {
+    setSavedVenueId(formState.venue_id ? String(formState.venue_id) : '');
+  }, [formState.venue_id]);
+
+  const [openGroups, setOpenGroups] = useState(() => {
+    const initial = {};
+    FORM_GROUPS.forEach(group => {
+      initial[group.key] = group.defaultOpen ?? false;
+    });
+    return initial;
+  });
+
+  const toggleGroup = (key) => {
+    setOpenGroups(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-start justify-between">
@@ -757,49 +765,83 @@ function JobsheetEditor({
         ) : null}
       </div>
 
-      <div className="grid gap-6">
+      <div className="space-y-4">
         {FORM_GROUPS.map(group => (
-          <section key={group.key} className="bg-white border border-slate-200 rounded-lg p-5 space-y-4">
-            <header>
-              <h3 className="text-base font-semibold text-slate-700">{group.title}</h3>
-              <p className="text-sm text-slate-500">{group.description}</p>
-            </header>
-            <div className="grid gap-4 sm:grid-cols-2">
-              {group.fields.map(field => (
-                <Field
-                  key={field.name}
-                  label={field.label}
-                  type={field.type || 'text'}
-                  step={field.step}
-                  rows={field.rows}
-                  hint={field.hint}
-                  readOnly={field.readOnly}
-                  component={field.component}
-                  options={field.options}
-                  value={field.name === 'status'
-                    ? (formState.status || 'enquiry')
-                    : field.type === 'checkbox'
-                      ? Boolean(formState[field.name])
-                      : formState[field.name] ?? ''}
-                  onChange={value => handleFieldChange(
-                    field.name,
-                    field.type === 'checkbox' ? Boolean(value) : value
-                  )}
-                />
-              ))}
-            </div>
+          <section key={group.key} className="bg-white border border-slate-200 rounded-lg">
+            <button
+              type="button"
+              onClick={() => toggleGroup(group.key)}
+              className="w-full flex items-center justify-between px-5 py-4"
+            >
+              <div className="text-left">
+                <h3 className="text-base font-semibold text-slate-700">{group.title}</h3>
+                <p className="text-sm text-slate-500">{group.description}</p>
+              </div>
+              <span className="text-xl text-slate-500">{openGroups[group.key] ? '−' : '+'}</span>
+            </button>
+            {openGroups[group.key] ? (
+              <div className="border-t border-slate-200 px-5 py-4 space-y-4">
+                {group.fields.map(field => {
+                  const resolvedValue = field.component === 'savedVenueSelector'
+                    ? savedVenueId
+                    : field.name === 'status'
+                      ? (formState.status || 'enquiry')
+                      : field.type === 'checkbox'
+                        ? Boolean(formState[field.name])
+                        : formState[field.name] ?? '';
+
+                  return (
+                    <Field
+                      key={field.name}
+                      label={field.label}
+                      type={field.type || 'text'}
+                      step={field.step}
+                      rows={field.rows}
+                      hint={field.hint}
+                      readOnly={field.readOnly}
+                      component={field.component}
+                      options={field.component === 'savedVenueSelector' ? venues : field.options}
+                      value={resolvedValue}
+                      onChange={value => {
+                        if (field.component === 'savedVenueSelector') {
+                          setSavedVenueId(value || '');
+                          if (!value) {
+                            handleFieldChange('venue_id', null);
+                            return;
+                          }
+                          const venue = venues.find(v => String(v.venue_id) === value);
+                          if (venue) {
+                            handleFieldChange('venue_id', venue.venue_id);
+                            handleFieldChange('venue_name', venue.name || '');
+                            handleFieldChange('venue_address1', venue.address1 || '');
+                            handleFieldChange('venue_address2', venue.address2 || '');
+                            handleFieldChange('venue_address3', venue.address3 || '');
+                            handleFieldChange('venue_town', venue.town || '');
+                            handleFieldChange('venue_postcode', venue.postcode || '');
+                          }
+                          return;
+                        }
+                        handleFieldChange(
+                          field.name,
+                          field.type === 'checkbox' ? Boolean(value) : value
+                        );
+                      }}
+                      secondaryAction={action => {
+                        if (field.component === 'savedVenueSelector' && action === 'SAVE_CURRENT_VENUE') {
+                          onSaveVenue();
+                        }
+                      }}
+                      secondaryDisabled={field.component === 'savedVenueSelector' && venueSaving}
+                    />
+                  );
+                })}
+              </div>
+            ) : null}
           </section>
         ))}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <SavedVenues
-          venues={venues}
-          formState={formState}
-          onChange={(field, value) => handleFieldChange(field, value)}
-          onSaveVenue={onSaveVenue}
-          saving={venueSaving}
-        />
         <PricingPanel
           pricingConfig={pricingConfig}
           pricingTotals={pricingTotals}
@@ -854,7 +896,16 @@ function BusinessWorkspace({ business, onSwitch }) {
           ...item,
           status: normalizeStatus(item.status) || 'enquiry'
         })));
-        setVenues(venueData || []);
+        setVenues((venueData || []).map(item => ({
+          ...item,
+          venue_id: item.venue_id ?? item.id,
+          name: item.name || item.venue_name || '',
+          address1: item.address1 || item.venue_address1 || '',
+          address2: item.address2 || item.venue_address2 || '',
+          address3: item.address3 || item.venue_address3 || '',
+          town: item.town || item.venue_town || '',
+          postcode: item.postcode || item.venue_postcode || ''
+        })));
         setPricingConfig(pricingData || null);
       } catch (err) {
         if (!mounted) return;
@@ -1039,7 +1090,16 @@ function BusinessWorkspace({ business, onSwitch }) {
       }
       await window.api.saveAhmenVenue(venuePayload);
       const updatedVenues = await window.api.getAhmenVenues({ businessId: business.id });
-      setVenues(updatedVenues || []);
+      setVenues((updatedVenues || []).map(item => ({
+        ...item,
+        venue_id: item.venue_id ?? item.id,
+        name: item.name || item.venue_name || '',
+        address1: item.address1 || item.venue_address1 || '',
+        address2: item.address2 || item.venue_address2 || '',
+        address3: item.address3 || item.venue_address3 || '',
+        town: item.town || item.venue_town || '',
+        postcode: item.postcode || item.venue_postcode || ''
+      })));
       setMessage('Venue saved');
     } catch (err) {
       console.error('Failed to save venue', err);
@@ -1208,7 +1268,16 @@ function App() {
       try {
         const data = await window.api.businessSettings();
         if (!mounted) return;
-        setBusinesses(data || []);
+        const businessList = data || [];
+        setBusinesses(businessList);
+
+        const storedId = readLastBusinessId();
+        if (!selectedBusiness && storedId) {
+          const match = businessList.find(biz => String(biz.id) === storedId);
+          if (match) {
+            setSelectedBusiness(match);
+          }
+        }
       } catch (err) {
         if (!mounted) return;
         console.error('Failed to load businesses', err);
@@ -1223,13 +1292,19 @@ function App() {
     };
   }, []);
 
+  const handleSelectBusiness = (business) => {
+    if (!business) return;
+    storeLastBusinessId(business.id);
+    setSelectedBusiness(business);
+  };
+
   if (!selectedBusiness) {
     return (
       <BusinessChooser
         businesses={businesses}
         loading={loading}
         error={error}
-        onSelect={setSelectedBusiness}
+        onSelect={handleSelectBusiness}
       />
     );
   }
