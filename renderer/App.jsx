@@ -40,6 +40,7 @@ const STATUS_ORDER = STATUS_OPTIONS.reduce((acc, option, index) => {
 }, {});
 
 const LAST_BUSINESS_STORAGE_KEY = 'invoiceMaster:lastBusinessId';
+const LAST_SECTION_STORAGE_KEY = 'invoiceMaster:lastJobsheetSection';
 
 function readLastBusinessId() {
   try {
@@ -59,6 +60,25 @@ function storeLastBusinessId(id) {
     }
   } catch (err) {
     console.warn('Unable to persist last business id', err);
+  }
+}
+
+function readLastJobsheetSection() {
+  try {
+    return window.localStorage.getItem(LAST_SECTION_STORAGE_KEY) || FORM_GROUPS[0]?.key || 'client';
+  } catch (err) {
+    console.warn('Unable to read last jobsheet section', err);
+    return FORM_GROUPS[0]?.key || 'client';
+  }
+}
+
+function storeLastJobsheetSection(sectionKey) {
+  try {
+    if (sectionKey) {
+      window.localStorage.setItem(LAST_SECTION_STORAGE_KEY, sectionKey);
+    }
+  } catch (err) {
+    console.warn('Unable to persist jobsheet section', err);
   }
 }
 
@@ -599,7 +619,7 @@ function equalSingerEntries(a, b) {
 
 
 
-function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasExisting = false, onUpdateSingerPool }) {
+function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasExisting = false, onUpdateSingerPool, onFocusPricingPanel }) {
   if (!pricingConfig) {
     return (
       <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
@@ -811,17 +831,20 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const handleOpenAddSingerModal = useCallback(() => {
     if (!canManagePool) return;
     resetAddSingerForm();
+    onFocusPricingPanel?.();
     setShowAddSingerModal(true);
-  }, [canManagePool, resetAddSingerForm]);
+  }, [canManagePool, resetAddSingerForm, onFocusPricingPanel]);
 
   const handleCloseAddSingerModal = useCallback(() => {
     if (addingSinger) return;
     resetAddSingerForm();
     setShowAddSingerModal(false);
-  }, [addingSinger, resetAddSingerForm]);
+    onFocusPricingPanel?.();
+  }, [addingSinger, resetAddSingerForm, onFocusPricingPanel]);
 
   const handleOpenEditSingerModal = useCallback((singer) => {
     if (!singer || !canManagePool) return;
+    onFocusPricingPanel?.();
     setEditSingerId(singer.id);
     setEditSingerName(singer.name || '');
     setEditSingerBaseFee(
@@ -847,7 +870,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     setEditError('');
     setShowAddSingerModal(false);
     setShowEditSingerModal(true);
-  }, [canManagePool, serviceTypes]);
+  }, [canManagePool, serviceTypes, onFocusPricingPanel]);
 
   const handleCloseEditSingerModal = useCallback(() => {
     if (editingSinger) return;
@@ -899,6 +922,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       await onUpdateSingerPool(nextPool);
       resetAddSingerForm();
       setShowAddSingerModal(false);
+      onFocusPricingPanel?.();
     } catch (err) {
       console.error('Failed to add singer to pool', err);
       setAddError(err?.message || 'Unable to add singer');
@@ -970,6 +994,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       setEditingSinger(true);
       setEditError('');
       await onUpdateSingerPool(nextPool);
+      onFocusPricingPanel?.();
       handleCloseEditSingerModal();
     } catch (err) {
       console.error('Failed to update singer', err);
@@ -986,6 +1011,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       setEditingSinger(true);
       setEditError('');
       await onUpdateSingerPool(nextPool);
+      onFocusPricingPanel?.();
       handleCloseEditSingerModal();
       const updatedSelection = selectedEntries.filter(entry => entry.id !== editSingerId);
       if (updatedSelection.length !== selectedEntries.length) {
@@ -1478,7 +1504,9 @@ function JobsheetEditor({
   venueSaving,
   pricingConfig,
   pricingTotals,
-  onUpdateSingerPool
+  onUpdateSingerPool,
+  activeGroupKey: activeGroupKeyProp,
+  onActiveGroupChange
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -1535,20 +1563,36 @@ function JobsheetEditor({
     }
   };
 
-  const [activeGroupKey, setActiveGroupKey] = useState(() => {
+  const [internalActiveGroupKey, setInternalActiveGroupKey] = useState(() => {
     const defaultGroup = FORM_GROUPS.find(group => group.defaultOpen) || FORM_GROUPS[0];
     return defaultGroup ? defaultGroup.key : null;
   });
 
+  useEffect(() => {
+    if (activeGroupKeyProp !== undefined && activeGroupKeyProp !== internalActiveGroupKey) {
+      setInternalActiveGroupKey(activeGroupKeyProp);
+    }
+  }, [activeGroupKeyProp, internalActiveGroupKey]);
+
+  const resolvedActiveGroupKey = activeGroupKeyProp !== undefined ? activeGroupKeyProp : internalActiveGroupKey;
+
+  const updateActiveGroupKey = useCallback((nextKey) => {
+    if (!nextKey) return;
+    if (onActiveGroupChange) onActiveGroupChange(nextKey);
+    if (activeGroupKeyProp === undefined) {
+      setInternalActiveGroupKey(nextKey);
+    }
+  }, [activeGroupKeyProp, onActiveGroupChange]);
+
   const activeGroup = useMemo(() => (
-    FORM_GROUPS.find(group => group.key === activeGroupKey) || FORM_GROUPS[0] || null
-  ), [activeGroupKey]);
+    FORM_GROUPS.find(group => group.key === resolvedActiveGroupKey) || FORM_GROUPS[0] || null
+  ), [resolvedActiveGroupKey]);
 
   useEffect(() => {
     if (!activeGroup && FORM_GROUPS.length) {
-      setActiveGroupKey(FORM_GROUPS[0].key);
+      updateActiveGroupKey(FORM_GROUPS[0].key);
     }
-  }, [activeGroup]);
+  }, [activeGroup, updateActiveGroupKey]);
 
   const handleSelectSavedVenue = (venueIdValue) => {
     const value = venueIdValue || '';
@@ -1600,7 +1644,7 @@ function JobsheetEditor({
                   type="button"
                   role="tab"
                   aria-selected={isActive}
-                  onClick={() => setActiveGroupKey(group.key)}
+                  onClick={() => updateActiveGroupKey(group.key)}
                   className={`w-full text-left rounded-lg border px-4 py-3 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
                 >
                   <div className="text-sm font-semibold">{group.title}</div>
@@ -1634,6 +1678,7 @@ function JobsheetEditor({
                         onChange={handleFieldChange}
                         hasExisting={hasExisting}
                         onUpdateSingerPool={onUpdateSingerPool}
+                        onFocusPricingPanel={() => updateActiveGroupKey('pricing')}
                       />
                     ) : (
                       <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
@@ -2033,6 +2078,13 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
+  const [activeEditorSectionState, setActiveEditorSectionState] = useState(() => readLastJobsheetSection());
+
+  const setActiveEditorSection = useCallback((sectionKey) => {
+    const resolved = sectionKey || FORM_GROUPS[0]?.key || 'client';
+    setActiveEditorSectionState(resolved);
+    storeLastJobsheetSection(resolved);
+  }, []);
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
@@ -2123,6 +2175,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     }
     const nextConfig = await api.updateAhmenSingerPool(singers);
     setPricingConfig(nextConfig || null);
+    setActiveEditorSection('pricing');
     return nextConfig;
   }, []);
 
@@ -2490,6 +2543,8 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               pricingConfig={pricingConfig}
               pricingTotals={pricingDerived}
               onUpdateSingerPool={handleUpdateSingerPool}
+              activeGroupKey={activeEditorSectionState}
+              onActiveGroupChange={setActiveEditorSection}
             />
           </>
         )}

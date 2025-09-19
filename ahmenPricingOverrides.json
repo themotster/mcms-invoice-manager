@@ -255,20 +255,6 @@
           "defaultIncluded": false
         }
       }
-    },
-    {
-      "id": "pool-1758320443953-53ulgd",
-      "name": "Hello",
-      "fee": 50,
-      "defaultIncluded": false,
-      "availability": "",
-      "comments": "",
-      "serviceFees": {
-        "service_plus_dinner": {
-          "fee": 100,
-          "defaultIncluded": false
-        }
-      }
     }
   ]
 }
