@@ -556,6 +556,8 @@ function normalizeSingerEntries(entries) {
     if (entry == null) return;
     let id;
     let fee = '';
+    let name = '';
+    let custom = false;
     if (typeof entry === 'string') {
       id = entry;
     } else if (typeof entry === 'object') {
@@ -563,12 +565,17 @@ function normalizeSingerEntries(entries) {
       if (entry.fee !== undefined && entry.fee !== null) {
         fee = entry.fee === '' ? '' : String(entry.fee);
       }
+      name = entry.name ?? entry.label ?? entry.title ?? '';
+      custom = Boolean(entry.custom);
     }
     if (!id) return;
     const key = String(id);
-    if (seen.has(key)) return;
+    if (seen.has(key) && !custom) return;
     seen.add(key);
-    normalized.push({ id: key, fee });
+    const normalizedEntry = { id: key, fee };
+    if (name) normalizedEntry.name = String(name);
+    if (custom) normalizedEntry.custom = true;
+    normalized.push(normalizedEntry);
   });
   return normalized;
 }
@@ -580,6 +587,12 @@ function equalSingerEntries(a, b) {
     const feeA = a[i].fee ?? '';
     const feeB = b[i].fee ?? '';
     if (String(feeA) !== String(feeB)) return false;
+    const nameA = a[i].name ?? '';
+    const nameB = b[i].name ?? '';
+    if (nameA !== nameB) return false;
+    const customA = Boolean(a[i].custom);
+    const customB = Boolean(b[i].custom);
+    if (customA !== customB) return false;
   }
   return true;
 }
@@ -597,6 +610,46 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const initializedRef = useRef(false);
   const previousServiceIdRef = useRef(null);
   const serviceSingers = Array.isArray(selectedService?.singers) ? selectedService.singers : [];
+  const serviceSingerMap = useMemo(
+    () => new Map(serviceSingers.map(singer => [String(singer.id), singer])),
+    [serviceSingers]
+  );
+  const [newSingerName, setNewSingerName] = useState('');
+  const [newSingerFee, setNewSingerFee] = useState('');
+  const customEntries = useMemo(
+    () => selectedEntries.filter(entry => !serviceSingerMap.has(entry.id)),
+    [selectedEntries, serviceSingerMap]
+  );
+
+  const handleCustomSingerChange = useCallback((entryId, changes) => {
+    const next = selectedEntries.map(entry => (
+      entry.id === entryId
+        ? { ...entry, ...changes, custom: true }
+        : entry
+    ));
+    updateSelected(next);
+  }, [selectedEntries, updateSelected]);
+
+  const handleRemoveCustomSinger = useCallback((entryId) => {
+    updateSelected(selectedEntries.filter(entry => entry.id !== entryId));
+  }, [selectedEntries, updateSelected]);
+
+  const handleAddCustomSinger = useCallback(() => {
+    const trimmedName = newSingerName.trim();
+    if (!trimmedName) return;
+    const id = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const entry = {
+      id,
+      name: trimmedName,
+      fee: newSingerFee !== '' ? String(newSingerFee) : '',
+      custom: true
+    };
+    updateSelected([...selectedEntries, entry]);
+    setNewSingerName('');
+    setNewSingerFee('');
+  }, [newSingerName, newSingerFee, selectedEntries, updateSelected]);
+
+  const canAddCustomSinger = newSingerName.trim().length > 0;
 
   const updateSelected = useCallback((entries) => {
     const normalized = normalizeSingerEntries(entries);
@@ -607,8 +660,9 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
   useEffect(() => {
     if (!selectedService) {
-      if (selectedEntries.length) {
-        updateSelected([]);
+      const customOnly = selectedEntries.filter(entry => entry.custom);
+      if (!equalSingerEntries(customOnly, selectedEntries)) {
+        updateSelected(customOnly);
       }
       lastServiceIdRef.current = null;
       initializedRef.current = false;
@@ -625,17 +679,24 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       initializedRef.current = false;
     }
 
-    const serviceMap = new Map(serviceSingers.map(singer => [String(singer.id), singer]));
+    const next = [];
 
-    let next = selectedEntries
-      .filter(entry => serviceMap.has(entry.id))
-      .map(entry => {
-        const singer = serviceMap.get(entry.id);
+    selectedEntries.forEach(entry => {
+      const singer = serviceSingerMap.get(entry.id);
+      if (singer) {
         const fee = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
           ? String(entry.fee)
           : singer?.fee != null ? String(singer.fee) : '';
-        return { id: entry.id, fee };
-      });
+        next.push({
+          id: String(singer.id),
+          fee,
+          name: singer.name,
+          custom: false
+        });
+      } else if (entry.custom) {
+        next.push({ ...entry, id: String(entry.id) });
+      }
+    });
 
     const isFirstVisit = previousServiceIdRef.current === null;
     if (isFirstVisit && hasExisting) {
@@ -645,7 +706,11 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         if (!singer.defaultIncluded) return;
         const singerId = String(singer.id);
         if (!next.find(entry => entry.id === singerId)) {
-          next.push({ id: singerId, fee: singer.fee != null ? String(singer.fee) : '' });
+          next.push({
+            id: singerId,
+            fee: singer.fee != null ? String(singer.fee) : '',
+            name: singer.name
+          });
         }
       });
       previousServiceIdRef.current = currentServiceId;
@@ -662,9 +727,15 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
           }
           return;
         }
-        next = serviceSingers
+        serviceSingers
           .filter(singer => singer.defaultIncluded)
-          .map(singer => ({ id: String(singer.id), fee: singer.fee != null ? String(singer.fee) : '' }));
+          .forEach(singer => {
+            next.push({
+              id: String(singer.id),
+              fee: singer.fee != null ? String(singer.fee) : '',
+              name: singer.name
+            });
+          });
       }
     }
 
@@ -675,21 +746,22 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   }, [selectedService, selectedEntries, updateSelected, serviceSingers, hasExisting]);
 
   const internalTotals = useMemo(() => {
-    if (!selectedService) return { base: 0, singerCount: 0 };
     let base = 0;
     let singerCount = 0;
-    serviceSingers.forEach(singer => {
-      const singerId = String(singer.id);
-      const entry = selectedEntries.find(item => item.id === singerId);
-      if (!entry) return;
+    selectedEntries.forEach(entry => {
+      const singer = serviceSingerMap.get(entry.id);
       const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
         ? Number(entry.fee)
-        : Number(singer.fee);
+        : singer?.fee != null ? Number(singer.fee) : 0;
       base += Number.isFinite(feeValue) ? feeValue : 0;
-      singerCount += 1;
+      if (singer || entry.custom) {
+        singerCount += 1;
+      } else if (!selectedService) {
+        singerCount += 1;
+      }
     });
     return { base, singerCount };
-  }, [selectedService, selectedEntries]);
+  }, [selectedEntries, serviceSingerMap, selectedService]);
 
   const totals = pricingTotals || internalTotals;
 
@@ -700,7 +772,11 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       if (!selectedEntries.find(entry => entry.id === singerId)) {
         updateSelected([
           ...selectedEntries,
-          { id: singerId, fee: singer.fee != null ? String(singer.fee) : '' }
+          {
+            id: singerId,
+            fee: singer.fee != null ? String(singer.fee) : '',
+            name: singer.name
+          }
         ]);
       }
     } else {
@@ -711,7 +787,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const handleSingerFeeChange = (singer, value) => {
     const singerId = String(singer.id);
     const next = selectedEntries.map(entry => (
-      entry.id === singerId ? { ...entry, fee: value } : entry
+      entry.id === singerId ? { ...entry, fee: value, name: entry.name ?? singer.name } : entry
     ));
     updateSelected(next);
   };
@@ -726,7 +802,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     }
 
     return (
-      <div className="space-y-3">
+      <div className="space-y-4">
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {serviceSingers.map(singer => {
             const singerId = String(singer.id);
@@ -786,7 +862,90 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             );
           })}
         </div>
-        <div className="text-xs text-slate-400">Click a singer to toggle them, then adjust the fee if needed.</div>
+        <div className="text-xs text-slate-400">Click a preset singer to toggle them, then adjust their fee if needed.</div>
+
+        <div className="space-y-3 rounded-lg border border-dashed border-slate-300 bg-white p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Additional singers</span>
+            {customEntries.length ? (
+              <span className="text-[11px] text-slate-400">{customEntries.length} added manually</span>
+            ) : null}
+          </div>
+          {customEntries.length ? (
+            <div className="space-y-2">
+              {customEntries.map(entry => (
+                <div key={entry.id} className="flex flex-wrap items-end gap-2 rounded border border-slate-200 bg-slate-50/80 px-3 py-2">
+                  <div className="flex min-w-[180px] flex-1 flex-col">
+                    <span className="text-[11px] uppercase tracking-wide text-slate-400">Name</span>
+                    <input
+                      type="text"
+                      className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={entry.name || ''}
+                      onChange={event => handleCustomSingerChange(entry.id, { name: event.target.value })}
+                    />
+                  </div>
+                  <div className="flex w-28 flex-col">
+                    <span className="text-[11px] uppercase tracking-wide text-slate-400">Fee</span>
+                    <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                      <span className="text-xs text-slate-500">£</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                        value={entry.fee ?? ''}
+                        onChange={event => handleCustomSingerChange(entry.id, { fee: event.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveCustomSinger(entry.id)}
+                    className="ml-auto inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs text-slate-400">No additional singers yet.</div>
+          )}
+
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="flex min-w-[180px] flex-1 flex-col">
+              <span className="text-[11px] uppercase tracking-wide text-slate-400">Name</span>
+              <input
+                type="text"
+                className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                value={newSingerName}
+                onChange={event => setNewSingerName(event.target.value)}
+                placeholder="Add new singer…"
+              />
+            </div>
+            <div className="flex w-28 flex-col">
+              <span className="text-[11px] uppercase tracking-wide text-slate-400">Fee</span>
+              <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                <span className="text-xs text-slate-500">£</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                  value={newSingerFee}
+                  onChange={event => setNewSingerFee(event.target.value)}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={handleAddCustomSinger}
+              disabled={!canAddCustomSinger}
+              className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Add singer
+            </button>
+          </div>
+        </div>
       </div>
     );
   };
@@ -1630,21 +1789,29 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     if (!pricingConfig) return null;
     const service = pricingConfig.serviceTypes?.find(type => type.id === formState.pricing_service_id);
     const selectedEntries = normalizeSingerEntries(formState.pricing_selected_singers);
+    const serviceSingerList = Array.isArray(service?.singers) ? service.singers : [];
+    const serviceSingerMap = new Map(serviceSingerList.map(singer => [String(singer.id), singer]));
     let base = 0;
     let singerCount = 0;
-    if (service) {
-      const serviceSingerList = Array.isArray(service.singers) ? service.singers : [];
-      const serviceSingerMap = new Map(serviceSingerList.map(singer => [String(singer.id), singer]));
-      selectedEntries.forEach(entry => {
-        const singer = serviceSingerMap.get(entry.id);
-        if (!singer) return;
-        const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+
+    selectedEntries.forEach(entry => {
+      const singer = serviceSingerMap.get(entry.id);
+      let feeValue = 0;
+      if (singer) {
+        feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
           ? Number(entry.fee)
           : Number(singer.fee);
-        base += Number.isFinite(feeValue) ? feeValue : 0;
         singerCount += 1;
-      });
-    }
+      } else if (entry.custom || !service) {
+        feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+          ? Number(entry.fee)
+          : 0;
+        singerCount += 1;
+      } else {
+        return;
+      }
+      base += Number.isFinite(feeValue) ? feeValue : 0;
+    });
     const custom = Number(formState.pricing_custom_fees) || 0;
     const discount = Number(formState.pricing_discount) || 0;
     const hasSelection = singerCount > 0 || custom !== 0 || discount !== 0;
