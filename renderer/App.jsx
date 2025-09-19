@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 const AHMEN_NUMERIC_FIELDS = new Set([
@@ -68,10 +68,25 @@ function normalizeStatus(value) {
   return String(value).toLowerCase();
 }
 
+function normalizeVenues(list = []) {
+  return (list || []).map(item => ({
+    ...item,
+    venue_id: item.venue_id ?? item.id,
+    name: item.name || item.venue_name || '',
+    address1: item.address1 || item.venue_address1 || '',
+    address2: item.address2 || item.venue_address2 || '',
+    address3: item.address3 || item.venue_address3 || '',
+    town: item.town || item.venue_town || '',
+    postcode: item.postcode || item.venue_postcode || '',
+    is_private: Boolean(item.is_private)
+  }));
+}
+
 const JOBSHEET_COLUMNS = [
   { key: 'client_name', label: 'Client', sortable: true },
   { key: 'event_type', label: 'Event', sortable: true },
   { key: 'event_date', label: 'Event Date', sortable: true },
+  { key: 'venue_name', label: 'Venue', sortable: true },
   { key: 'status', label: 'Status', sortable: true },
   { key: 'ahmen_fee', label: 'Fee', sortable: true, align: 'right' },
   { key: 'actions', label: '', sortable: false, align: 'right' }
@@ -122,7 +137,7 @@ const FORM_GROUPS = [
     key: 'client',
     title: 'Client Details',
     description: 'Captured during the initial enquiry.',
-    defaultOpen: true,
+    defaultOpen: false,
     fields: [
       {
         name: 'status',
@@ -298,7 +313,7 @@ function applyDerivedFields(nextState) {
     next.balance_reminder_date = '';
   }
 
-  if (next.venue_same_as_client) {
+  if (next.venue_same_as_client && !next.venue_id) {
     next.venue_name = next.client_name || next.venue_name;
     next.venue_address1 = next.client_address1 || '';
     next.venue_address2 = next.client_address2 || '';
@@ -356,7 +371,7 @@ function BusinessChooser({ businesses, loading, error, onSelect }) {
   );
 }
 
-function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStatusChange, loading, deleting, sortConfig, onSort }) {
+function JobsheetList({ jobsheets, onOpen, onNew, onDelete, loading, deletingId, sortConfig, onSort }) {
   const sortedJobsheets = useMemo(() => {
     const list = [...jobsheets];
     const { key, direction } = sortConfig || {};
@@ -374,6 +389,8 @@ function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStat
         case 'client_name':
         case 'event_type':
           return (sheet[field] || '').toString().toLowerCase();
+        case 'venue_name':
+          return (sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '').toString().toLowerCase();
         default:
           return sheet[field];
       }
@@ -442,7 +459,7 @@ function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStat
                       <th key={column.key} scope="col" className={`px-4 py-3 font-semibold uppercase tracking-wide text-xs text-slate-500 ${alignment}`}>
                         <button
                           type="button"
-                          onClick={() => onSort?.(column.key)}
+                          onClick={() => onSort(column.key)}
                           className="inline-flex items-center gap-1 text-slate-600 hover:text-indigo-600"
                         >
                           {column.label}
@@ -455,7 +472,6 @@ function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStat
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {sortedJobsheets.map(sheet => {
-                  const isActive = sheet.jobsheet_id === selectedId;
                   const statusKey = normalizeStatus(sheet.status) || 'enquiry';
                   const statusOption = STATUS_OPTIONS.find(opt => opt.value === statusKey);
                   const statusStyles = STATUS_STYLES[statusKey] || 'bg-slate-200 text-slate-700 border border-slate-300';
@@ -463,27 +479,21 @@ function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStat
                   return (
                     <tr
                       key={sheet.jobsheet_id || sheet.client_name}
-                      onClick={() => onSelect(sheet.jobsheet_id)}
-                      className={`${statusRowClass} ${isActive ? 'ring-2 ring-indigo-400 ring-inset' : 'hover:shadow-sm'} cursor-pointer transition`}
+                      onClick={() => onOpen(sheet.jobsheet_id)}
+                      className={`${statusRowClass} hover:shadow-sm cursor-pointer transition`}
                     >
                       <td className="px-4 py-3 text-sm font-medium text-slate-800 whitespace-nowrap">
                         {sheet.client_name || 'Untitled booking'}
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-600">{sheet.event_type || '—'}</td>
                       <td className="px-4 py-3 text-sm text-slate-600 whitespace-nowrap">{formatDateDisplay(sheet.event_date)}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">
+                        {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
+                      </td>
                       <td className="px-4 py-3">
-                        <select
-                          value={statusKey}
-                          onClick={event => event.stopPropagation()}
-                          onChange={event => onStatusChange?.(sheet.jobsheet_id, event.target.value)}
-                          className={`rounded-full border border-transparent px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-400 ${statusStyles}`}
-                        >
-                          {STATUS_OPTIONS.map(option => (
-                            <option key={option.value} value={option.value}>
-                              {option.label}
-                            </option>
-                          ))}
-                        </select>
+                        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${statusStyles}`}>
+                          {statusOption?.label || 'Unknown'}
+                        </span>
                       </td>
                       <td className="px-4 py-3 text-right text-sm text-slate-600">{toCurrency(sheet.ahmen_fee)}</td>
                       <td className="px-4 py-3 text-right text-sm">
@@ -492,15 +502,15 @@ function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStat
                             type="button"
                             onClick={(event) => {
                               event.stopPropagation();
-                              onSelect(sheet.jobsheet_id);
+                              onOpen(sheet.jobsheet_id);
                             }}
                             className="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
                           >
-                            Edit
+                            Open
                           </button>
                           <button
                             type="button"
-                            disabled={deleting}
+                            disabled={deletingId === sheet.jobsheet_id}
                             onClick={(event) => {
                               event.stopPropagation();
                               onDelete(sheet.jobsheet_id);
@@ -873,7 +883,6 @@ function JobsheetEditor({
   business,
   formState,
   onChange,
-  onSave,
   onDelete,
   saving,
   deleting,
@@ -885,8 +894,10 @@ function JobsheetEditor({
   pricingTotals
 }) {
   const handleFieldChange = (name, value) => {
-    const next = applyDerivedFields({ ...formState, [name]: value });
-    onChange(next);
+    onChange(prev => {
+      const next = applyDerivedFields({ ...prev, [name]: value });
+      return next;
+    });
   };
 
   const [savedVenueId, setSavedVenueId] = useState(() => (
@@ -961,6 +972,7 @@ function JobsheetEditor({
     }
     const venue = venues.find(v => String(v.venue_id) === value);
     if (!venue) return;
+    handleFieldChange('venue_same_as_client', false);
     handleFieldChange('venue_id', venue.venue_id);
     handleFieldChange('venue_name', venue.name || '');
     handleFieldChange('venue_address1', venue.address1 || '');
@@ -1064,15 +1076,9 @@ function JobsheetEditor({
         ))}
       </div>
 
-        <div className="flex items-center justify-end gap-3">
-          <button
-            onClick={onSave}
-            disabled={saving}
-            className="inline-flex items-center justify-center rounded bg-indigo-600 text-white text-sm font-medium px-4 py-2 hover:bg-indigo-500 disabled:opacity-60"
-          >
-            {saving ? 'Saving…' : 'Save jobsheet'}
-          </button>
-        </div>
+      <div className="flex items-center justify-end text-sm text-slate-500 min-h-[1.5rem]">
+        {saving ? 'Saving changes…' : null}
+      </div>
       </div>
 
       {showVenueModal ? (
@@ -1187,291 +1193,231 @@ function BusinessWorkspace({ business, onSwitch }) {
   const [jobsheets, setJobsheets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(true);
-  const [formState, setFormState] = useState(DEFAULT_JOBSHEET(business.id));
-  const [selectedId, setSelectedId] = useState(null);
-  const [isCreating, setIsCreating] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [sortConfig, setSortConfig] = useState({ key: 'event_date', direction: 'desc' });
-  const [venues, setVenues] = useState([]);
-  const [venueSaving, setVenueSaving] = useState(false);
-  const [pricingConfig, setPricingConfig] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    let mounted = true;
-    setLoading(true);
-    setListLoading(true);
-    setError('');
-    const loadAll = async () => {
-      try {
-        const [jobsheetData, venueData, pricingData] = await Promise.all([
-          window.api.getAhmenJobsheets({ businessId: business.id }),
-          window.api.getAhmenVenues({ businessId: business.id }),
-          window.api.getAhmenPricing()
-        ]);
-        if (!mounted) return;
-        setJobsheets((jobsheetData || []).map(item => ({
-          ...item,
-          status: normalizeStatus(item.status) || 'enquiry'
-        })));
-        setVenues((venueData || []).map(item => ({
-          ...item,
-          venue_id: item.venue_id ?? item.id,
-          name: item.name || item.venue_name || '',
-          address1: item.address1 || item.venue_address1 || '',
-          address2: item.address2 || item.venue_address2 || '',
-          address3: item.address3 || item.venue_address3 || '',
-          town: item.town || item.venue_town || '',
-          postcode: item.postcode || item.venue_postcode || '',
-          is_private: Boolean(item.is_private)
-        })));
-        setPricingConfig(pricingData || null);
-      } catch (err) {
-        if (!mounted) return;
-        console.error('Failed to load business workspace', err);
-        setError(err?.message || 'Unable to load business data');
-      } finally {
-        if (mounted) {
-          setLoading(false);
-          setListLoading(false);
-          setFormState(DEFAULT_JOBSHEET(business.id));
-          setSelectedId(null);
-          setIsCreating(false);
-        }
-      }
-    };
-    loadAll();
-    return () => {
-      mounted = false;
-    };
-  }, [business.id]);
+  const normalizeJobsheet = useCallback(item => ({
+    ...item,
+    status: normalizeStatus(item.status) || 'enquiry'
+  }), []);
 
-  const refreshJobsheets = async () => {
+  const refreshJobsheets = useCallback(async () => {
     setListLoading(true);
     try {
-      const data = await window.api.getAhmenJobsheets({ businessId: business.id });
-      setJobsheets((data || []).map(item => ({
-        ...item,
-        status: normalizeStatus(item.status) || 'enquiry'
-      })));
+      const api = window.api;
+      if (!api || !api.getAhmenJobsheets) {
+        setError('Unable to load jobsheets: API unavailable');
+        setListLoading(false);
+        return;
+      }
+      const data = await api.getAhmenJobsheets({ businessId: business.id });
+      setJobsheets((data || []).map(normalizeJobsheet));
     } catch (err) {
       console.error('Failed to refresh jobsheets', err);
       setError(err?.message || 'Unable to refresh jobsheets');
     } finally {
       setListLoading(false);
     }
-  };
+  }, [business.id, normalizeJobsheet]);
 
-  const handleSelect = async (jobsheetId) => {
-    if (!jobsheetId) return;
-    try {
-      setSaving(false);
-      setDeleting(false);
-      setIsCreating(false);
-      setSelectedId(jobsheetId);
-      const sheet = jobsheets.find(item => item.jobsheet_id === jobsheetId);
-      if (!sheet) {
-        const fetched = await window.api.getAhmenJobsheet(jobsheetId);
-        if (fetched) {
-          setFormState(mapApiToForm(fetched, business.id));
-        }
-        return;
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      setLoading(true);
+      setError('');
+      await refreshJobsheets();
+      if (mounted) setLoading(false);
+    })();
+    return () => { mounted = false; };
+  }, [refreshJobsheets]);
+
+  useEffect(() => {
+    const handler = (event) => {
+      if (!event.data || event.data.businessId !== business.id) return;
+      if (['jobsheet-updated', 'jobsheet-created', 'jobsheet-deleted'].includes(event.data.type)) {
+        refreshJobsheets();
       }
-      setFormState(mapApiToForm(sheet, business.id));
-    } catch (err) {
-      console.error('Failed to load jobsheet', err);
-      setError(err?.message || 'Unable to load jobsheet');
-    }
-  };
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, [business.id, refreshJobsheets]);
 
-  const handleNew = () => {
-    setSelectedId(null);
-    setIsCreating(true);
-    setFormState(DEFAULT_JOBSHEET(business.id));
-    setError('');
-    setMessage('');
-  };
-
-  const handleSave = async () => {
-    if (!formState.client_name?.trim()) {
-      setError('Client name is required');
+  const openJobsheetWindow = useCallback((jobsheetId) => {
+    const api = window.api;
+    if (!api || !api.openJobsheetWindow) {
+      setError('Unable to open editor window: API unavailable');
       return;
     }
-    setSaving(true);
-    setError('');
-    setMessage('');
-    try {
-      if (selectedId) {
-        await window.api.updateAhmenJobsheet(selectedId, preparePayload(formState, business.id));
-        setMessage('Jobsheet updated');
-      } else {
-        const newId = await window.api.addAhmenJobsheet(preparePayload(formState, business.id));
-        setMessage('Jobsheet created');
-        setSelectedId(newId);
-        setFormState(prev => ({ ...prev, jobsheet_id: newId }));
-        setIsCreating(false);
-      }
-      await refreshJobsheets();
-      if (selectedId) {
-        setIsCreating(false);
-      }
-    } catch (err) {
-      console.error('Failed to save jobsheet', err);
-      setError(err?.message || 'Unable to save jobsheet');
-    } finally {
-      setSaving(false);
-    }
-  };
+    api.openJobsheetWindow({
+      businessId: business.id,
+      businessName: business.business_name,
+      jobsheetId
+    });
+  }, [business.id, business.business_name]);
 
-  const handleDelete = async (jobsheetId) => {
-    const targetId = jobsheetId ?? selectedId;
-    if (!targetId) return;
+  const handleNew = useCallback(() => {
+    openJobsheetWindow(undefined);
+  }, [openJobsheetWindow]);
+
+  const handleOpenExisting = useCallback((jobsheetId) => {
+    if (!jobsheetId) return;
+    openJobsheetWindow(jobsheetId);
+  }, [openJobsheetWindow]);
+
+  const handleDelete = useCallback(async (jobsheetId) => {
+    if (!jobsheetId) return;
     const confirmed = window.confirm('Delete this jobsheet? This cannot be undone.');
     if (!confirmed) return;
-    setDeleting(true);
+    setDeletingId(jobsheetId);
     setError('');
-    setMessage('');
     try {
-      await window.api.deleteAhmenJobsheet(targetId);
+      const api = window.api;
+      if (!api || !api.deleteAhmenJobsheet) {
+        setError('Unable to delete jobsheet: API unavailable');
+        setDeletingId(null);
+        return;
+      }
+      await api.deleteAhmenJobsheet(jobsheetId);
       setMessage('Jobsheet deleted');
       await refreshJobsheets();
-      if (targetId === selectedId) {
-        setSelectedId(null);
-        setIsCreating(false);
-        setFormState(DEFAULT_JOBSHEET(business.id));
-      }
+      window.postMessage({ type: 'jobsheet-deleted', businessId: business.id, jobsheetId }, '*');
     } catch (err) {
       console.error('Failed to delete jobsheet', err);
       setError(err?.message || 'Unable to delete jobsheet');
     } finally {
-      setDeleting(false);
+      setDeletingId(null);
     }
-  };
+  }, [refreshJobsheets, business.id]);
 
-  const handleStatusChange = async (jobsheetId, nextStatus) => {
-    if (!jobsheetId || !nextStatus) return;
-    setError('');
-    setMessage('');
-    try {
-      let sheet = jobsheets.find(item => item.jobsheet_id === jobsheetId);
-      if (!sheet) {
-        sheet = await window.api.getAhmenJobsheet(jobsheetId);
-      }
-      if (!sheet) return;
-
-      const updatedSheet = { ...sheet, status: nextStatus };
-      const form = mapApiToForm(updatedSheet, business.id);
-      form.status = nextStatus;
-      await window.api.updateAhmenJobsheet(jobsheetId, preparePayload(form, business.id));
-
-      setJobsheets(prev => prev.map(item => (
-        item.jobsheet_id === jobsheetId ? { ...item, status: nextStatus, updated_at: new Date().toISOString() } : item
-      )));
-
-      if (selectedId === jobsheetId) {
-        setFormState(prev => ({ ...prev, status: nextStatus }));
-      }
-      setMessage('Status updated');
-    } catch (err) {
-      console.error('Failed to update status', err);
-      setError(err?.message || 'Unable to update status');
-    }
-  };
-
-  const handleSort = (columnKey) => {
+  const handleSort = useCallback((columnKey) => {
     if (!columnKey) return;
     setSortConfig(prev => {
       if (prev.key === columnKey) {
-        const nextDirection = prev.direction === 'asc' ? 'desc' : 'asc';
-        return { key: columnKey, direction: nextDirection };
+        return { key: columnKey, direction: prev.direction === 'asc' ? 'desc' : 'asc' };
       }
       return { key: columnKey, direction: columnKey === 'client_name' ? 'asc' : 'desc' };
     });
-  };
+  }, []);
 
-  const handleSaveVenue = async (overrideVenue) => {
-    setVenueSaving(true);
-    setError('');
-    try {
-      const source = overrideVenue ? {
-        name: overrideVenue.name,
-        address1: overrideVenue.address1,
-        address2: overrideVenue.address2,
-        address3: overrideVenue.address3,
-        town: overrideVenue.town,
-        postcode: overrideVenue.postcode,
-        is_private: overrideVenue.is_private ? 1 : 0,
-        venue_id: overrideVenue.venue_id || null
-      } : {
-        name: formState.venue_name,
-        address1: formState.venue_address1,
-        address2: formState.venue_address2,
-        address3: formState.venue_address3,
-        town: formState.venue_town,
-        postcode: formState.venue_postcode,
-        is_private: formState.venue_same_as_client ? 1 : 0,
-        venue_id: formState.venue_id || null
-      };
+  return (
+    <div className="min-h-screen bg-slate-100">
+      <header className="bg-white border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
+            <p className="text-sm text-slate-500">Manage AhMen jobsheets, venues, and pricing.</p>
+          </div>
+          <button
+            onClick={onSwitch}
+            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Switch business
+          </button>
+        </div>
+      </header>
 
-      const venuePayload = {
-        business_id: business.id,
-        name: source.name,
-        address1: source.address1,
-        address2: source.address2,
-        address3: source.address3,
-        town: source.town,
-        postcode: source.postcode,
-        is_private: source.is_private,
-        venue_id: source.venue_id || undefined
-      };
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-4">
+        {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+        {message ? <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{message}</div> : null}
+        {loading ? (
+          <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading workspace…</div>
+        ) : (
+          <>
+            <JobsheetList
+              jobsheets={jobsheets}
+              onOpen={handleOpenExisting}
+              onNew={handleNew}
+              onDelete={handleDelete}
+              loading={listLoading}
+              deletingId={deletingId}
+              sortConfig={sortConfig}
+              onSort={handleSort}
+            />
+            <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
+              Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
+            </div>
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
 
-      if (!venuePayload.name?.trim()) {
-        setError('Venue name is required to save.');
-        return null;
+function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
+  const numericBusinessId = Number(businessId) || 0;
+  const [business, setBusiness] = useState(businessName ? { id: numericBusinessId, business_name: businessName } : null);
+  const [formState, setFormState] = useState(DEFAULT_JOBSHEET(numericBusinessId));
+  const [jobsheetId, setJobsheetId] = useState(initialJobsheetId && initialJobsheetId !== 'new' ? Number(initialJobsheetId) : null);
+  const [venues, setVenues] = useState([]);
+  const [pricingConfig, setPricingConfig] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [venueSaving, setVenueSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  const autoSaveTimer = useRef(null);
+  const initialLoadRef = useRef(true);
+  const creatingRef = useRef(false);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = async () => {
+      const api = window.api;
+      if (!api || !api.businessSettings) {
+        setError('Application API unavailable in editor window');
+        setLoading(false);
+        return;
       }
-      const result = await window.api.saveAhmenVenue(venuePayload);
-      const updatedVenues = await window.api.getAhmenVenues({ businessId: business.id });
-      const normalizedVenues = (updatedVenues || []).map(item => ({
-        ...item,
-        venue_id: item.venue_id ?? item.id,
-        name: item.name || item.venue_name || '',
-        address1: item.address1 || item.venue_address1 || '',
-        address2: item.address2 || item.venue_address2 || '',
-        address3: item.address3 || item.venue_address3 || '',
-        town: item.town || item.venue_town || '',
-        postcode: item.postcode || item.venue_postcode || '',
-        is_private: Boolean(item.is_private)
-      }));
-      setVenues(normalizedVenues);
-
-      const savedVenueId = result?.venue_id ?? venuePayload.venue_id ?? null;
-      if (savedVenueId) {
-        const savedVenue = normalizedVenues.find(v => v.venue_id === savedVenueId);
-        setFormState(prev => ({
-          ...prev,
-          venue_id: savedVenueId,
-          venue_name: savedVenue?.name ?? venuePayload.name ?? '',
-          venue_address1: savedVenue?.address1 ?? venuePayload.address1 ?? '',
-          venue_address2: savedVenue?.address2 ?? venuePayload.address2 ?? '',
-          venue_address3: savedVenue?.address3 ?? venuePayload.address3 ?? '',
-          venue_town: savedVenue?.town ?? venuePayload.town ?? '',
-          venue_postcode: savedVenue?.postcode ?? venuePayload.postcode ?? '',
-          venue_same_as_client: savedVenue ? Boolean(savedVenue.is_private) : Boolean(source.is_private)
-        }));
+      if (!numericBusinessId) {
+        setError('Missing business reference');
+        setLoading(false);
+        return;
       }
+      setLoading(true);
+      try {
+        const [businessList, venueData, pricingData] = await Promise.all([
+          api.businessSettings(),
+          api.getAhmenVenues({ businessId: numericBusinessId }),
+          api.getAhmenPricing()
+        ]);
+        if (!mounted) return;
+        const businessRecord = business || (businessList || []).find(item => item.id === numericBusinessId) || null;
+        setBusiness(businessRecord);
+        setVenues(normalizeVenues(venueData));
+        setPricingConfig(pricingData || null);
 
-      setMessage(overrideVenue ? 'Venue created' : 'Venue saved');
-      return savedVenueId;
-    } catch (err) {
-      console.error('Failed to save venue', err);
-      setError(err?.message || 'Unable to save venue');
-      return null;
-    } finally {
-      setVenueSaving(false);
-    }
-  };
+        let effectiveJobsheetId = jobsheetId;
+        if (!effectiveJobsheetId && initialJobsheetId && initialJobsheetId !== 'new') {
+          effectiveJobsheetId = Number(initialJobsheetId);
+          setJobsheetId(effectiveJobsheetId);
+        }
+
+        if (effectiveJobsheetId) {
+          const sheet = await api.getAhmenJobsheet(effectiveJobsheetId);
+          if (!mounted) return;
+          if (sheet) {
+            setFormState(mapApiToForm(sheet, numericBusinessId));
+          }
+        } else {
+          setFormState(DEFAULT_JOBSHEET(numericBusinessId));
+        }
+        initialLoadRef.current = true;
+      } catch (err) {
+        if (!mounted) return;
+        console.error('Failed to load jobsheet editor', err);
+        setError(err?.message || 'Unable to load jobsheet');
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    };
+    load();
+    return () => {
+      mounted = false;
+    };
+  }, [numericBusinessId, business, initialJobsheetId, jobsheetId]);
 
   const pricingDerived = useMemo(() => {
     if (!pricingConfig) return null;
@@ -1503,98 +1449,219 @@ function BusinessWorkspace({ business, onSwitch }) {
       total,
       totalString
     };
-  }, [pricingConfig, formState.pricing_service_id, formState.pricing_selected_singers, formState.pricing_custom_fees, formState.pricing_discount]);
+  }, [pricingConfig, formState]);
 
   useEffect(() => {
-    if (!pricingDerived) return;
-    const { totalString, hasSelection } = pricingDerived;
-    if (!hasSelection && !formState.pricing_total && !formState.ahmen_fee) return;
-    setFormState(prev => {
-      const currentTotal = prev.pricing_total ?? '';
-      const currentFee = prev.ahmen_fee ?? '';
-      const nextTotal = totalString;
-      const shouldUpdateTotal = nextTotal !== currentTotal;
-      const matchesPrevTotal = currentFee === currentTotal || !currentFee;
-      const shouldUpdateFee = shouldUpdateTotal && matchesPrevTotal;
-      if (!shouldUpdateTotal && !shouldUpdateFee) return prev;
-      const next = { ...prev };
-      next.pricing_total = nextTotal;
-      if (shouldUpdateFee) {
-        next.ahmen_fee = nextTotal;
+    if (loading || !jobsheetId) return;
+    if (initialLoadRef.current) {
+      initialLoadRef.current = false;
+      return;
+    }
+    if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+    const api = window.api;
+    if (!api || !api.updateAhmenJobsheet) return;
+    autoSaveTimer.current = setTimeout(async () => {
+      setSaving(true);
+      try {
+        const payload = preparePayload(formState, numericBusinessId);
+        await api.updateAhmenJobsheet(jobsheetId, payload);
+        setMessage('Saved');
+        window.opener?.postMessage({ type: 'jobsheet-updated', businessId: numericBusinessId, jobsheetId }, '*');
+        setTimeout(() => setMessage(''), 1500);
+      } catch (err) {
+        console.error('Failed to auto-save jobsheet', err);
+        setError(err?.message || 'Unable to save jobsheet');
+      } finally {
+        setSaving(false);
       }
-      return applyDerivedFields(next);
-    });
-  }, [pricingDerived]);
+    }, 600);
+    return () => clearTimeout(autoSaveTimer.current);
+  }, [formState, jobsheetId, numericBusinessId, loading]);
+
+  useEffect(() => {
+    if (loading) return;
+    if (jobsheetId) return;
+    if (!formState.client_name?.trim()) return;
+    if (creatingRef.current) return;
+    creatingRef.current = true;
+    (async () => {
+      const api = window.api;
+      if (!api || !api.addAhmenJobsheet) return;
+      try {
+        setSaving(true);
+        const payload = preparePayload(formState, numericBusinessId);
+        const newId = await api.addAhmenJobsheet(payload);
+        setJobsheetId(newId);
+        const url = new URL(window.location.href);
+        url.searchParams.set('jobsheetId', newId);
+        window.history.replaceState({}, '', url.toString());
+        window.opener?.postMessage({ type: 'jobsheet-created', businessId: numericBusinessId, jobsheetId: newId }, '*');
+        setMessage('Draft created');
+        setTimeout(() => setMessage(''), 1500);
+        initialLoadRef.current = true;
+      } catch (err) {
+        console.error('Failed to create jobsheet', err);
+        setError(err?.message || 'Unable to create jobsheet');
+      } finally {
+        creatingRef.current = false;
+        setSaving(false);
+      }
+    })();
+  }, [loading, jobsheetId, numericBusinessId, formState]);
+
+  const handleSaveVenue = useCallback(async (overrideVenue) => {
+    setVenueSaving(true);
+    try {
+      const source = overrideVenue ? {
+        name: overrideVenue.name,
+        address1: overrideVenue.address1,
+        address2: overrideVenue.address2,
+        address3: overrideVenue.address3,
+        town: overrideVenue.town,
+        postcode: overrideVenue.postcode,
+        is_private: overrideVenue.is_private ? 1 : 0,
+        venue_id: overrideVenue.venue_id || null
+      } : {
+        name: formState.venue_name,
+        address1: formState.venue_address1,
+        address2: formState.venue_address2,
+        address3: formState.venue_address3,
+        town: formState.venue_town,
+        postcode: formState.venue_postcode,
+        is_private: formState.venue_same_as_client ? 1 : 0,
+        venue_id: formState.venue_id || null
+      };
+
+      if (!source.name?.trim()) {
+        setError('Venue name is required to save.');
+        return null;
+      }
+
+      const payload = {
+        business_id: numericBusinessId,
+        name: source.name,
+        address1: source.address1,
+        address2: source.address2,
+        address3: source.address3,
+        town: source.town,
+        postcode: source.postcode,
+        is_private: source.is_private,
+        venue_id: source.venue_id || undefined
+      };
+
+      const api = window.api;
+      if (!api || !api.saveAhmenVenue) {
+        setError('Unable to save venue: API unavailable');
+        return null;
+      }
+
+      const result = await api.saveAhmenVenue(payload);
+      const updatedVenues = await api.getAhmenVenues({ businessId: numericBusinessId });
+      const normalized = normalizeVenues(updatedVenues);
+      setVenues(normalized);
+
+      const savedVenueId = result?.venue_id ?? payload.venue_id ?? null;
+      if (savedVenueId) {
+        const savedVenue = normalized.find(v => v.venue_id === savedVenueId);
+        if (savedVenue) {
+          setFormState(prev => applyDerivedFields({
+            ...prev,
+            venue_id: savedVenue.venue_id,
+            venue_name: savedVenue.name,
+            venue_address1: savedVenue.address1,
+            venue_address2: savedVenue.address2,
+            venue_address3: savedVenue.address3,
+            venue_town: savedVenue.town,
+            venue_postcode: savedVenue.postcode,
+            venue_same_as_client: Boolean(savedVenue.is_private)
+          }));
+          setMessage('Venue saved');
+          setTimeout(() => setMessage(''), 1500);
+        }
+      }
+
+      window.opener?.postMessage({ type: 'jobsheet-updated', businessId: numericBusinessId, jobsheetId: jobsheetId || savedVenueId }, '*');
+      return savedVenueId;
+    } catch (err) {
+      console.error('Failed to save venue', err);
+      setError(err?.message || 'Unable to save venue');
+      return null;
+    } finally {
+      setVenueSaving(false);
+    }
+  }, [numericBusinessId, formState, jobsheetId]);
+
+  const handleDelete = useCallback(async () => {
+    if (!jobsheetId) {
+      window.close();
+      return;
+    }
+    const confirmed = window.confirm('Delete this jobsheet? This cannot be undone.');
+    if (!confirmed) return;
+    setSaving(true);
+    try {
+      const api = window.api;
+      if (!api || !api.deleteAhmenJobsheet) {
+        setError('Unable to delete jobsheet: API unavailable');
+        setSaving(false);
+        return;
+      }
+      await api.deleteAhmenJobsheet(jobsheetId);
+      window.opener?.postMessage({ type: 'jobsheet-deleted', businessId: numericBusinessId, jobsheetId }, '*');
+      window.close();
+    } catch (err) {
+      console.error('Failed to delete jobsheet', err);
+      setError(err?.message || 'Unable to delete jobsheet');
+    } finally {
+      setSaving(false);
+    }
+  }, [jobsheetId, numericBusinessId]);
+
+  useEffect(() => {
+    const handler = () => {
+      if (window.opener && (jobsheetId || formState.client_name?.trim())) {
+        window.opener.postMessage({ type: 'jobsheet-updated', businessId: numericBusinessId, jobsheetId }, '*');
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [numericBusinessId, jobsheetId, formState.client_name]);
+
+  const resolvedBusiness = business || { id: numericBusinessId, business_name: businessName || 'Jobsheet' };
 
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="bg-white border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
-            <p className="text-sm text-slate-500">Manage AhMen jobsheets, venues, and pricing.</p>
+            <h1 className="text-2xl font-semibold text-slate-800">{resolvedBusiness.business_name}</h1>
+            <p className="text-sm text-slate-500">Jobsheet editor · changes save automatically.</p>
           </div>
-          <button
-            onClick={onSwitch}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-          >
-            Switch business
-          </button>
+          <div className="text-sm text-slate-500">
+            {saving ? 'Saving…' : message || ''}
+          </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6">
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-4">
+        {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
         {loading ? (
-          <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading workspace…</div>
+          <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading jobsheet…</div>
         ) : (
-          <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
-            <JobsheetList
-              jobsheets={jobsheets}
-              selectedId={selectedId}
-              onSelect={handleSelect}
-              onNew={handleNew}
-              onDelete={handleDelete}
-              onStatusChange={handleStatusChange}
-              loading={listLoading}
-              deleting={deleting}
-              sortConfig={sortConfig}
-              onSort={handleSort}
-            />
-            <div>
-              {error ? <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
-              {message ? <div className="mb-4 rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{message}</div> : null}
-              {(isCreating || selectedId !== null) ? (
-                <JobsheetEditor
-                  business={business}
-                  formState={formState}
-                  onChange={setFormState}
-                  onSave={handleSave}
-                  onDelete={() => handleDelete()}
-                  saving={saving}
-                  deleting={deleting}
-                  hasExisting={Boolean(selectedId)}
-                  venues={venues}
-                  onSaveVenue={handleSaveVenue}
-                  venueSaving={venueSaving}
-                  pricingConfig={pricingConfig}
-                  pricingTotals={pricingDerived}
-                />
-              ) : (
-                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-16 text-center text-slate-500">
-                  <p className="text-lg font-semibold text-slate-600">Select a jobsheet to view</p>
-                  <p className="mt-2 text-sm">Choose one from the list on the left or create a new jobsheet to begin.</p>
-                  <div className="mt-4">
-                    <button
-                      onClick={handleNew}
-                      className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-                    >
-                      + New Jobsheet
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+          <JobsheetEditor
+            business={resolvedBusiness}
+            formState={formState}
+            onChange={setFormState}
+            onDelete={handleDelete}
+            saving={saving}
+            deleting={false}
+            hasExisting={Boolean(jobsheetId)}
+            venues={venues}
+            onSaveVenue={handleSaveVenue}
+            venueSaving={venueSaving}
+            pricingConfig={pricingConfig}
+            pricingTotals={pricingDerived}
+          />
         )}
       </main>
     </div>
@@ -1623,6 +1690,22 @@ function mapApiToForm(apiData, businessId) {
 }
 
 function App() {
+  const searchParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const mode = searchParams.get('mode');
+
+  if (mode === 'jobsheet') {
+    const businessIdParam = searchParams.get('businessId');
+    const businessNameParam = searchParams.get('businessName') || '';
+    const jobsheetIdParam = searchParams.get('jobsheetId');
+    return (
+      <JobsheetEditorWindow
+        businessId={businessIdParam}
+        businessName={businessNameParam}
+        initialJobsheetId={jobsheetIdParam}
+      />
+    );
+  }
+
   const [businesses, setBusinesses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');

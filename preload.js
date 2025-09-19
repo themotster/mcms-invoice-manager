@@ -1,4 +1,4 @@
-const { contextBridge } = require('electron');
+const { contextBridge, ipcRenderer } = require('electron');
 const path = require('path');
 const db = require(path.join(__dirname, 'db.js'));
 const documentService = require(path.join(__dirname, 'documentService.js'));
@@ -42,5 +42,6 @@ contextBridge.exposeInMainWorld('api', {
   getAhmenVenues: async (options) => await db.getAhmenVenues(options),
   saveAhmenVenue: async (data) => await db.saveAhmenVenue(data),
   getAhmenPricing: async () => await ahmenCosting.loadPricingConfig(),
-  businessSettings: async () => await db.businessSettings()
+  businessSettings: async () => await db.businessSettings(),
+  openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {})
 });
