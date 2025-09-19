@@ -1,0 +1,274 @@
+{
+  "singerPool": [
+    {
+      "id": "service__akiva",
+      "name": "Akiva",
+      "fee": 400,
+      "defaultIncluded": true,
+      "availability": "Yes",
+      "comments": "",
+      "defaultCost": 400,
+      "serviceFees": {
+        "service": {
+          "fee": 400,
+          "defaultIncluded": true
+        },
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": true
+        },
+        "service_plus_dinner": {
+          "fee": 525,
+          "defaultIncluded": true
+        }
+      }
+    },
+    {
+      "id": "service__ashley",
+      "name": "Ashley",
+      "fee": 375,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "defaultCost": 0,
+      "serviceFees": {
+        "service": {
+          "fee": 375,
+          "defaultIncluded": false
+        },
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 525,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "dinner__bremner",
+      "name": "Bremner",
+      "fee": 500,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "defaultCost": 0,
+      "serviceFees": {
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "dinner__dwayne",
+      "name": "Dwayne",
+      "fee": 500,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "defaultCost": 0,
+      "serviceFees": {
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "service__eli",
+      "name": "Eli",
+      "fee": 450,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "(700 if gig buyout)",
+      "defaultCost": 0,
+      "serviceFees": {
+        "service": {
+          "fee": 450,
+          "defaultIncluded": false
+        },
+        "dinner": {
+          "fee": 550,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 550,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "service__guy",
+      "name": "Guy",
+      "fee": 400,
+      "defaultIncluded": true,
+      "availability": "Yes",
+      "comments": "",
+      "defaultCost": 400,
+      "serviceFees": {
+        "service": {
+          "fee": 400,
+          "defaultIncluded": true
+        },
+        "dinner": {
+          "fee": 550,
+          "defaultIncluded": true
+        },
+        "service_plus_dinner": {
+          "fee": 575,
+          "defaultIncluded": true
+        }
+      }
+    },
+    {
+      "id": "service__harry",
+      "name": "Harry",
+      "fee": 400,
+      "defaultIncluded": true,
+      "availability": "Yes",
+      "comments": "or 375 if needs be",
+      "defaultCost": 400,
+      "serviceFees": {
+        "service": {
+          "fee": 400,
+          "defaultIncluded": true
+        },
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": true
+        },
+        "service_plus_dinner": {
+          "fee": 525,
+          "defaultIncluded": true
+        }
+      }
+    },
+    {
+      "id": "service__leib",
+      "name": "Leib",
+      "fee": 400,
+      "defaultIncluded": true,
+      "availability": "Yes",
+      "comments": "",
+      "defaultCost": 400,
+      "serviceFees": {
+        "service": {
+          "fee": 400,
+          "defaultIncluded": true
+        },
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": true
+        },
+        "service_plus_dinner": {
+          "fee": 525,
+          "defaultIncluded": true
+        }
+      }
+    },
+    {
+      "id": "dinner__marlon",
+      "name": "Marlon",
+      "fee": 800,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "defaultCost": 0,
+      "serviceFees": {
+        "dinner": {
+          "fee": 800,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 800,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "service__motti",
+      "name": "Motti",
+      "fee": 1175,
+      "defaultIncluded": true,
+      "availability": "Yes",
+      "comments": "",
+      "defaultCost": 1175,
+      "serviceFees": {
+        "service": {
+          "fee": 1175,
+          "defaultIncluded": true
+        },
+        "dinner": {
+          "fee": 1525,
+          "defaultIncluded": true
+        },
+        "service_plus_dinner": {
+          "fee": 1825,
+          "defaultIncluded": true
+        }
+      }
+    },
+    {
+      "id": "service__sruli",
+      "name": "Sruli",
+      "fee": 400,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "defaultCost": 0,
+      "serviceFees": {
+        "service": {
+          "fee": 400,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "service__yossi",
+      "name": "Yossi",
+      "fee": 400,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "defaultCost": 0,
+      "serviceFees": {
+        "service": {
+          "fee": 400,
+          "defaultIncluded": false
+        },
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        }
+      }
+    },
+    {
+      "id": "pool-1758320443953-53ulgd",
+      "name": "Hello",
+      "fee": 50,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "serviceFees": {
+        "service_plus_dinner": {
+          "fee": 100,
+          "defaultIncluded": false
+        }
+      }
+    }
+  ]
+}

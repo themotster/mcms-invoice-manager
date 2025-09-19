@@ -788,7 +788,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const [newSingerBaseFee, setNewSingerBaseFee] = useState('');
   const [newSingerServiceFee, setNewSingerServiceFee] = useState('');
   const [newSingerDefaultIncluded, setNewSingerDefaultIncluded] = useState(false);
-  const [addSingerToLineup, setAddSingerToLineup] = useState(Boolean(selectedServiceId));
   const [addingSinger, setAddingSinger] = useState(false);
   const [addError, setAddError] = useState('');
   const [showAddSingerModal, setShowAddSingerModal] = useState(false);
@@ -799,8 +798,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     setNewSingerServiceFee('');
     setNewSingerDefaultIncluded(false);
     setAddError('');
-    setAddSingerToLineup(Boolean(selectedServiceId));
-  }, [selectedServiceId]);
+  }, []);
 
   const handleOpenAddSingerModal = useCallback(() => {
     if (!canManagePool) return;
@@ -836,12 +834,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       };
     }
 
-    const temporaryId = `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
     const nextPool = [
       ...existingPool,
       {
-        id: temporaryId,
+        id: `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: trimmedName,
         fee: baseFee,
         defaultIncluded: currentServiceId ? false : Boolean(newSingerDefaultIncluded),
@@ -853,19 +849,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       setAddingSinger(true);
       setAddError('');
       await onUpdateSingerPool(nextPool);
-      if (addSingerToLineup) {
-        const serviceDetails = currentServiceId ? serviceFees[currentServiceId] : null;
-        const fallbackFee = baseFee != null ? String(baseFee) : '';
-        const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
-        updateSelected([
-          ...selectedEntries.filter(entry => entry.id !== temporaryId),
-          {
-            id: temporaryId,
-            name: trimmedName,
-            fee
-          }
-        ]);
-      }
       resetAddSingerForm();
       setShowAddSingerModal(false);
     } catch (err) {
@@ -874,9 +857,9 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     } finally {
       setAddingSinger(false);
     }
-  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId, resetAddSingerForm, addSingerToLineup, updateSelected, selectedEntries]);
+  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId, resetAddSingerForm]);
 
-  const canAddSinger = canManagePool && newSingerName.trim().length > 0 && !addingSinger;
+  const confirmDisabled = !canManagePool || !newSingerName.trim().length || addingSinger;
 
   return (
     <>
@@ -1073,16 +1056,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                   Default lineup for {selectedService.label}
                 </label>
               ) : null}
-              <label className="flex items-center gap-2 text-sm text-slate-600">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  checked={addSingerToLineup}
-                  onChange={event => setAddSingerToLineup(event.target.checked)}
-                  disabled={addingSinger || !selectedServiceId}
-                />
-                Add to current lineup{selectedService ? '' : ' (select a service to enable)'}
-              </label>
               {addError ? (
                 <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{addError}</div>
               ) : null}
@@ -1099,12 +1072,15 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
               <button
                 type="button"
                 onClick={handleAddSingerToPool}
-                disabled={!canAddSinger}
-                className="inline-flex items-center rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+                disabled={confirmDisabled}
+                className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500"
               >
-                {addingSinger ? 'Saving…' : 'Save to pool'}
+                {addingSinger ? 'Saving…' : 'Add to pool'}
               </button>
             </div>
+            {!canManagePool ? (
+              <p className="mt-3 text-xs text-slate-500">Pool updates are unavailable in this view.</p>
+            ) : null}
           </div>
         </div>
       ) : null}
