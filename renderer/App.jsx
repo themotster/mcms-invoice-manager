@@ -522,17 +522,7 @@ function JobsheetList({
                       </td>
                       <td className="px-4 py-3 text-right text-sm text-slate-600">{toCurrency(sheet.ahmen_fee)}</td>
                       <td className="px-4 py-3 text-right text-sm">
-                        <div className="inline-flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onOpen(sheet.jobsheet_id);
-                            }}
-                            className="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-                          >
-                            Open
-                          </button>
+                        <div className="inline-flex items-center">
                           <button
                             type="button"
                             disabled={deletingId === sheet.jobsheet_id}
