@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 const AHMEN_NUMERIC_FIELDS = new Set([
@@ -169,6 +169,15 @@ const FORM_GROUPS = [
     ]
   },
   {
+    key: 'pricing',
+    title: 'Pricing & Personnel',
+    description: 'Select singers and configure fees for the booking.',
+    defaultOpen: false,
+    fields: [
+      { name: 'pricing_panel', component: 'pricingPanel' }
+    ]
+  },
+  {
     key: 'billing',
     title: 'Billing Details',
     description: 'Financial breakdown that feeds quotes and invoices.',
@@ -233,10 +242,10 @@ function toCurrency(value) {
 
 function parseSelectedSingers(raw) {
   if (!raw) return [];
-  if (Array.isArray(raw)) return raw;
+  if (Array.isArray(raw)) return normalizeSingerEntries(raw);
   try {
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return normalizeSingerEntries(parsed);
   } catch (_) {
     return [];
   }
@@ -246,7 +255,9 @@ function preparePayload(formState, businessId) {
   const payload = { ...formState, business_id: businessId };
 
   if (Array.isArray(payload.pricing_selected_singers)) {
-    payload.pricing_selected_singers = JSON.stringify(payload.pricing_selected_singers);
+    payload.pricing_selected_singers = JSON.stringify(
+      normalizeSingerEntries(payload.pricing_selected_singers)
+    );
   }
 
   AHMEN_NUMERIC_FIELDS.forEach(field => {
@@ -512,33 +523,203 @@ function JobsheetList({ jobsheets, selectedId, onSelect, onNew, onDelete, onStat
   );
 }
 
+function normalizeSingerEntries(entries) {
+  const list = Array.isArray(entries) ? entries : [];
+  const seen = new Set();
+  const normalized = [];
+  list.forEach(entry => {
+    if (entry == null) return;
+    let id;
+    let fee = '';
+    if (typeof entry === 'string') {
+      id = entry;
+    } else if (typeof entry === 'object') {
+      id = entry.id ?? entry.singerId ?? entry.value;
+      if (entry.fee !== undefined && entry.fee !== null) {
+        fee = entry.fee === '' ? '' : String(entry.fee);
+      }
+    }
+    if (!id) return;
+    const key = String(id);
+    if (seen.has(key)) return;
+    seen.add(key);
+    normalized.push({ id: key, fee });
+  });
+  return normalized;
+}
+
+function equalSingerEntries(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i].id !== b[i].id) return false;
+    const feeA = a[i].fee ?? '';
+    const feeB = b[i].fee ?? '';
+    if (String(feeA) !== String(feeB)) return false;
+  }
+  return true;
+}
+
 function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
   const serviceTypes = pricingConfig?.serviceTypes ?? [];
   const selectedService = serviceTypes.find(type => type.id === formState.pricing_service_id);
-  const selectedSingerSet = new Set(formState.pricing_selected_singers || []);
+
+  const selectedEntries = useMemo(
+    () => normalizeSingerEntries(formState.pricing_selected_singers),
+    [formState.pricing_selected_singers]
+  );
+
+  const updateSelected = useCallback((entries) => {
+    const normalized = normalizeSingerEntries(entries);
+    if (!equalSingerEntries(normalized, selectedEntries)) {
+      onChange('pricing_selected_singers', normalized);
+    }
+  }, [onChange, selectedEntries]);
+
+  useEffect(() => {
+    if (!selectedService) {
+      if (selectedEntries.length) {
+        updateSelected([]);
+      }
+      return;
+    }
+
+    const next = [];
+    selectedService.singers.forEach(singer => {
+      const existing = selectedEntries.find(entry => entry.id === singer.id);
+      if (existing) {
+        const fee = existing.fee !== undefined && existing.fee !== null && existing.fee !== ''
+          ? String(existing.fee)
+          : singer.fee != null ? String(singer.fee) : '';
+        next.push({ id: singer.id, fee });
+      } else if (singer.defaultIncluded) {
+        next.push({ id: singer.id, fee: singer.fee != null ? String(singer.fee) : '' });
+      }
+    });
+
+    if (!equalSingerEntries(next, selectedEntries)) {
+      updateSelected(next);
+    }
+  }, [selectedService, selectedEntries, updateSelected]);
 
   const internalTotals = useMemo(() => {
     if (!selectedService) return { base: 0, singerCount: 0 };
     let base = 0;
     let singerCount = 0;
     selectedService.singers.forEach(singer => {
-      if (selectedSingerSet.has(singer.id)) {
-        base += Number(singer.fee) || 0;
-        singerCount += 1;
-      }
+      const entry = selectedEntries.find(item => item.id === singer.id);
+      if (!entry) return;
+      const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+        ? Number(entry.fee)
+        : Number(singer.fee);
+      base += Number.isFinite(feeValue) ? feeValue : 0;
+      singerCount += 1;
     });
     return { base, singerCount };
-  }, [selectedService, selectedSingerSet]);
+  }, [selectedService, selectedEntries]);
 
   const totals = pricingTotals || internalTotals;
 
+  const handleToggleSinger = (singer, checked) => {
+    if (!selectedService) return;
+    if (checked) {
+      if (!selectedEntries.find(entry => entry.id === singer.id)) {
+        updateSelected([
+          ...selectedEntries,
+          { id: singer.id, fee: singer.fee != null ? String(singer.fee) : '' }
+        ]);
+      }
+    } else {
+      updateSelected(selectedEntries.filter(entry => entry.id !== singer.id));
+    }
+  };
+
+  const handleSingerFeeChange = (singer, value) => {
+    const next = selectedEntries.map(entry => (
+      entry.id === singer.id ? { ...entry, fee: value } : entry
+    ));
+    updateSelected(next);
+  };
+
+  const renderSingers = () => {
+    if (!selectedService) {
+      return <div className="text-sm text-slate-500">Select a service type to see preset singers and fees.</div>;
+    }
+
+    if (!selectedService.singers.length) {
+      return <div className="text-sm text-slate-500">No singers configured in the pricing template.</div>;
+    }
+
+    return (
+      <div className="flex flex-col gap-2">
+        {selectedService.singers.map(singer => {
+          const entry = selectedEntries.find(item => item.id === singer.id);
+          const checked = Boolean(entry);
+          const feeInputValue = entry && entry.fee !== undefined && entry.fee !== null
+            ? String(entry.fee)
+            : singer.fee != null ? String(singer.fee) : '';
+          const baseFee = toCurrency(singer.fee);
+          return (
+            <div
+              key={singer.id}
+              className="flex items-center justify-between gap-4 rounded border border-slate-200 bg-white px-3 py-2"
+            >
+              <label className="flex items-start gap-3 flex-1">
+                <input
+                  type="checkbox"
+                  className="mt-2"
+                  checked={checked}
+                  onChange={event => handleToggleSinger(singer, event.target.checked)}
+                />
+                <span>
+                  <span className="font-medium text-slate-700">{singer.name}</span>
+                  <span className="block text-xs text-slate-500">
+                    Default fee {baseFee}{singer.comments ? ` · ${singer.comments}` : ''}
+                  </span>
+                </span>
+              </label>
+              {checked ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-500">£</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="w-24 rounded border border-slate-300 px-2 py-1 text-sm"
+                    value={feeInputValue}
+                    onChange={event => handleSingerFeeChange(singer, event.target.value)}
+                  />
+                </div>
+              ) : (
+                <span className="text-sm text-slate-500">{baseFee}</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  useEffect(() => {
+    const base = totals.base || 0;
+    const custom = Number(formState.pricing_custom_fees) || 0;
+    const discount = Number(formState.pricing_discount) || 0;
+    const total = Math.max(base + custom - discount, 0);
+    const nextTotal = total.toFixed(2);
+    const currentTotal = formState.pricing_total ? Number(formState.pricing_total).toFixed(2) : '';
+    if (currentTotal !== nextTotal) {
+      onChange('pricing_total', nextTotal);
+    }
+  }, [totals.base, formState.pricing_custom_fees, formState.pricing_discount, formState.pricing_total, onChange]);
+
+  useEffect(() => {
+    if (!formState.pricing_total) return;
+    const total = Number(formState.pricing_total);
+    if (Number.isFinite(total) && total > 0) {
+      onChange('ahmen_fee', total.toFixed(2));
+    }
+  }, [formState.pricing_total, onChange]);
+
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
-      <div>
-        <h3 className="text-base font-semibold text-slate-700">Pricing</h3>
-        <p className="text-sm text-slate-500">Build a quote straight from the pricing template.</p>
-      </div>
-
       <label className="block text-sm font-medium text-slate-600">
         Service configuration
         <select
@@ -553,81 +734,43 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
         </select>
       </label>
 
-      {selectedService ? (
-        <div className="space-y-3">
-          <div className="rounded border border-slate-200 p-3 max-h-56 overflow-y-auto">
-            <div className="text-sm font-medium text-slate-600 mb-2">Singers</div>
-            <div className="space-y-2">
-              {selectedService.singers.map(singer => {
-                const checked = selectedSingerSet.has(singer.id);
-                return (
-                  <label key={singer.id} className="flex items-start gap-2 text-sm text-slate-600">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={checked}
-                      onChange={() => {
-                        const next = new Set(selectedSingerSet);
-                        if (checked) {
-                          next.delete(singer.id);
-                        } else {
-                          next.add(singer.id);
-                        }
-                        onChange('pricing_selected_singers', Array.from(next));
-                      }}
-                    />
-                    <span>
-                      <span className="font-medium text-slate-700">{singer.name}</span>
-                      <span className="block text-xs text-slate-500">Fee: {toCurrency(singer.fee)}{singer.comments ? ` · ${singer.comments}` : ''}</span>
-                    </span>
-                  </label>
-                );
-              })}
-              {!selectedService.singers.length ? (
-                <div className="text-sm text-slate-500">No singers configured in the pricing template.</div>
-              ) : null}
-            </div>
-          </div>
+      {renderSingers()}
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <Field
-              label="Custom fees (£)"
-              type="number"
-              step="0.01"
-              value={formState.pricing_custom_fees || ''}
-              onChange={value => onChange('pricing_custom_fees', value)}
-            />
-            <Field
-              label="Discount (£)"
-              type="number"
-              step="0.01"
-              value={formState.pricing_discount || ''}
-              onChange={value => onChange('pricing_discount', value)}
-            />
-            <Field
-              label="Pricing total (£)"
-              type="number"
-              step="0.01"
-              value={formState.pricing_total || ''}
-              onChange={value => onChange('pricing_total', value)}
-              readOnly
-            />
-          </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <Field
+          label="Custom fees (£)"
+          type="number"
+          step="0.01"
+          value={formState.pricing_custom_fees || ''}
+          onChange={value => onChange('pricing_custom_fees', value)}
+        />
+        <Field
+          label="Discount (£)"
+          type="number"
+          step="0.01"
+          value={formState.pricing_discount || ''}
+          onChange={value => onChange('pricing_discount', value)}
+        />
+        <Field
+          label="Pricing total (£)"
+          type="number"
+          step="0.01"
+          value={formState.pricing_total || ''}
+          onChange={value => onChange('pricing_total', value)}
+          readOnly
+        />
+      </div>
 
-          <div className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-700">
-            <div className="font-semibold">Quote summary</div>
-            <div>{totals.singerCount} singers selected · Base fee {toCurrency(totals.base)}</div>
-            <div>Total after adjustments: {toCurrency(formState.pricing_total)}</div>
-          </div>
-        </div>
-      ) : (
-        <div className="text-sm text-slate-500">Select a service type to see preset singers and fees.</div>
-      )}
+      <div className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-700">
+        <div className="font-semibold">Quote summary</div>
+        <div>{totals.singerCount} singers selected · Base fee {toCurrency(totals.base)}</div>
+        <div>Total after adjustments: {toCurrency(formState.pricing_total)}</div>
+      </div>
     </div>
   );
 }
 
-function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options, secondaryAction, secondaryDisabled }) {
+function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options }) {
   const common = {
     className: 'mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500',
     value: value ?? '',
@@ -649,31 +792,6 @@ function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3
           <option key={option.value} value={option.value}>{option.label}</option>
         ))}
       </select>
-    );
-  } else if (component === 'savedVenueSelector') {
-    input = (
-      <div className="space-y-2">
-        <select
-          className='mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
-          value={value || ''}
-          onChange={event => onChange(event.target.value)}
-        >
-          <option value="">Select saved venue…</option>
-          {options?.map(venue => (
-            <option key={venue.venue_id} value={venue.venue_id}>
-              {venue.name || 'Untitled venue'}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => secondaryAction?.('SAVE_CURRENT_VENUE')}
-          disabled={secondaryDisabled}
-          className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
-        >
-          {secondaryDisabled ? 'Saving…' : 'Save current venue'}
-        </button>
-      </div>
     );
   } else if (type === 'textarea') {
     input = <textarea {...common} rows={rows} />;
@@ -701,6 +819,53 @@ function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3
       </div>
       {hint ? <p className="mt-1 text-xs text-slate-400">{hint}</p> : null}
     </label>
+  );
+}
+
+function SavedVenueSelector({
+  label,
+  value,
+  venues,
+  onSelect,
+  onSaveCurrent,
+  onCreateNew,
+  saving
+}) {
+  return (
+    <div className="space-y-2">
+      <label className="block text-sm font-medium text-slate-600">
+        <span className="flex items-center gap-2">{label}</span>
+        <select
+          className='mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
+          value={value || ''}
+          onChange={event => onSelect(event.target.value)}
+        >
+          <option value="">Select saved venue…</option>
+          {venues.map(venue => (
+            <option key={venue.venue_id} value={venue.venue_id}>
+              {venue.name || 'Untitled venue'}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onSaveCurrent}
+          disabled={saving}
+          className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          {saving ? 'Saving…' : 'Save current venue'}
+        </button>
+        <button
+          type="button"
+          onClick={onCreateNew}
+          className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+        >
+          + New venue
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -732,6 +897,46 @@ function JobsheetEditor({
     setSavedVenueId(formState.venue_id ? String(formState.venue_id) : '');
   }, [formState.venue_id]);
 
+  const [showVenueModal, setShowVenueModal] = useState(false);
+  const [venueDraft, setVenueDraft] = useState({
+    name: '',
+    address1: '',
+    address2: '',
+    address3: '',
+    town: '',
+    postcode: '',
+    is_private: false
+  });
+
+  const openVenueModal = () => {
+    setVenueDraft({
+      name: formState.venue_name || '',
+      address1: formState.venue_address1 || '',
+      address2: formState.venue_address2 || '',
+      address3: formState.venue_address3 || '',
+      town: formState.venue_town || '',
+      postcode: formState.venue_postcode || '',
+      is_private: Boolean(formState.venue_same_as_client)
+    });
+    setShowVenueModal(true);
+  };
+
+  const closeVenueModal = () => {
+    setShowVenueModal(false);
+  };
+
+  const handleVenueDraftChange = (field, value) => {
+    setVenueDraft(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleCreateVenue = async () => {
+    if (!venueDraft.name.trim()) return;
+    const result = await onSaveVenue({ ...venueDraft });
+    if (result) {
+      setShowVenueModal(false);
+    }
+  };
+
   const [openGroups, setOpenGroups] = useState(() => {
     const initial = {};
     FORM_GROUPS.forEach(group => {
@@ -747,13 +952,33 @@ function JobsheetEditor({
     }));
   };
 
+  const handleSelectSavedVenue = (venueIdValue) => {
+    const value = venueIdValue || '';
+    setSavedVenueId(value);
+    if (!value) {
+      handleFieldChange('venue_id', null);
+      return;
+    }
+    const venue = venues.find(v => String(v.venue_id) === value);
+    if (!venue) return;
+    handleFieldChange('venue_id', venue.venue_id);
+    handleFieldChange('venue_name', venue.name || '');
+    handleFieldChange('venue_address1', venue.address1 || '');
+    handleFieldChange('venue_address2', venue.address2 || '');
+    handleFieldChange('venue_address3', venue.address3 || '');
+    handleFieldChange('venue_town', venue.town || '');
+    handleFieldChange('venue_postcode', venue.postcode || '');
+    handleFieldChange('venue_same_as_client', Boolean(venue.is_private));
+  };
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-800">{hasExisting ? 'Edit jobsheet' : 'New jobsheet'}</h2>
-          <p className="text-sm text-slate-500">Business: {business.business_name}</p>
-        </div>
+    <>
+      <div className="space-y-6">
+        <div className="flex items-start justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-800">{hasExisting ? 'Edit jobsheet' : 'New jobsheet'}</h2>
+            <p className="text-sm text-slate-500">Business: {business.business_name}</p>
+          </div>
         {hasExisting ? (
           <button
             onClick={onDelete}
@@ -782,13 +1007,37 @@ function JobsheetEditor({
             {openGroups[group.key] ? (
               <div className="border-t border-slate-200 px-5 py-4 space-y-4">
                 {group.fields.map(field => {
-                  const resolvedValue = field.component === 'savedVenueSelector'
-                    ? savedVenueId
-                    : field.name === 'status'
-                      ? (formState.status || 'enquiry')
-                      : field.type === 'checkbox'
-                        ? Boolean(formState[field.name])
-                        : formState[field.name] ?? '';
+                  if (field.component === 'pricingPanel') {
+                    return (
+                      <PricingPanel
+                        key={field.name}
+                        pricingConfig={pricingConfig}
+                        pricingTotals={pricingTotals}
+                        formState={formState}
+                        onChange={handleFieldChange}
+                      />
+                    );
+                  }
+                  if (field.component === 'savedVenueSelector') {
+                    return (
+                      <SavedVenueSelector
+                        key={field.name}
+                        label={field.label}
+                        value={savedVenueId}
+                        venues={venues}
+                        onSelect={handleSelectSavedVenue}
+                        onSaveCurrent={() => onSaveVenue()}
+                        onCreateNew={openVenueModal}
+                        saving={venueSaving}
+                      />
+                    );
+                  }
+
+                  const resolvedValue = field.name === 'status'
+                    ? (formState.status || 'enquiry')
+                    : field.type === 'checkbox'
+                      ? Boolean(formState[field.name])
+                      : formState[field.name] ?? '';
 
                   return (
                     <Field
@@ -800,38 +1049,12 @@ function JobsheetEditor({
                       hint={field.hint}
                       readOnly={field.readOnly}
                       component={field.component}
-                      options={field.component === 'savedVenueSelector' ? venues : field.options}
+                      options={field.options}
                       value={resolvedValue}
-                      onChange={value => {
-                        if (field.component === 'savedVenueSelector') {
-                          setSavedVenueId(value || '');
-                          if (!value) {
-                            handleFieldChange('venue_id', null);
-                            return;
-                          }
-                          const venue = venues.find(v => String(v.venue_id) === value);
-                          if (venue) {
-                            handleFieldChange('venue_id', venue.venue_id);
-                            handleFieldChange('venue_name', venue.name || '');
-                            handleFieldChange('venue_address1', venue.address1 || '');
-                            handleFieldChange('venue_address2', venue.address2 || '');
-                            handleFieldChange('venue_address3', venue.address3 || '');
-                            handleFieldChange('venue_town', venue.town || '');
-                            handleFieldChange('venue_postcode', venue.postcode || '');
-                          }
-                          return;
-                        }
-                        handleFieldChange(
-                          field.name,
-                          field.type === 'checkbox' ? Boolean(value) : value
-                        );
-                      }}
-                      secondaryAction={action => {
-                        if (field.component === 'savedVenueSelector' && action === 'SAVE_CURRENT_VENUE') {
-                          onSaveVenue();
-                        }
-                      }}
-                      secondaryDisabled={field.component === 'savedVenueSelector' && venueSaving}
+                      onChange={value => handleFieldChange(
+                        field.name,
+                        field.type === 'checkbox' ? Boolean(value) : value
+                      )}
                     />
                   );
                 })}
@@ -841,25 +1064,122 @@ function JobsheetEditor({
         ))}
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
-        <PricingPanel
-          pricingConfig={pricingConfig}
-          pricingTotals={pricingTotals}
-          formState={formState}
-          onChange={(field, value) => handleFieldChange(field, value)}
-        />
+        <div className="flex items-center justify-end gap-3">
+          <button
+            onClick={onSave}
+            disabled={saving}
+            className="inline-flex items-center justify-center rounded bg-indigo-600 text-white text-sm font-medium px-4 py-2 hover:bg-indigo-500 disabled:opacity-60"
+          >
+            {saving ? 'Saving…' : 'Save jobsheet'}
+          </button>
+        </div>
       </div>
 
-      <div className="flex items-center justify-end gap-3">
-        <button
-          onClick={onSave}
-          disabled={saving}
-          className="inline-flex items-center justify-center rounded bg-indigo-600 text-white text-sm font-medium px-4 py-2 hover:bg-indigo-500 disabled:opacity-60"
-        >
-          {saving ? 'Saving…' : 'Save jobsheet'}
-        </button>
-      </div>
-    </div>
+      {showVenueModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+          <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Add new venue</h3>
+                <p className="text-sm text-slate-500">Capture the venue details and save them to reuse later.</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeVenueModal}
+                className="text-slate-400 hover:text-slate-600"
+                aria-label="Close venue modal"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <label className="block text-sm font-medium text-slate-600">
+                Venue name
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  value={venueDraft.name}
+                  onChange={event => handleVenueDraftChange('name', event.target.value)}
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-600">
+                Address line 1
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  value={venueDraft.address1}
+                  onChange={event => handleVenueDraftChange('address1', event.target.value)}
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-600">
+                Address line 2
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  value={venueDraft.address2}
+                  onChange={event => handleVenueDraftChange('address2', event.target.value)}
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-600">
+                Address line 3
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  value={venueDraft.address3}
+                  onChange={event => handleVenueDraftChange('address3', event.target.value)}
+                />
+              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="block text-sm font-medium text-slate-600">
+                  Town / City
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={venueDraft.town}
+                    onChange={event => handleVenueDraftChange('town', event.target.value)}
+                  />
+                </label>
+                <label className="block text-sm font-medium text-slate-600">
+                  Postcode
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={venueDraft.postcode}
+                    onChange={event => handleVenueDraftChange('postcode', event.target.value)}
+                  />
+                </label>
+              </div>
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={venueDraft.is_private}
+                  onChange={event => handleVenueDraftChange('is_private', event.target.checked)}
+                />
+                Private residence (use client address)
+              </label>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeVenueModal}
+                className="inline-flex items-center rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateVenue}
+                disabled={venueSaving || !venueDraft.name.trim()}
+                className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {venueSaving ? 'Saving…' : 'Save venue'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -904,7 +1224,8 @@ function BusinessWorkspace({ business, onSwitch }) {
           address2: item.address2 || item.venue_address2 || '',
           address3: item.address3 || item.venue_address3 || '',
           town: item.town || item.venue_town || '',
-          postcode: item.postcode || item.venue_postcode || ''
+          postcode: item.postcode || item.venue_postcode || '',
+          is_private: Boolean(item.is_private)
         })));
         setPricingConfig(pricingData || null);
       } catch (err) {
@@ -1070,27 +1391,49 @@ function BusinessWorkspace({ business, onSwitch }) {
     });
   };
 
-  const handleSaveVenue = async () => {
+  const handleSaveVenue = async (overrideVenue) => {
     setVenueSaving(true);
     setError('');
     try {
-      const venuePayload = {
-        business_id: business.id,
+      const source = overrideVenue ? {
+        name: overrideVenue.name,
+        address1: overrideVenue.address1,
+        address2: overrideVenue.address2,
+        address3: overrideVenue.address3,
+        town: overrideVenue.town,
+        postcode: overrideVenue.postcode,
+        is_private: overrideVenue.is_private ? 1 : 0,
+        venue_id: overrideVenue.venue_id || null
+      } : {
         name: formState.venue_name,
         address1: formState.venue_address1,
         address2: formState.venue_address2,
         address3: formState.venue_address3,
         town: formState.venue_town,
         postcode: formState.venue_postcode,
-        is_private: formState.venue_same_as_client ? 1 : 0
+        is_private: formState.venue_same_as_client ? 1 : 0,
+        venue_id: formState.venue_id || null
       };
+
+      const venuePayload = {
+        business_id: business.id,
+        name: source.name,
+        address1: source.address1,
+        address2: source.address2,
+        address3: source.address3,
+        town: source.town,
+        postcode: source.postcode,
+        is_private: source.is_private,
+        venue_id: source.venue_id || undefined
+      };
+
       if (!venuePayload.name?.trim()) {
         setError('Venue name is required to save.');
-        return;
+        return null;
       }
-      await window.api.saveAhmenVenue(venuePayload);
+      const result = await window.api.saveAhmenVenue(venuePayload);
       const updatedVenues = await window.api.getAhmenVenues({ businessId: business.id });
-      setVenues((updatedVenues || []).map(item => ({
+      const normalizedVenues = (updatedVenues || []).map(item => ({
         ...item,
         venue_id: item.venue_id ?? item.id,
         name: item.name || item.venue_name || '',
@@ -1098,12 +1441,33 @@ function BusinessWorkspace({ business, onSwitch }) {
         address2: item.address2 || item.venue_address2 || '',
         address3: item.address3 || item.venue_address3 || '',
         town: item.town || item.venue_town || '',
-        postcode: item.postcode || item.venue_postcode || ''
-      })));
-      setMessage('Venue saved');
+        postcode: item.postcode || item.venue_postcode || '',
+        is_private: Boolean(item.is_private)
+      }));
+      setVenues(normalizedVenues);
+
+      const savedVenueId = result?.venue_id ?? venuePayload.venue_id ?? null;
+      if (savedVenueId) {
+        const savedVenue = normalizedVenues.find(v => v.venue_id === savedVenueId);
+        setFormState(prev => ({
+          ...prev,
+          venue_id: savedVenueId,
+          venue_name: savedVenue?.name ?? venuePayload.name ?? '',
+          venue_address1: savedVenue?.address1 ?? venuePayload.address1 ?? '',
+          venue_address2: savedVenue?.address2 ?? venuePayload.address2 ?? '',
+          venue_address3: savedVenue?.address3 ?? venuePayload.address3 ?? '',
+          venue_town: savedVenue?.town ?? venuePayload.town ?? '',
+          venue_postcode: savedVenue?.postcode ?? venuePayload.postcode ?? '',
+          venue_same_as_client: savedVenue ? Boolean(savedVenue.is_private) : Boolean(source.is_private)
+        }));
+      }
+
+      setMessage(overrideVenue ? 'Venue created' : 'Venue saved');
+      return savedVenueId;
     } catch (err) {
       console.error('Failed to save venue', err);
       setError(err?.message || 'Unable to save venue');
+      return null;
     } finally {
       setVenueSaving(false);
     }
@@ -1112,15 +1476,19 @@ function BusinessWorkspace({ business, onSwitch }) {
   const pricingDerived = useMemo(() => {
     if (!pricingConfig) return null;
     const service = pricingConfig.serviceTypes?.find(type => type.id === formState.pricing_service_id);
-    const selected = new Set(formState.pricing_selected_singers || []);
+    const selectedEntries = normalizeSingerEntries(formState.pricing_selected_singers);
     let base = 0;
     let singerCount = 0;
     if (service) {
-      service.singers.forEach(singer => {
-        if (selected.has(singer.id)) {
-          base += Number(singer.fee) || 0;
-          singerCount += 1;
-        }
+      const serviceSingerMap = new Map(service.singers.map(singer => [singer.id, singer]));
+      selectedEntries.forEach(entry => {
+        const singer = serviceSingerMap.get(entry.id);
+        if (!singer) return;
+        const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+          ? Number(entry.fee)
+          : Number(singer.fee);
+        base += Number.isFinite(feeValue) ? feeValue : 0;
+        singerCount += 1;
       });
     }
     const custom = Number(formState.pricing_custom_fees) || 0;
