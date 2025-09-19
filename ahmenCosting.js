@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 
@@ -27,6 +28,30 @@ const COSTING_CONFIG = {
   dataRowStart: 6,
   dataRowEnd: 20
 };
+
+const PRICING_OVERRIDE_PATH = path.resolve(__dirname, 'ahmenPricingOverrides.json');
+
+function readPricingOverrides() {
+  try {
+    const raw = fs.readFileSync(PRICING_OVERRIDE_PATH, 'utf-8');
+    const data = JSON.parse(raw);
+    if (data && typeof data === 'object') return data;
+    return {};
+  } catch (err) {
+    if (err.code === 'ENOENT') return {};
+    console.warn('Failed to read pricing overrides', err);
+    return {};
+  }
+}
+
+function writePricingOverrides(overrides) {
+  try {
+    fs.writeFileSync(PRICING_OVERRIDE_PATH, JSON.stringify(overrides, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Unable to persist pricing overrides', err);
+    throw err;
+  }
+}
 
 let cachedPricing = null;
 
@@ -90,10 +115,70 @@ async function loadPricingConfig() {
   await workbook.xlsx.readFile(COSTING_CONFIG.templatePath);
   const sheet = workbook.getWorksheet(COSTING_CONFIG.worksheet);
   if (!sheet) throw new Error('Costing sheet not found in AhMen template');
-  cachedPricing = parseCostingSheet(sheet);
+  const base = parseCostingSheet(sheet);
+  const overrides = readPricingOverrides();
+
+  const mergedServiceTypes = base.serviceTypes.map(service => {
+    const overrideList = overrides?.[service.id];
+    if (Array.isArray(overrideList) && overrideList.length) {
+      const normalized = overrideList.map((singer, index) => ({
+        id: String(singer.id ?? `${service.id}-override-${index}`),
+        name: singer.name || '',
+        fee: singer.fee != null ? Number(singer.fee) : 0,
+        defaultIncluded: Boolean(singer.defaultIncluded),
+        availability: singer.availability || '',
+        comments: singer.comments || '',
+        defaultCost: singer.defaultCost != null ? Number(singer.defaultCost) : undefined
+      }));
+      return {
+        ...service,
+        singers: normalized
+      };
+    }
+    return service;
+  });
+
+  cachedPricing = {
+    ...base,
+    serviceTypes: mergedServiceTypes
+  };
   return cachedPricing;
 }
 
+function normalizeRosterInput(singers) {
+  if (!Array.isArray(singers)) throw new Error('Singer list must be an array');
+  return singers
+    .map((singer, index) => {
+      if (!singer) return null;
+      const id = singer.id != null ? String(singer.id) : `custom-${index}`;
+      const name = (singer.name || '').toString().trim();
+      if (!name) return null;
+      const feeNumber = Number(singer.fee);
+      const fee = Number.isFinite(feeNumber) ? feeNumber : 0;
+      return {
+        id,
+        name,
+        fee,
+        defaultIncluded: Boolean(singer.defaultIncluded),
+        availability: singer.availability ? String(singer.availability) : '',
+        comments: singer.comments ? String(singer.comments) : '',
+        defaultCost: singer.defaultCost != null ? Number(singer.defaultCost) : undefined
+      };
+    })
+    .filter(Boolean);
+}
+
+async function savePricingServiceRoster(serviceId, singers) {
+  if (!serviceId) throw new Error('Service id is required');
+  const normalized = normalizeRosterInput(singers);
+  const overrides = readPricingOverrides();
+  overrides[serviceId] = normalized;
+  writePricingOverrides(overrides);
+  cachedPricing = null;
+  return loadPricingConfig();
+}
+
 module.exports = {
-  loadPricingConfig
+  loadPricingConfig,
+  savePricingServiceRoster
 };
