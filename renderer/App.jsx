@@ -578,6 +578,9 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
     [formState.pricing_selected_singers]
   );
 
+  const lastServiceIdRef = useRef(null);
+  const initializedRef = useRef(false);
+
   const updateSelected = useCallback((entries) => {
     const normalized = normalizeSingerEntries(entries);
     if (!equalSingerEntries(normalized, selectedEntries)) {
@@ -590,24 +593,24 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
       if (selectedEntries.length) {
         updateSelected([]);
       }
+      lastServiceIdRef.current = null;
+      initializedRef.current = false;
       return;
     }
+    if (selectedService.id !== lastServiceIdRef.current) {
+      lastServiceIdRef.current = selectedService.id;
+      initializedRef.current = false;
+    }
 
-    const next = [];
-    selectedService.singers.forEach(singer => {
-      const existing = selectedEntries.find(entry => entry.id === singer.id);
-      if (existing) {
-        const fee = existing.fee !== undefined && existing.fee !== null && existing.fee !== ''
-          ? String(existing.fee)
-          : singer.fee != null ? String(singer.fee) : '';
-        next.push({ id: singer.id, fee });
-      } else if (singer.defaultIncluded) {
-        next.push({ id: singer.id, fee: singer.fee != null ? String(singer.fee) : '' });
+    if (!initializedRef.current) {
+      initializedRef.current = true;
+      if (selectedEntries.length) return;
+      const defaults = selectedService.singers
+        .filter(singer => singer.defaultIncluded)
+        .map(singer => ({ id: singer.id, fee: singer.fee != null ? String(singer.fee) : '' }));
+      if (defaults.length) {
+        updateSelected(defaults);
       }
-    });
-
-    if (!equalSingerEntries(next, selectedEntries)) {
-      updateSelected(next);
     }
   }, [selectedService, selectedEntries, updateSelected]);
 
@@ -1203,6 +1206,24 @@ function BusinessWorkspace({ business, onSwitch }) {
     status: normalizeStatus(item.status) || 'enquiry'
   }), []);
 
+  const mergeJobsheetSnapshot = useCallback((snapshot) => {
+    if (!snapshot || snapshot.jobsheet_id == null) return;
+    setJobsheets(prev => {
+      let found = false;
+      const next = prev.map(job => {
+        if (job.jobsheet_id === snapshot.jobsheet_id) {
+          found = true;
+          return normalizeJobsheet({ ...job, ...snapshot });
+        }
+        return job;
+      });
+      if (!found) {
+        next.push(normalizeJobsheet(snapshot));
+      }
+      return next;
+    });
+  }, [normalizeJobsheet]);
+
   const refreshJobsheets = useCallback(async () => {
     setListLoading(true);
     try {
@@ -1234,15 +1255,17 @@ function BusinessWorkspace({ business, onSwitch }) {
   }, [refreshJobsheets]);
 
   useEffect(() => {
-    const handler = (event) => {
-      if (!event.data || event.data.businessId !== business.id) return;
-      if (['jobsheet-updated', 'jobsheet-created', 'jobsheet-deleted'].includes(event.data.type)) {
+    if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
+    const unsubscribe = window.api.onJobsheetChange(payload => {
+      if (!payload || payload.businessId !== business.id) return;
+      if (payload.type === 'jobsheet-updated' && payload.snapshot) {
+        mergeJobsheetSnapshot(payload.snapshot);
+      } else {
         refreshJobsheets();
       }
-    };
-    window.addEventListener('message', handler);
-    return () => window.removeEventListener('message', handler);
-  }, [business.id, refreshJobsheets]);
+    });
+    return () => unsubscribe?.();
+  }, [business.id, refreshJobsheets, mergeJobsheetSnapshot]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -1282,7 +1305,7 @@ function BusinessWorkspace({ business, onSwitch }) {
       await api.deleteAhmenJobsheet(jobsheetId);
       setMessage('Jobsheet deleted');
       await refreshJobsheets();
-      window.postMessage({ type: 'jobsheet-deleted', businessId: business.id, jobsheetId }, '*');
+      window.api?.notifyJobsheetChange?.({ type: 'jobsheet-deleted', businessId: business.id, jobsheetId });
     } catch (err) {
       console.error('Failed to delete jobsheet', err);
       setError(err?.message || 'Unable to delete jobsheet');
@@ -1361,6 +1384,23 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
   const creatingRef = useRef(false);
+
+  const buildSnapshot = useCallback((state, id) => ({
+    jobsheet_id: id ?? state.jobsheet_id ?? null,
+    client_name: state.client_name || '',
+    event_type: state.event_type || '',
+    event_date: state.event_date || '',
+    venue_name: state.venue_name || '',
+    venue_town: state.venue_town || '',
+    status: state.status || 'enquiry',
+    ahmen_fee: state.ahmen_fee !== undefined && state.ahmen_fee !== null && state.ahmen_fee !== ''
+      ? Number(state.ahmen_fee)
+      : null,
+    pricing_total: state.pricing_total !== undefined && state.pricing_total !== null && state.pricing_total !== ''
+      ? Number(state.pricing_total)
+      : null,
+    updated_at: new Date().toISOString()
+  }), []);
 
   useEffect(() => {
     let mounted = true;
@@ -1452,6 +1492,35 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   }, [pricingConfig, formState]);
 
   useEffect(() => {
+    if (!pricingDerived) return;
+    setFormState(prev => {
+      const nextTotal = pricingDerived.totalString || '';
+      const currentTotal = prev.pricing_total ?? '';
+      const shouldUpdateTotal = nextTotal !== currentTotal;
+
+      let shouldUpdateFee = false;
+      let nextFeeValue = prev.ahmen_fee ?? '';
+      if (pricingDerived.hasSelection) {
+        const candidateFee = pricingDerived.totalString || '';
+        if (candidateFee && candidateFee !== (prev.ahmen_fee ?? '')) {
+          shouldUpdateFee = true;
+          nextFeeValue = candidateFee;
+        }
+      } else if (!pricingDerived.hasSelection && !pricingDerived.totalString && prev.ahmen_fee) {
+        shouldUpdateFee = true;
+        nextFeeValue = '';
+      }
+
+      if (!shouldUpdateTotal && !shouldUpdateFee) return prev;
+
+      const next = { ...prev };
+      if (shouldUpdateTotal) next.pricing_total = nextTotal;
+      if (shouldUpdateFee) next.ahmen_fee = nextFeeValue;
+      return applyDerivedFields(next);
+    });
+  }, [pricingDerived]);
+
+  useEffect(() => {
     if (loading || !jobsheetId) return;
     if (initialLoadRef.current) {
       initialLoadRef.current = false;
@@ -1466,7 +1535,12 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         const payload = preparePayload(formState, numericBusinessId);
         await api.updateAhmenJobsheet(jobsheetId, payload);
         setMessage('Saved');
-        window.opener?.postMessage({ type: 'jobsheet-updated', businessId: numericBusinessId, jobsheetId }, '*');
+        window.api?.notifyJobsheetChange?.({
+          type: 'jobsheet-updated',
+          businessId: numericBusinessId,
+          jobsheetId,
+          snapshot: buildSnapshot(formState, jobsheetId)
+        });
         setTimeout(() => setMessage(''), 1500);
       } catch (err) {
         console.error('Failed to auto-save jobsheet', err);
@@ -1495,7 +1569,12 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         const url = new URL(window.location.href);
         url.searchParams.set('jobsheetId', newId);
         window.history.replaceState({}, '', url.toString());
-        window.opener?.postMessage({ type: 'jobsheet-created', businessId: numericBusinessId, jobsheetId: newId }, '*');
+        window.api?.notifyJobsheetChange?.({
+          type: 'jobsheet-created',
+          businessId: numericBusinessId,
+          jobsheetId: newId,
+          snapshot: buildSnapshot({ ...formState, jobsheet_id: newId }, newId)
+        });
         setMessage('Draft created');
         setTimeout(() => setMessage(''), 1500);
         initialLoadRef.current = true;
@@ -1580,8 +1659,13 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         }
       }
 
-      window.opener?.postMessage({ type: 'jobsheet-updated', businessId: numericBusinessId, jobsheetId: jobsheetId || savedVenueId }, '*');
-      return savedVenueId;
+      window.api?.notifyJobsheetChange?.({
+        type: 'jobsheet-updated',
+        businessId: numericBusinessId,
+        jobsheetId: jobsheetId || savedVenueId,
+        snapshot: buildSnapshot(formState, jobsheetId || savedVenueId)
+      });
+     return savedVenueId;
     } catch (err) {
       console.error('Failed to save venue', err);
       setError(err?.message || 'Unable to save venue');
@@ -1607,7 +1691,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         return;
       }
       await api.deleteAhmenJobsheet(jobsheetId);
-      window.opener?.postMessage({ type: 'jobsheet-deleted', businessId: numericBusinessId, jobsheetId }, '*');
+      window.api?.notifyJobsheetChange?.({ type: 'jobsheet-deleted', businessId: numericBusinessId, jobsheetId });
       window.close();
     } catch (err) {
       console.error('Failed to delete jobsheet', err);
@@ -1619,8 +1703,13 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
 
   useEffect(() => {
     const handler = () => {
-      if (window.opener && (jobsheetId || formState.client_name?.trim())) {
-        window.opener.postMessage({ type: 'jobsheet-updated', businessId: numericBusinessId, jobsheetId }, '*');
+      if (jobsheetId || formState.client_name?.trim()) {
+        window.api?.notifyJobsheetChange?.({
+          type: 'jobsheet-updated',
+          businessId: numericBusinessId,
+          jobsheetId,
+          snapshot: buildSnapshot(formState, jobsheetId)
+        });
       }
     };
     window.addEventListener('beforeunload', handler);
@@ -1648,20 +1737,50 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         {loading ? (
           <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading jobsheet…</div>
         ) : (
-          <JobsheetEditor
-            business={resolvedBusiness}
-            formState={formState}
-            onChange={setFormState}
-            onDelete={handleDelete}
-            saving={saving}
-            deleting={false}
-            hasExisting={Boolean(jobsheetId)}
-            venues={venues}
-            onSaveVenue={handleSaveVenue}
-            venueSaving={venueSaving}
-            pricingConfig={pricingConfig}
-            pricingTotals={pricingDerived}
-          />
+          <>
+            <div className="sticky top-0 z-20 -mx-6 px-6 pt-2 pb-4 bg-slate-100/95 backdrop-blur">
+              <div className="bg-white border border-slate-200 rounded-lg px-5 py-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 text-sm text-slate-600">
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Client</div>
+                  <div className="text-base font-semibold text-slate-800">{formState.client_name || 'Untitled booking'}</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Event</div>
+                  <div className="text-base text-slate-700">{formState.event_type || '—'}</div>
+                  <div className="text-xs text-slate-500">{formatDateDisplay(formState.event_date)}</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Venue</div>
+                  <div className="text-base text-slate-700">{formState.venue_name || formState.venue_town || '—'}</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Fee</div>
+                  <div className="text-base font-semibold text-slate-800">{toCurrency(formState.ahmen_fee || pricingDerived?.total || 0)}</div>
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
+                  <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLES[formState.status] || STATUS_STYLES.enquiry}`}>
+                    {STATUS_OPTIONS.find(opt => opt.value === formState.status)?.label || 'Enquiry'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <JobsheetEditor
+              business={resolvedBusiness}
+              formState={formState}
+              onChange={setFormState}
+              onDelete={handleDelete}
+              saving={saving}
+              deleting={false}
+              hasExisting={Boolean(jobsheetId)}
+              venues={venues}
+              onSaveVenue={handleSaveVenue}
+              venueSaving={venueSaving}
+              pricingConfig={pricingConfig}
+              pricingTotals={pricingDerived}
+            />
+          </>
         )}
       </main>
     </div>
