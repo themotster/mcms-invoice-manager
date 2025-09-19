@@ -726,51 +726,67 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     }
 
     return (
-      <div className="flex flex-col gap-2">
-        {serviceSingers.map(singer => {
-          const singerId = String(singer.id);
-          const entry = selectedEntries.find(item => item.id === singerId);
-          const checked = Boolean(entry);
-          const feeInputValue = entry && entry.fee !== undefined && entry.fee !== null
-            ? String(entry.fee)
-            : singer.fee != null ? String(singer.fee) : '';
-          const baseFee = toCurrency(singer.fee);
-          return (
-            <div
-              key={singer.id}
-              className="flex items-center justify-between gap-4 rounded border border-slate-200 bg-white px-3 py-2"
-            >
-              <label className="flex items-start gap-3 flex-1">
-                <input
-                  type="checkbox"
-                  className="mt-2"
-                  checked={checked}
-                  onChange={event => handleToggleSinger(singer, event.target.checked)}
-                />
-                <span>
-                  <span className="font-medium text-slate-700">{singer.name}</span>
-                  <span className="block text-xs text-slate-500">
-                    Default fee {baseFee}{singer.comments ? ` · ${singer.comments}` : ''}
-                  </span>
-                </span>
-              </label>
-              {checked ? (
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500">£</span>
+      <div className="space-y-3">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          {serviceSingers.map(singer => {
+            const singerId = String(singer.id);
+            const entry = selectedEntries.find(item => item.id === singerId);
+            const checked = Boolean(entry);
+            const feeInputValue = entry && entry.fee !== undefined && entry.fee !== null
+              ? String(entry.fee)
+              : singer.fee != null ? String(singer.fee) : '';
+            const baseFee = toCurrency(singer.fee);
+            const toggleSinger = () => {
+              handleToggleSinger(singer, !checked);
+            };
+            return (
+              <div
+                key={singer.id}
+                role="button"
+                tabIndex={0}
+                onClick={toggleSinger}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    toggleSinger();
+                  }
+                }}
+                className={`rounded-lg border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${checked ? 'border-indigo-200 bg-indigo-50 shadow-sm' : 'border-slate-200 bg-white hover:border-indigo-200'}`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="text-xs">
+                    <div className="text-sm font-medium text-slate-700">{singer.name}</div>
+                    <div className="text-[11px] text-slate-500">{baseFee}{singer.comments ? ` · ${singer.comments}` : ''}</div>
+                  </div>
                   <input
-                    type="number"
-                    step="0.01"
-                    className="w-24 rounded border border-slate-300 px-2 py-1 text-sm"
-                    value={feeInputValue}
-                    onChange={event => handleSingerFeeChange(singer, event.target.value)}
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    checked={checked}
+                    onClick={event => event.stopPropagation()}
+                    onChange={event => handleToggleSinger(singer, event.target.checked)}
                   />
                 </div>
-              ) : (
-                <span className="text-sm text-slate-500">{baseFee}</span>
-              )}
-            </div>
-          );
-        })}
+                {checked ? (
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="text-[11px] uppercase tracking-wide text-slate-400">Fee</span>
+                    <div className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                      <span className="text-xs text-slate-500">£</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="w-20 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                        value={feeInputValue}
+                        onClick={event => event.stopPropagation()}
+                        onChange={event => handleSingerFeeChange(singer, event.target.value)}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+        <div className="text-xs text-slate-400">Click a singer to toggle them, then adjust the fee if needed.</div>
       </div>
     );
   };
@@ -795,21 +811,41 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     }
   }, [formState.pricing_total, onChange]);
 
+  const handleSelectService = (serviceId) => {
+    const current = formState.pricing_service_id != null ? String(formState.pricing_service_id) : '';
+    const target = serviceId != null ? String(serviceId) : '';
+    const nextValue = target === current ? '' : target;
+    onChange('pricing_service_id', nextValue);
+  };
+
   return (
     <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
-      <label className="block text-sm font-medium text-slate-600">
-        Service configuration
-        <select
-          className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm"
-          value={formState.pricing_service_id || ''}
-          onChange={event => onChange('pricing_service_id', event.target.value)}
-        >
-          <option value="">Select service type…</option>
-          {serviceTypes.map(type => (
-            <option key={type.id} value={type.id}>{type.label}</option>
-          ))}
-        </select>
-      </label>
+      <div>
+        <div className="flex items-center justify-between">
+          <span className="text-sm font-medium text-slate-600">Service configuration</span>
+          {selectedService ? (
+            <span className="text-xs text-slate-400">{selectedService.singers.length} preset singers</span>
+          ) : null}
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {serviceTypes.length ? serviceTypes.map(type => {
+            const typeId = type.id != null ? String(type.id) : '';
+            const isActive = typeId === (formState.pricing_service_id != null ? String(formState.pricing_service_id) : '');
+            return (
+              <button
+                key={type.id}
+                type="button"
+                onClick={() => handleSelectService(type.id)}
+                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'}`}
+              >
+                {type.label}
+              </button>
+            );
+          }) : (
+            <span className="text-sm text-slate-500">No service templates configured.</span>
+          )}
+        </div>
+      </div>
 
       {renderSingers()}
 
@@ -1015,20 +1051,20 @@ function JobsheetEditor({
     }
   };
 
-  const [openGroups, setOpenGroups] = useState(() => {
-    const initial = {};
-    FORM_GROUPS.forEach(group => {
-      initial[group.key] = group.defaultOpen ?? false;
-    });
-    return initial;
+  const [activeGroupKey, setActiveGroupKey] = useState(() => {
+    const defaultGroup = FORM_GROUPS.find(group => group.defaultOpen) || FORM_GROUPS[0];
+    return defaultGroup ? defaultGroup.key : null;
   });
 
-  const toggleGroup = (key) => {
-    setOpenGroups(prev => ({
-      ...prev,
-      [key]: !prev[key]
-    }));
-  };
+  const activeGroup = useMemo(() => (
+    FORM_GROUPS.find(group => group.key === activeGroupKey) || FORM_GROUPS[0] || null
+  ), [activeGroupKey]);
+
+  useEffect(() => {
+    if (!activeGroup && FORM_GROUPS.length) {
+      setActiveGroupKey(FORM_GROUPS[0].key);
+    }
+  }, [activeGroup]);
 
   const handleSelectSavedVenue = (venueIdValue) => {
     const value = venueIdValue || '';
@@ -1069,23 +1105,41 @@ function JobsheetEditor({
         ) : null}
       </div>
 
-      <div className="space-y-4">
-        {FORM_GROUPS.map(group => (
-          <section key={group.key} className="bg-white border border-slate-200 rounded-lg">
-            <button
-              type="button"
-              onClick={() => toggleGroup(group.key)}
-              className="w-full flex items-center justify-between px-5 py-4"
-            >
-              <div className="text-left">
-                <h3 className="text-base font-semibold text-slate-700">{group.title}</h3>
-                <p className="text-sm text-slate-500">{group.description}</p>
+      <div className="flex flex-col gap-6 lg:flex-row">
+        <nav className="lg:w-64 flex-shrink-0">
+          <div className="space-y-2" role="tablist" aria-orientation="vertical">
+            {FORM_GROUPS.map(group => {
+              const isActive = activeGroup?.key === group.key;
+              return (
+                <button
+                  key={group.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={isActive}
+                  onClick={() => setActiveGroupKey(group.key)}
+                  className={`w-full text-left rounded-lg border px-4 py-3 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
+                >
+                  <div className="text-sm font-semibold">{group.title}</div>
+                  {group.description ? (
+                    <p className="mt-1 text-xs text-slate-500">{group.description}</p>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
+        <div className="flex-1">
+          {activeGroup ? (
+            <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-5">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-700">{activeGroup.title}</h3>
+                {activeGroup.description ? (
+                  <p className="mt-1 text-sm text-slate-500">{activeGroup.description}</p>
+                ) : null}
               </div>
-              <span className="text-xl text-slate-500">{openGroups[group.key] ? '−' : '+'}</span>
-            </button>
-            {openGroups[group.key] ? (
-              <div className="border-t border-slate-200 px-5 py-4 space-y-4">
-                {group.fields.map(field => {
+              <div className="space-y-4">
+                {activeGroup.fields.map(field => {
                   if (field.component === 'pricingPanel') {
                     return (
                       <PricingPanel
@@ -1139,9 +1193,13 @@ function JobsheetEditor({
                   );
                 })}
               </div>
-            ) : null}
-          </section>
-        ))}
+            </section>
+          ) : (
+            <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-500">
+              No sections available.
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex items-center justify-end text-sm text-slate-500 min-h-[1.5rem]">
