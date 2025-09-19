@@ -580,6 +580,8 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
 
   const lastServiceIdRef = useRef(null);
   const initializedRef = useRef(false);
+  const previousServiceIdRef = useRef(null);
+  const serviceSingers = Array.isArray(selectedService?.singers) ? selectedService.singers : [];
 
   const updateSelected = useCallback((entries) => {
     const normalized = normalizeSingerEntries(entries);
@@ -595,22 +597,51 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
       }
       lastServiceIdRef.current = null;
       initializedRef.current = false;
+      previousServiceIdRef.current = null;
       return;
     }
-    if (selectedService.id !== lastServiceIdRef.current) {
-      lastServiceIdRef.current = selectedService.id;
+
+    const currentServiceId = selectedService.id;
+    if (currentServiceId !== lastServiceIdRef.current) {
+      lastServiceIdRef.current = currentServiceId;
       initializedRef.current = false;
+    }
+
+    const serviceMap = new Map(serviceSingers.map(singer => [String(singer.id), singer]));
+
+    let next = selectedEntries
+      .filter(entry => serviceMap.has(entry.id))
+      .map(entry => {
+        const singer = serviceMap.get(entry.id);
+        const fee = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+          ? String(entry.fee)
+          : singer?.fee != null ? String(singer.fee) : '';
+        return { id: entry.id, fee };
+      });
+
+    if (previousServiceIdRef.current !== currentServiceId) {
+      serviceSingers.forEach(singer => {
+        if (!singer.defaultIncluded) return;
+        const singerId = String(singer.id);
+        if (!next.find(entry => entry.id === singerId)) {
+          next.push({ id: singerId, fee: singer.fee != null ? String(singer.fee) : '' });
+        }
+      });
+      previousServiceIdRef.current = currentServiceId;
     }
 
     if (!initializedRef.current) {
       initializedRef.current = true;
-      if (selectedEntries.length) return;
-      const defaults = selectedService.singers
-        .filter(singer => singer.defaultIncluded)
-        .map(singer => ({ id: singer.id, fee: singer.fee != null ? String(singer.fee) : '' }));
-      if (defaults.length) {
-        updateSelected(defaults);
+      if (!selectedEntries.length && !next.length) {
+        next = serviceSingers
+          .filter(singer => singer.defaultIncluded)
+          .map(singer => ({ id: String(singer.id), fee: singer.fee != null ? String(singer.fee) : '' }));
       }
+    }
+
+    const normalized = normalizeSingerEntries(next);
+    if (!equalSingerEntries(normalized, selectedEntries)) {
+      updateSelected(normalized);
     }
   }, [selectedService, selectedEntries, updateSelected]);
 
@@ -618,8 +649,9 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
     if (!selectedService) return { base: 0, singerCount: 0 };
     let base = 0;
     let singerCount = 0;
-    selectedService.singers.forEach(singer => {
-      const entry = selectedEntries.find(item => item.id === singer.id);
+    serviceSingers.forEach(singer => {
+      const singerId = String(singer.id);
+      const entry = selectedEntries.find(item => item.id === singerId);
       if (!entry) return;
       const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
         ? Number(entry.fee)
@@ -634,21 +666,23 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
 
   const handleToggleSinger = (singer, checked) => {
     if (!selectedService) return;
+    const singerId = String(singer.id);
     if (checked) {
-      if (!selectedEntries.find(entry => entry.id === singer.id)) {
+      if (!selectedEntries.find(entry => entry.id === singerId)) {
         updateSelected([
           ...selectedEntries,
-          { id: singer.id, fee: singer.fee != null ? String(singer.fee) : '' }
+          { id: singerId, fee: singer.fee != null ? String(singer.fee) : '' }
         ]);
       }
     } else {
-      updateSelected(selectedEntries.filter(entry => entry.id !== singer.id));
+      updateSelected(selectedEntries.filter(entry => entry.id !== singerId));
     }
   };
 
   const handleSingerFeeChange = (singer, value) => {
+    const singerId = String(singer.id);
     const next = selectedEntries.map(entry => (
-      entry.id === singer.id ? { ...entry, fee: value } : entry
+      entry.id === singerId ? { ...entry, fee: value } : entry
     ));
     updateSelected(next);
   };
@@ -658,14 +692,15 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals }) {
       return <div className="text-sm text-slate-500">Select a service type to see preset singers and fees.</div>;
     }
 
-    if (!selectedService.singers.length) {
+    if (!serviceSingers.length) {
       return <div className="text-sm text-slate-500">No singers configured in the pricing template.</div>;
     }
 
     return (
       <div className="flex flex-col gap-2">
-        {selectedService.singers.map(singer => {
-          const entry = selectedEntries.find(item => item.id === singer.id);
+        {serviceSingers.map(singer => {
+          const singerId = String(singer.id);
+          const entry = selectedEntries.find(item => item.id === singerId);
           const checked = Boolean(entry);
           const feeInputValue = entry && entry.fee !== undefined && entry.fee !== null
             ? String(entry.fee)
@@ -1380,6 +1415,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const [venueSaving, setVenueSaving] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
@@ -1459,6 +1495,10 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     };
   }, [numericBusinessId, business, initialJobsheetId, jobsheetId]);
 
+  useEffect(() => {
+    formStateRef.current = formState;
+  }, [formState]);
+
   const pricingDerived = useMemo(() => {
     if (!pricingConfig) return null;
     const service = pricingConfig.serviceTypes?.find(type => type.id === formState.pricing_service_id);
@@ -1466,7 +1506,8 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     let base = 0;
     let singerCount = 0;
     if (service) {
-      const serviceSingerMap = new Map(service.singers.map(singer => [singer.id, singer]));
+      const serviceSingerList = Array.isArray(service.singers) ? service.singers : [];
+      const serviceSingerMap = new Map(serviceSingerList.map(singer => [String(singer.id), singer]));
       selectedEntries.forEach(entry => {
         const singer = serviceSingerMap.get(entry.id);
         if (!singer) return;
@@ -1551,6 +1592,40 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     }, 600);
     return () => clearTimeout(autoSaveTimer.current);
   }, [formState, jobsheetId, numericBusinessId, loading]);
+
+  const saveJobsheet = useCallback(async () => {
+    if (loading || !jobsheetId) return;
+    const api = window.api;
+    if (!api || !api.updateAhmenJobsheet) return;
+    const currentState = formStateRef.current;
+    setSaving(true);
+    try {
+      const payload = preparePayload(currentState, numericBusinessId);
+      await api.updateAhmenJobsheet(jobsheetId, payload);
+      window.api?.notifyJobsheetChange?.({
+        type: 'jobsheet-updated',
+        businessId: numericBusinessId,
+        jobsheetId,
+        snapshot: buildSnapshot(currentState, jobsheetId)
+      });
+      setMessage('Saved');
+      setTimeout(() => setMessage(''), 1200);
+    } catch (err) {
+      console.error('Failed to auto-save jobsheet', err);
+      setError(err?.message || 'Unable to save jobsheet');
+    } finally {
+      setSaving(false);
+    }
+  }, [buildSnapshot, jobsheetId, numericBusinessId, loading]);
+
+  useEffect(() => {
+    if (loading || !jobsheetId) return;
+    if (initialLoadRef.current) {
+      initialLoadRef.current = false;
+      return;
+    }
+    saveJobsheet();
+  }, [formState, jobsheetId, loading, saveJobsheet]);
 
   useEffect(() => {
     if (loading) return;
@@ -1703,18 +1778,18 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
 
   useEffect(() => {
     const handler = () => {
-      if (jobsheetId || formState.client_name?.trim()) {
+      if (jobsheetId || formStateRef.current.client_name?.trim()) {
         window.api?.notifyJobsheetChange?.({
           type: 'jobsheet-updated',
           businessId: numericBusinessId,
           jobsheetId,
-          snapshot: buildSnapshot(formState, jobsheetId)
+          snapshot: buildSnapshot(formStateRef.current, jobsheetId)
         });
       }
     };
     window.addEventListener('beforeunload', handler);
     return () => window.removeEventListener('beforeunload', handler);
-  }, [numericBusinessId, jobsheetId, formState.client_name]);
+  }, [numericBusinessId, jobsheetId, buildSnapshot]);
 
   const resolvedBusiness = business || { id: numericBusinessId, business_name: businessName || 'Jobsheet' };
 

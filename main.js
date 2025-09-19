@@ -7,6 +7,8 @@ const DEFAULT_WINDOW_STATE = {
   height: 800
 };
 
+let mainWindow = null;
+
 function getStateStorePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
 }
@@ -65,6 +67,7 @@ function createWindow() {
   if (typeof state.height === 'number') browserOptions.height = state.height;
 
   const win = new BrowserWindow(browserOptions);
+  mainWindow = win;
 
   if (state.isMaximized) {
     win.maximize();
@@ -88,6 +91,12 @@ function createWindow() {
   win.on('resize', () => {
     if (!win.isMaximized() && !win.isMinimized()) {
       saveState();
+    }
+  });
+
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = null;
     }
   });
 
@@ -129,6 +138,12 @@ app.whenReady().then(() => {
 ipcMain.handle('open-jobsheet-window', (event, args = {}) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
   createJobsheetWindow(parent || null, args || {});
+});
+
+ipcMain.on('jobsheet-change', (event, payload = {}) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('jobsheet-change', payload);
+  }
 });
 
 app.on('window-all-closed', () => {

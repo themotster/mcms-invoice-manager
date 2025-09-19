@@ -4,6 +4,18 @@ const db = require(path.join(__dirname, 'db.js'));
 const documentService = require(path.join(__dirname, 'documentService.js'));
 const ahmenCosting = require(path.join(__dirname, 'ahmenCosting.js'));
 
+const jobsheetListeners = new Set();
+
+ipcRenderer.on('jobsheet-change', (_event, payload) => {
+  jobsheetListeners.forEach(callback => {
+    try {
+      callback(payload);
+    } catch (err) {
+      console.error('Jobsheet change listener error', err);
+    }
+  });
+});
+
 contextBridge.exposeInMainWorld('api', {
   getInvoices: async () => await db.getInvoices(),
   getStatus: async () => await db.getStatus(),
@@ -43,5 +55,11 @@ contextBridge.exposeInMainWorld('api', {
   saveAhmenVenue: async (data) => await db.saveAhmenVenue(data),
   getAhmenPricing: async () => await ahmenCosting.loadPricingConfig(),
   businessSettings: async () => await db.businessSettings(),
-  openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {})
+  openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {}),
+  notifyJobsheetChange: (payload) => ipcRenderer.send('jobsheet-change', payload || {}),
+  onJobsheetChange: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    jobsheetListeners.add(callback);
+    return () => jobsheetListeners.delete(callback);
+  }
 });
