@@ -628,6 +628,8 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     [sortedSingers]
   );
 
+  const canManagePool = typeof onUpdateSingerPool === 'function';
+
   const selectedEntries = useMemo(
     () => normalizeSingerEntries(formState.pricing_selected_singers),
     [formState.pricing_selected_singers]
@@ -747,33 +749,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     ]);
   }, [poolMap, selectedEntries, selectedService, updateSelected]);
 
-  const handleSingerFeeChange = useCallback((singerId, value) => {
-    updateSelected(selectedEntries.map(entry => (
-      entry.id === singerId ? { ...entry, fee: value } : entry
-    )));
-  }, [selectedEntries, updateSelected]);
-
-  const handleMoveSelected = useCallback((singerId, offset) => {
-    const index = selectedEntries.findIndex(entry => entry.id === singerId);
-    if (index === -1) return;
-    const targetIndex = index + offset;
-    if (targetIndex < 0 || targetIndex >= selectedEntries.length) return;
-    const next = [...selectedEntries];
-    const [moved] = next.splice(index, 1);
-    next.splice(targetIndex, 0, moved);
-    updateSelected(next);
-  }, [selectedEntries, updateSelected]);
-
-  const handleCustomSingerChange = useCallback((entryId, changes) => {
-    updateSelected(selectedEntries.map(entry => (
-      entry.id === entryId ? { ...entry, ...changes, custom: true } : entry
-    )));
-  }, [selectedEntries, updateSelected]);
-
-  const handleRemoveCustomSinger = useCallback((entryId) => {
-    updateSelected(selectedEntries.filter(entry => entry.id !== entryId));
-  }, [selectedEntries, updateSelected]);
-
   const handleClearSelection = useCallback(() => {
     updateSelected([]);
   }, [updateSelected]);
@@ -803,11 +778,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     updateSelected(defaults);
   }, [selectedService, sortedSingers, updateSelected]);
 
-  const selectedRows = useMemo(
-    () => selectedEntries.map(entry => ({ entry, singer: poolMap.get(entry.id) })),
-    [selectedEntries, poolMap]
-  );
-
   const currentServiceId = selectedService ? String(selectedService.id) : '';
   const hasDefaultSingers = useMemo(() => {
     if (!currentServiceId) return sortedSingers.some(singer => singer.defaultIncluded);
@@ -818,8 +788,31 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const [newSingerBaseFee, setNewSingerBaseFee] = useState('');
   const [newSingerServiceFee, setNewSingerServiceFee] = useState('');
   const [newSingerDefaultIncluded, setNewSingerDefaultIncluded] = useState(false);
+  const [addSingerToLineup, setAddSingerToLineup] = useState(Boolean(selectedServiceId));
   const [addingSinger, setAddingSinger] = useState(false);
   const [addError, setAddError] = useState('');
+  const [showAddSingerModal, setShowAddSingerModal] = useState(false);
+
+  const resetAddSingerForm = useCallback(() => {
+    setNewSingerName('');
+    setNewSingerBaseFee('');
+    setNewSingerServiceFee('');
+    setNewSingerDefaultIncluded(false);
+    setAddError('');
+    setAddSingerToLineup(Boolean(selectedServiceId));
+  }, [selectedServiceId]);
+
+  const handleOpenAddSingerModal = useCallback(() => {
+    if (!canManagePool) return;
+    resetAddSingerForm();
+    setShowAddSingerModal(true);
+  }, [canManagePool, resetAddSingerForm]);
+
+  const handleCloseAddSingerModal = useCallback(() => {
+    if (addingSinger) return;
+    resetAddSingerForm();
+    setShowAddSingerModal(false);
+  }, [addingSinger, resetAddSingerForm]);
 
   const handleAddSingerToPool = useCallback(async () => {
     if (typeof onUpdateSingerPool !== 'function') return;
@@ -843,10 +836,12 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       };
     }
 
+    const temporaryId = `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     const nextPool = [
       ...existingPool,
       {
-        id: `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        id: temporaryId,
         name: trimmedName,
         fee: baseFee,
         defaultIncluded: currentServiceId ? false : Boolean(newSingerDefaultIncluded),
@@ -858,22 +853,34 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       setAddingSinger(true);
       setAddError('');
       await onUpdateSingerPool(nextPool);
-      setNewSingerName('');
-      setNewSingerBaseFee('');
-      setNewSingerServiceFee('');
-      setNewSingerDefaultIncluded(false);
+      if (addSingerToLineup) {
+        const serviceDetails = currentServiceId ? serviceFees[currentServiceId] : null;
+        const fallbackFee = baseFee != null ? String(baseFee) : '';
+        const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
+        updateSelected([
+          ...selectedEntries.filter(entry => entry.id !== temporaryId),
+          {
+            id: temporaryId,
+            name: trimmedName,
+            fee
+          }
+        ]);
+      }
+      resetAddSingerForm();
+      setShowAddSingerModal(false);
     } catch (err) {
       console.error('Failed to add singer to pool', err);
       setAddError(err?.message || 'Unable to add singer');
     } finally {
       setAddingSinger(false);
     }
-  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId]);
+  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId, resetAddSingerForm, addSingerToLineup, updateSelected, selectedEntries]);
 
-  const canAddSinger = Boolean(onUpdateSingerPool) && newSingerName.trim().length > 0 && !addingSinger;
+  const canAddSinger = canManagePool && newSingerName.trim().length > 0 && !addingSinger;
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-6">
+    <>
+      <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-6">
       <section className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-slate-600">Service configuration</span>
@@ -921,6 +928,14 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             >
               Clear selection
             </button>
+            <button
+              type="button"
+              onClick={handleOpenAddSingerModal}
+              disabled={!canManagePool}
+              className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Add singer
+            </button>
           </div>
         </div>
         {sortedSingers.length ? (
@@ -930,22 +945,17 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
               const isSelected = selectedIdSet.has(singerId);
               const serviceDetails = currentServiceId ? singer.serviceFees?.[currentServiceId] : null;
               const displayFee = serviceDetails?.fee != null ? serviceDetails.fee : singer.fee;
-              const isDefault = serviceDetails ? serviceDetails.defaultIncluded : singer.defaultIncluded;
               return (
                 <button
                   key={singerId}
                   type="button"
                   onClick={() => handleToggleSinger(singerId)}
-                  className={`text-left rounded border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isSelected ? 'border-indigo-300 bg-indigo-50/80 shadow-sm' : 'border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70'}`}
+                  className={`text-left rounded px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isSelected ? 'bg-indigo-500 text-white shadow-sm' : 'border border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70'}`}
                 >
                   <div className="flex items-start justify-between">
-                    <span className="text-sm font-medium text-slate-700 leading-tight">{singer.name || 'Unnamed singer'}</span>
-                    {isDefault ? (
-                      <span className="text-[10px] uppercase tracking-wide text-indigo-600">Default</span>
-                    ) : null}
+                    <span className={`text-sm font-medium leading-tight ${isSelected ? 'text-white' : 'text-slate-700'}`}>{singer.name || 'Unnamed singer'}</span>
                   </div>
-                  <div className="mt-1 text-xs text-slate-500">Fee {toCurrency(displayFee)}</div>
-                  {isSelected ? <div className="mt-1 text-[11px] text-indigo-600">In lineup</div> : null}
+                  <div className={`mt-1 text-xs ${isSelected ? 'text-indigo-100' : 'text-slate-500'}`}>Fee {toCurrency(displayFee)}</div>
                 </button>
               );
             })}
@@ -955,187 +965,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             No singers available yet. Add them below.
           </div>
         )}
-      </section>
-
-      <section className="space-y-2">
-        <div className="text-sm font-medium text-slate-600">Selected lineup</div>
-        {selectedRows.length ? (
-          <div className="space-y-2">
-            {selectedRows.map(({ entry, singer }, index) => {
-              const singerId = entry.id;
-              if (entry.custom && !singer) {
-                return (
-                  <div
-                    key={singerId}
-                    className="rounded border border-amber-200 bg-amber-50/70 px-3 py-2 space-y-2"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold uppercase tracking-wide text-amber-700">Custom singer</span>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveCustomSinger(singerId)}
-                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-red-200 text-xs text-red-600 hover:bg-red-50"
-                        aria-label="Remove custom singer"
-                      >
-                        ×
-                      </button>
-                    </div>
-                    <div className="space-y-2">
-                      <label className="block text-[11px] uppercase tracking-wide text-slate-400">
-                        Name
-                        <input
-                          type="text"
-                          className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          value={entry.name || ''}
-                          onChange={event => handleCustomSingerChange(singerId, { name: event.target.value })}
-                        />
-                      </label>
-                      <label className="block text-[11px] uppercase tracking-wide text-slate-400">
-                        Fee
-                        <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                          <span className="text-xs text-slate-500">£</span>
-                          <input
-                            type="number"
-                            step="0.01"
-                            className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
-                            value={entry.fee ?? ''}
-                            onChange={event => handleCustomSingerChange(singerId, { fee: event.target.value })}
-                          />
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-                );
-              }
-
-              return (
-                <div
-                  key={singerId}
-                  className="flex flex-col gap-2 rounded border border-indigo-200 bg-indigo-50/80 px-3 py-2 sm:flex-row sm:items-center sm:gap-3"
-                >
-                  <div className="flex items-center gap-1 self-start sm:self-auto">
-                    <button
-                      type="button"
-                      onClick={() => handleMoveSelected(singerId, -1)}
-                      disabled={index === 0}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-300 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      aria-label="Move singer up"
-                    >
-                      ↑
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleMoveSelected(singerId, 1)}
-                      disabled={index === selectedRows.length - 1}
-                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-300 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-                      aria-label="Move singer down"
-                    >
-                      ↓
-                    </button>
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-sm font-medium text-slate-700 leading-tight">{singer?.name || entry.name || 'Singer'}</div>
-                    <div className="text-[11px] text-slate-500">
-                      {singer ? `Default fee ${toCurrency(singer.serviceFees?.[currentServiceId]?.fee ?? singer.fee)}` : 'Custom selection'}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                    <span className="text-xs text-slate-500">£</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-20 border-0 bg-transparent p-0 text-sm focus:outline-none"
-                      value={entry.fee ?? ''}
-                      onChange={event => handleSingerFeeChange(singerId, event.target.value)}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleSinger(singerId)}
-                    className="inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-                  >
-                    Remove
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-            No singers selected yet.
-          </div>
-        )}
-      </section>
-
-      <section className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">Add singer to pool</div>
-        {addError ? (
-          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{addError}</div>
-        ) : null}
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="flex min-w-[200px] flex-1 flex-col">
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">Name</span>
-            <input
-              type="text"
-              className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              value={newSingerName}
-              onChange={event => setNewSingerName(event.target.value)}
-              placeholder="Add new singer…"
-            />
-          </div>
-          <div className="flex w-28 flex-col">
-            <span className="text-[11px] uppercase tracking-wide text-slate-400">Base fee</span>
-            <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-              <span className="text-xs text-slate-500">£</span>
-              <input
-                type="number"
-                step="0.01"
-                className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
-                value={newSingerBaseFee}
-                onChange={event => setNewSingerBaseFee(event.target.value)}
-                placeholder="0"
-              />
-            </div>
-          </div>
-          {selectedService ? (
-            <div className="flex w-32 flex-col">
-              <span className="text-[11px] uppercase tracking-wide text-slate-400">Fee for {selectedService.label}</span>
-              <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                <span className="text-xs text-slate-500">£</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="w-20 border-0 bg-transparent p-0 text-sm focus:outline-none"
-                  value={newSingerServiceFee}
-                  onChange={event => setNewSingerServiceFee(event.target.value)}
-                  placeholder="0"
-                />
-              </div>
-            </div>
-          ) : null}
-          {selectedService ? (
-            <label className="flex items-center gap-1 text-[11px] text-slate-600">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                checked={newSingerDefaultIncluded}
-                onChange={event => setNewSingerDefaultIncluded(event.target.checked)}
-              />
-              Default for {selectedService.label}
-            </label>
-          ) : null}
-          <button
-            type="button"
-            onClick={handleAddSingerToPool}
-            disabled={!canAddSinger}
-            className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {addingSinger ? 'Adding…' : 'Add singer'}
-          </button>
-        </div>
-        {typeof onUpdateSingerPool !== 'function' ? (
-          <p className="text-xs text-slate-500">Pool updates unavailable in this context.</p>
-        ) : null}
       </section>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -1168,7 +997,118 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         <div>{totals.singerCount} singer{totals.singerCount === 1 ? '' : 's'} selected · Base fee {toCurrency(totals.base)}</div>
         <div>Total after adjustments: {toCurrency(formState.pricing_total)}</div>
       </div>
-    </div>
+      </div>
+
+      {showAddSingerModal ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Add singer to pool</h3>
+                <p className="text-sm text-slate-500">Capture singer details to make them available for future lineups.</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseAddSingerModal}
+                className="text-slate-400 hover:text-slate-600"
+                aria-label="Close add singer modal"
+                disabled={addingSinger}
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-4 space-y-3">
+              <label className="block text-sm font-medium text-slate-600">
+                Name
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  value={newSingerName}
+                  onChange={event => setNewSingerName(event.target.value)}
+                  placeholder="Singer name"
+                  disabled={addingSinger}
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-600">
+                Base fee (£)
+                <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                  <span className="text-xs text-slate-500">£</span>
+                  <input
+                    type="number"
+                    step="0.01"
+                    className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
+                    value={newSingerBaseFee}
+                    onChange={event => setNewSingerBaseFee(event.target.value)}
+                    placeholder="0.00"
+                    disabled={addingSinger}
+                  />
+                </div>
+              </label>
+              {selectedService ? (
+                <label className="block text-sm font-medium text-slate-600">
+                  Fee for {selectedService.label} (£)
+                  <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                    <span className="text-xs text-slate-500">£</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
+                      value={newSingerServiceFee}
+                      onChange={event => setNewSingerServiceFee(event.target.value)}
+                      placeholder="Defaults to base fee"
+                      disabled={addingSinger}
+                    />
+                  </div>
+                </label>
+              ) : null}
+              {selectedService ? (
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    checked={newSingerDefaultIncluded}
+                    onChange={event => setNewSingerDefaultIncluded(event.target.checked)}
+                    disabled={addingSinger}
+                  />
+                  Default lineup for {selectedService.label}
+                </label>
+              ) : null}
+              <label className="flex items-center gap-2 text-sm text-slate-600">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={addSingerToLineup}
+                  onChange={event => setAddSingerToLineup(event.target.checked)}
+                  disabled={addingSinger || !selectedServiceId}
+                />
+                Add to current lineup{selectedService ? '' : ' (select a service to enable)'}
+              </label>
+              {addError ? (
+                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{addError}</div>
+              ) : null}
+            </div>
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={handleCloseAddSingerModal}
+                className="text-sm font-medium text-slate-600 hover:text-slate-800 disabled:opacity-60"
+                disabled={addingSinger}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleAddSingerToPool}
+                disabled={!canAddSinger}
+                className="inline-flex items-center rounded bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {addingSinger ? 'Saving…' : 'Save to pool'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
