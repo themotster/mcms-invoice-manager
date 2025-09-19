@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('api', {
   saveAhmenVenue: async (data) => await db.saveAhmenVenue(data),
   getAhmenPricing: async () => await ahmenCosting.loadPricingConfig(),
   updateAhmenPricingService: async (serviceId, singers) => await ahmenCosting.savePricingServiceRoster(serviceId, singers),
+  updateAhmenSingerPool: async (singers) => await ahmenCosting.saveSingerPool(singers),
   businessSettings: async () => await db.businessSettings(),
   openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {}),
   notifyJobsheetChange: (payload) => ipcRenderer.send('jobsheet-change', payload || {}),

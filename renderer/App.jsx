@@ -580,23 +580,6 @@ function normalizeSingerEntries(entries) {
   return normalized;
 }
 
-function normalizeServiceSingerRecord(singer) {
-  if (!singer) return null;
-  return {
-    id: String(singer.id),
-    name: singer.name || '',
-    fee: singer.fee !== undefined && singer.fee !== null && singer.fee !== ''
-      ? String(singer.fee)
-      : '',
-    defaultIncluded: Boolean(singer.defaultIncluded),
-    availability: singer.availability || '',
-    comments: singer.comments || '',
-    defaultCost: singer.defaultCost !== undefined && singer.defaultCost !== null
-      ? String(singer.defaultCost)
-      : ''
-  };
-}
-
 function equalSingerEntries(a, b) {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
@@ -615,41 +598,40 @@ function equalSingerEntries(a, b) {
 }
 
 
-function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasExisting = false, onUpdateRoster }) {
-  const serviceTypes = pricingConfig?.serviceTypes ?? [];
-  const selectedService = serviceTypes.find(type => type.id === formState.pricing_service_id);
+
+function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasExisting = false, onUpdateSingerPool }) {
+  if (!pricingConfig) {
+    return (
+      <div className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
+        Loading pricing configuration…
+      </div>
+    );
+  }
+
+  const serviceTypes = pricingConfig.serviceTypes ?? [];
+  const existingPool = Array.isArray(pricingConfig.singerPool) ? pricingConfig.singerPool : [];
+  const singerPool = useMemo(
+    () => existingPool.map(singer => ({
+      ...singer,
+      id: singer?.id != null ? String(singer.id) : ''
+    })).filter(singer => singer.id),
+    [existingPool]
+  );
+
+  const sortedSingers = useMemo(
+    () => [...singerPool].sort((a, b) => a.name.localeCompare(b.name)),
+    [singerPool]
+  );
+
+  const poolMap = useMemo(
+    () => new Map(sortedSingers.map(singer => [singer.id, singer])),
+    [sortedSingers]
+  );
 
   const selectedEntries = useMemo(
     () => normalizeSingerEntries(formState.pricing_selected_singers),
     [formState.pricing_selected_singers]
   );
-
-  const [roster, setRoster] = useState(() => (
-    Array.isArray(selectedService?.singers)
-      ? selectedService.singers.map(normalizeServiceSingerRecord)
-      : []
-  ));
-
-  useEffect(() => {
-    setRoster(
-      Array.isArray(selectedService?.singers)
-        ? selectedService.singers.map(normalizeServiceSingerRecord)
-        : []
-    );
-  }, [selectedService]);
-
-  const rosterMap = useMemo(
-    () => new Map(roster.map(singer => [singer.id, singer])),
-    [roster]
-  );
-
-  const adHocEntries = useMemo(
-    () => selectedEntries.filter(entry => !rosterMap.has(entry.id)),
-    [selectedEntries, rosterMap]
-  );
-
-  const [rosterSaving, setRosterSaving] = useState(false);
-  const [rosterError, setRosterError] = useState('');
 
   const updateSelected = useCallback((entries) => {
     const normalized = normalizeSingerEntries(entries);
@@ -658,544 +640,256 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     }
   }, [onChange, selectedEntries]);
 
-  const persistRoster = useCallback(async (nextRoster) => {
-    if (!selectedService || typeof onUpdateRoster !== 'function') return;
-    setRosterSaving(true);
-    setRosterError('');
-    try {
-      await onUpdateRoster(selectedService.id, nextRoster);
-    } catch (err) {
-      console.error('Failed to update service roster', err);
-      setRosterError(err?.message || 'Unable to update roster');
-      setRoster(
-        Array.isArray(selectedService?.singers)
-          ? selectedService.singers.map(normalizeServiceSingerRecord)
-          : []
-      );
-    } finally {
-      setRosterSaving(false);
-    }
-  }, [onUpdateRoster, selectedService]);
-
-  const reorderSelectedEntries = useCallback((nextRoster) => {
-    const orderMap = new Map(nextRoster.map((singer, index) => [singer.id, index]));
-    const ordered = [...selectedEntries].sort((a, b) => {
-      const orderA = orderMap.has(a.id) ? orderMap.get(a.id) : Number.MAX_SAFE_INTEGER;
-      const orderB = orderMap.has(b.id) ? orderMap.get(b.id) : Number.MAX_SAFE_INTEGER;
-      return orderA - orderB;
-    });
-    if (!equalSingerEntries(ordered, selectedEntries)) {
-      updateSelected(ordered);
-    }
-  }, [selectedEntries, updateSelected]);
-
-  const handleRosterMove = useCallback((singerId, offset) => {
-    const index = roster.findIndex(singer => singer.id === singerId);
-    if (index === -1) return;
-    const targetIndex = index + offset;
-    if (targetIndex < 0 || targetIndex >= roster.length) return;
-    const nextRoster = [...roster];
-    const [moved] = nextRoster.splice(index, 1);
-    nextRoster.splice(targetIndex, 0, moved);
-    setRoster(nextRoster);
-    reorderSelectedEntries(nextRoster);
-    persistRoster(nextRoster);
-  }, [roster, reorderSelectedEntries, persistRoster]);
-
-  const handleRosterRemove = useCallback((singerId) => {
-    const nextRoster = roster.filter(singer => singer.id !== singerId);
-    setRoster(nextRoster);
-    const remainingSelected = selectedEntries.filter(entry => entry.id !== singerId);
-    if (!equalSingerEntries(remainingSelected, selectedEntries)) {
-      updateSelected(remainingSelected);
-    }
-    persistRoster(nextRoster);
-  }, [roster, selectedEntries, updateSelected, persistRoster]);
-
-  const handleRosterNameChange = useCallback((singerId, value) => {
-    setRoster(prev => prev.map(singer => (
-      singer.id === singerId ? { ...singer, name: value } : singer
-    )));
-  }, []);
-
-  const handleRosterFeeChange = useCallback((singerId, value) => {
-    setRoster(prev => prev.map(singer => (
-      singer.id === singerId ? { ...singer, fee: value } : singer
-    )));
-  }, []);
-
-  const handleRosterCommentsChange = useCallback((singerId, value) => {
-    setRoster(prev => prev.map(singer => (
-      singer.id === singerId ? { ...singer, comments: value } : singer
-    )));
-  }, []);
-
-  const handleRosterDefaultToggle = useCallback((singerId, checked) => {
-    const nextRoster = roster.map(singer => (
-      singer.id === singerId ? { ...singer, defaultIncluded: checked } : singer
-    ));
-    setRoster(nextRoster);
-    persistRoster(nextRoster);
-  }, [roster, persistRoster]);
-
-  const handleRosterFieldBlur = useCallback(() => {
-    persistRoster(roster);
-  }, [roster, persistRoster]);
-
-  const handleAdHocSingerChange = useCallback((entryId, changes) => {
-    const next = selectedEntries.map(entry => (
-      entry.id === entryId
-        ? { ...entry, ...changes, custom: true }
-        : entry
-    ));
-    updateSelected(next);
-  }, [selectedEntries, updateSelected]);
-
-  const handleRemoveAdHocSinger = useCallback((entryId) => {
-    updateSelected(selectedEntries.filter(entry => entry.id !== entryId));
-  }, [selectedEntries, updateSelected]);
-
-  const rosterRefs = useRef({ lastServiceId: null, initialized: false, previousServiceId: null });
+  const selectedServiceId = formState.pricing_service_id != null ? String(formState.pricing_service_id) : '';
+  const selectedService = serviceTypes.find(type => String(type.id) === selectedServiceId) || null;
+  const lastServiceIdRef = useRef('');
 
   useEffect(() => {
-    const refs = rosterRefs.current;
-    if (!selectedService) {
-      const adHocOnly = selectedEntries.filter(entry => entry.custom);
-      if (!equalSingerEntries(adHocOnly, selectedEntries)) {
-        updateSelected(adHocOnly);
-      }
-      refs.lastServiceId = null;
-      refs.initialized = false;
-      refs.previousServiceId = null;
+    const currentServiceId = selectedService ? String(selectedService.id) : '';
+    if (!currentServiceId) {
+      if (selectedEntries.length) updateSelected([]);
+      lastServiceIdRef.current = '';
       return;
     }
 
-    const currentServiceId = selectedService.id;
-    const previousServiceId = refs.lastServiceId;
-    const isServiceChange = previousServiceId !== null && currentServiceId !== previousServiceId;
-
-    if (currentServiceId !== previousServiceId) {
-      refs.lastServiceId = currentServiceId;
-      refs.initialized = false;
+    if (currentServiceId !== lastServiceIdRef.current) {
+      lastServiceIdRef.current = currentServiceId;
+      const defaults = sortedSingers
+        .filter(singer => {
+          const serviceDetails = singer.serviceFees?.[currentServiceId];
+          if (serviceDetails) return Boolean(serviceDetails.defaultIncluded);
+          return Boolean(singer.defaultIncluded);
+        })
+        .map(singer => {
+          const serviceDetails = singer.serviceFees?.[currentServiceId];
+          const fallbackFee = singer.fee != null ? String(singer.fee) : '';
+          const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
+          return {
+            id: singer.id,
+            name: singer.name,
+            fee
+          };
+        });
+      updateSelected(defaults);
+      return;
     }
 
-    const next = [];
-
-    selectedEntries.forEach(entry => {
-      const singer = rosterMap.get(entry.id);
-      if (singer) {
-        const fee = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+    const normalized = selectedEntries
+      .map(entry => {
+        const poolSinger = poolMap.get(entry.id);
+        if (!poolSinger) {
+          return entry.custom ? entry : null;
+        }
+        const serviceDetails = poolSinger.serviceFees?.[currentServiceId];
+        const fallbackFee = poolSinger.fee != null ? String(poolSinger.fee) : '';
+        const fee = entry.fee !== undefined && entry.fee !== ''
           ? String(entry.fee)
-          : singer.fee !== '' ? String(singer.fee) : '';
-        next.push({ id: singer.id, fee, name: singer.name });
-      } else if (entry.custom) {
-        next.push({ ...entry, id: String(entry.id) });
-      }
-    });
+          : serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
+        return {
+          ...entry,
+          name: poolSinger.name || entry.name,
+          fee
+        };
+      })
+      .filter(Boolean);
 
-    if (refs.previousServiceId === null && hasExisting) {
-      refs.previousServiceId = currentServiceId;
-    } else if (refs.previousServiceId !== currentServiceId) {
-      roster.forEach(singer => {
-        if (!singer.defaultIncluded) return;
-        if (!next.find(entry => entry.id === singer.id)) {
-          next.push({ id: singer.id, fee: singer.fee !== '' ? String(singer.fee) : '', name: singer.name });
-        }
-      });
-      refs.previousServiceId = currentServiceId;
+    if (!equalSingerEntries(normalized, selectedEntries)) {
+      updateSelected(normalized);
     }
-
-    if (!refs.initialized) {
-      refs.initialized = true;
-      if (!selectedEntries.length && !next.length) {
-        const defaults = roster
-          .filter(singer => singer.defaultIncluded)
-          .map(singer => ({ id: singer.id, fee: singer.fee !== '' ? String(singer.fee) : '', name: singer.name }));
-        if (defaults.length) {
-          next.push(...defaults);
-        }
-      }
-    }
-
-    updateSelected(next);
-  }, [selectedService, roster, rosterMap, selectedEntries, updateSelected, hasExisting]);
+  }, [selectedService, sortedSingers, selectedEntries, poolMap, updateSelected]);
 
   const internalTotals = useMemo(() => {
     let base = 0;
     let singerCount = 0;
     selectedEntries.forEach(entry => {
-      if (entry.custom && !rosterMap.has(entry.id)) {
+      const singer = poolMap.get(entry.id);
+      if (singer) {
+        const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
+          ? Number(entry.fee)
+          : Number(singer.fee);
+        base += Number.isFinite(feeValue) ? feeValue : 0;
+        singerCount += 1;
+      } else if (entry.custom) {
         const feeValue = Number(entry.fee);
         base += Number.isFinite(feeValue) ? feeValue : 0;
         singerCount += 1;
-        return;
       }
-      const singer = rosterMap.get(entry.id);
-      if (!singer) return;
-      const feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
-        ? Number(entry.fee)
-        : Number(singer.fee);
-      base += Number.isFinite(feeValue) ? feeValue : 0;
-      singerCount += 1;
     });
     return { base, singerCount };
-  }, [selectedEntries, rosterMap]);
+  }, [selectedEntries, poolMap]);
 
   const totals = pricingTotals || internalTotals;
 
-  const handleToggleSinger = useCallback((singer, checked) => {
-    if (!selectedService) return;
-    const singerId = String(singer.id);
-    const rosterSinger = rosterMap.get(singerId);
-    if (!rosterSinger) return;
-    if (checked) {
-      if (!selectedEntries.find(entry => entry.id === singerId)) {
-        updateSelected([
-          ...selectedEntries,
-          {
-            id: singerId,
-            fee: rosterSinger.fee !== '' ? String(rosterSinger.fee) : '',
-            name: rosterSinger.name
-          }
-        ]);
-      }
-    } else {
-      updateSelected(selectedEntries.filter(entry => entry.id !== singerId));
-    }
-  }, [selectedService, rosterMap, selectedEntries, updateSelected]);
+  const selectedIdSet = useMemo(
+    () => new Set(selectedEntries.map(entry => entry.id)),
+    [selectedEntries]
+  );
 
-  const handleSingerFeeChange = useCallback((singer, value) => {
-    const singerId = String(singer.id);
-    const next = selectedEntries.map(entry => (
-      entry.id === singerId ? { ...entry, fee: value, name: entry.name ?? singer.name } : entry
-    ));
+  const handleToggleSinger = useCallback((singerId) => {
+    const poolSinger = poolMap.get(singerId);
+    if (!poolSinger) return;
+    const serviceId = selectedService ? String(selectedService.id) : '';
+    const isSelected = selectedEntries.some(entry => entry.id === singerId);
+    if (isSelected) {
+      updateSelected(selectedEntries.filter(entry => entry.id !== singerId));
+      return;
+    }
+    const serviceDetails = serviceId ? poolSinger.serviceFees?.[serviceId] : null;
+    const fallbackFee = poolSinger.fee != null ? String(poolSinger.fee) : '';
+    const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
+    updateSelected([
+      ...selectedEntries,
+      {
+        id: singerId,
+        name: poolSinger.name,
+        fee
+      }
+    ]);
+  }, [poolMap, selectedEntries, selectedService, updateSelected]);
+
+  const handleSingerFeeChange = useCallback((singerId, value) => {
+    updateSelected(selectedEntries.map(entry => (
+      entry.id === singerId ? { ...entry, fee: value } : entry
+    )));
+  }, [selectedEntries, updateSelected]);
+
+  const handleMoveSelected = useCallback((singerId, offset) => {
+    const index = selectedEntries.findIndex(entry => entry.id === singerId);
+    if (index === -1) return;
+    const targetIndex = index + offset;
+    if (targetIndex < 0 || targetIndex >= selectedEntries.length) return;
+    const next = [...selectedEntries];
+    const [moved] = next.splice(index, 1);
+    next.splice(targetIndex, 0, moved);
     updateSelected(next);
   }, [selectedEntries, updateSelected]);
 
-  const [newRosterName, setNewRosterName] = useState('');
-  const [newRosterFee, setNewRosterFee] = useState('');
-  const [newRosterDefaultIncluded, setNewRosterDefaultIncluded] = useState(false);
-  const [newRosterComments, setNewRosterComments] = useState('');
-  const [newRosterAddToLineup, setNewRosterAddToLineup] = useState(true);
+  const handleCustomSingerChange = useCallback((entryId, changes) => {
+    updateSelected(selectedEntries.map(entry => (
+      entry.id === entryId ? { ...entry, ...changes, custom: true } : entry
+    )));
+  }, [selectedEntries, updateSelected]);
 
-  const canAddRosterSinger = newRosterName.trim().length > 0;
+  const handleRemoveCustomSinger = useCallback((entryId) => {
+    updateSelected(selectedEntries.filter(entry => entry.id !== entryId));
+  }, [selectedEntries, updateSelected]);
 
-  const handleAddRosterSinger = useCallback(() => {
-    const trimmedName = newRosterName.trim();
+  const handleClearSelection = useCallback(() => {
+    updateSelected([]);
+  }, [updateSelected]);
+
+  const handleSelectDefaultTeam = useCallback(() => {
+    const serviceId = selectedService ? String(selectedService.id) : '';
+    if (!serviceId) {
+      updateSelected([]);
+      return;
+    }
+    const defaults = sortedSingers
+      .filter(singer => {
+        const serviceDetails = singer.serviceFees?.[serviceId];
+        if (serviceDetails) return Boolean(serviceDetails.defaultIncluded);
+        return Boolean(singer.defaultIncluded);
+      })
+      .map(singer => {
+        const serviceDetails = singer.serviceFees?.[serviceId];
+        const fallbackFee = singer.fee != null ? String(singer.fee) : '';
+        const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
+        return {
+          id: singer.id,
+          name: singer.name,
+          fee
+        };
+      });
+    updateSelected(defaults);
+  }, [selectedService, sortedSingers, updateSelected]);
+
+  const selectedRows = useMemo(
+    () => selectedEntries.map(entry => ({ entry, singer: poolMap.get(entry.id) })),
+    [selectedEntries, poolMap]
+  );
+
+  const currentServiceId = selectedService ? String(selectedService.id) : '';
+  const hasDefaultSingers = useMemo(() => {
+    if (!currentServiceId) return sortedSingers.some(singer => singer.defaultIncluded);
+    return sortedSingers.some(singer => Boolean(singer.serviceFees?.[currentServiceId]?.defaultIncluded));
+  }, [sortedSingers, currentServiceId]);
+
+  const [newSingerName, setNewSingerName] = useState('');
+  const [newSingerBaseFee, setNewSingerBaseFee] = useState('');
+  const [newSingerServiceFee, setNewSingerServiceFee] = useState('');
+  const [newSingerDefaultIncluded, setNewSingerDefaultIncluded] = useState(false);
+  const [addingSinger, setAddingSinger] = useState(false);
+  const [addError, setAddError] = useState('');
+
+  const handleAddSingerToPool = useCallback(async () => {
+    if (typeof onUpdateSingerPool !== 'function') return;
+    const trimmedName = newSingerName.trim();
     if (!trimmedName) return;
-    const newId = `svc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const nextRosterSinger = {
-      id: newId,
-      name: trimmedName,
-      fee: newRosterFee !== '' ? String(newRosterFee) : '',
-      defaultIncluded: newRosterDefaultIncluded,
-      comments: newRosterComments.trim(),
-      availability: ''
-    };
-    const nextRoster = [...roster, nextRosterSinger];
-    setRoster(nextRoster);
-    persistRoster(nextRoster);
-    if (newRosterAddToLineup) {
-      updateSelected([
-        ...selectedEntries,
-        {
-          id: newId,
-          fee: newRosterFee !== '' ? String(newRosterFee) : '',
-          name: trimmedName
-        }
-      ]);
-    }
-    setNewRosterName('');
-    setNewRosterFee('');
-    setNewRosterDefaultIncluded(false);
-    setNewRosterComments('');
-    setNewRosterAddToLineup(true);
-  }, [newRosterName, newRosterFee, newRosterDefaultIncluded, newRosterComments, newRosterAddToLineup, roster, persistRoster, updateSelected, selectedEntries]);
 
-  const handleNewRosterKeyDown = useCallback((event) => {
-    if (event.key === 'Enter' && canAddRosterSinger && !rosterSaving) {
-      event.preventDefault();
-      handleAddRosterSinger();
-    }
-  }, [canAddRosterSinger, rosterSaving, handleAddRosterSinger]);
+    const baseFeeNumber = Number(newSingerBaseFee);
+    const baseFee = newSingerBaseFee === ''
+      ? 0
+      : Number.isFinite(baseFeeNumber) && baseFeeNumber >= 0 ? baseFeeNumber : 0;
 
-  const renderRosterRow = (singer, isSelected) => {
-    const index = roster.findIndex(item => item.id === singer.id);
-    return (
-      <div
-        key={singer.id}
-        className={`flex flex-col gap-2 rounded border px-3 py-2 ${isSelected ? 'border-indigo-200 bg-indigo-50/70' : 'border-slate-200 bg-white'}`}
-      >
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => handleRosterMove(singer.id, -1)}
-              disabled={index === 0}
-              className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 text-xs text-slate-500 hover:bg-slate-100 disabled:opacity-30"
-              aria-label="Move singer up"
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              onClick={() => handleRosterMove(singer.id, 1)}
-              disabled={index === roster.length - 1}
-              className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 text-xs text-slate-500 hover:bg-slate-100 disabled:opacity-30"
-              aria-label="Move singer down"
-            >
-              ↓
-            </button>
-          </div>
-          <div className="flex-1 min-w-[180px] space-y-1">
-            <input
-              type="text"
-              value={singer.name}
-              onChange={event => handleRosterNameChange(singer.id, event.target.value)}
-              onBlur={handleRosterFieldBlur}
-              className="w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              placeholder="Singer name"
-            />
-            <input
-              type="text"
-              value={singer.comments}
-              onChange={event => handleRosterCommentsChange(singer.id, event.target.value)}
-              onBlur={handleRosterFieldBlur}
-              className="w-full rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-              placeholder="Notes / comments"
-            />
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-              <span className="text-xs text-slate-500">£</span>
-              <input
-                type="number"
-                step="0.01"
-                value={singer.fee}
-                onChange={event => handleRosterFeeChange(singer.id, event.target.value)}
-                onBlur={handleRosterFieldBlur}
-                className="w-20 border-0 bg-transparent p-0 text-sm focus:outline-none"
-              />
-            </div>
-            <label className="flex items-center gap-1 text-[11px] text-slate-500">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                checked={Boolean(singer.defaultIncluded)}
-                onChange={event => handleRosterDefaultToggle(singer.id, event.target.checked)}
-              />
-              Default
-            </label>
-            <label className="flex items-center gap-1 text-[11px] text-indigo-600">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                checked={isSelected}
-                onChange={event => handleToggleSinger(singer, event.target.checked)}
-              />
-              Lineup
-            </label>
-            <button
-              type="button"
-              onClick={() => handleRosterRemove(singer.id)}
-              className="inline-flex items-center rounded border border-red-200 px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-50"
-            >
-              Delete
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  const renderSingers = () => {
-    if (!selectedService) {
-      return <div className="text-sm text-slate-500">Select a service type to see preset singers and fees.</div>;
+    const serviceFees = {};
+    if (currentServiceId) {
+      const serviceFeeNumber = Number(newSingerServiceFee);
+      const normalizedServiceFee = newSingerServiceFee !== '' && Number.isFinite(serviceFeeNumber) && serviceFeeNumber >= 0
+        ? serviceFeeNumber
+        : baseFee;
+      serviceFees[currentServiceId] = {
+        fee: normalizedServiceFee,
+        defaultIncluded: Boolean(newSingerDefaultIncluded)
+      };
     }
 
-    const selectedSet = new Set(selectedEntries.map(entry => entry.id));
-    const rosterSelected = roster.filter(singer => selectedSet.has(singer.id));
-    const rosterUnselected = roster.filter(singer => !selectedSet.has(singer.id));
+    const nextPool = [
+      ...existingPool,
+      {
+        id: `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        name: trimmedName,
+        fee: baseFee,
+        defaultIncluded: currentServiceId ? false : Boolean(newSingerDefaultIncluded),
+        serviceFees
+      }
+    ];
 
-    return (
-      <div className="space-y-4">
-        <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Service roster</span>
-            {rosterSaving ? <span className="text-[11px] text-indigo-600">Updating roster…</span> : null}
-          </div>
-          {rosterError ? (
-            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{rosterError}</div>
-          ) : null}
-          <div className="space-y-1">
-            {rosterSelected.map(singer => renderRosterRow(singer, true))}
-            {rosterUnselected.map(singer => renderRosterRow(singer, false))}
-            {!roster.length ? (
-              <div className="text-xs text-slate-400">No singers configured yet. Add them below.</div>
-            ) : null}
-          </div>
-        </div>
-
-        {adHocEntries.length ? (
-          <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 space-y-2">
-            <div className="text-xs font-semibold uppercase tracking-wide text-amber-700">Ad-hoc singers (this jobsheet only)</div>
-            {adHocEntries.map(entry => (
-              <div key={entry.id} className="flex flex-wrap items-end gap-2 rounded border border-amber-200 bg-white/80 px-3 py-2">
-                <div className="flex min-w-[160px] flex-1 flex-col">
-                  <span className="text-[11px] uppercase tracking-wide text-amber-600">Name</span>
-                  <input
-                    type="text"
-                    className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                    value={entry.name || ''}
-                    onChange={event => handleAdHocSingerChange(entry.id, { name: event.target.value })}
-                  />
-                </div>
-                <div className="flex w-28 flex-col">
-                  <span className="text-[11px] uppercase tracking-wide text-slate-500">Fee</span>
-                  <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                    <span className="text-xs text-slate-500">£</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
-                      value={entry.fee ?? ''}
-                      onChange={event => handleAdHocSingerChange(entry.id, { fee: event.target.value })}
-                    />
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleRemoveAdHocSinger(entry.id)}
-                  className="ml-auto inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-                >
-                  Remove
-                </button>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-3">
-          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Add singer to roster</div>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <label className="block text-sm font-medium text-slate-600">
-              Name
-              <input
-                type="text"
-                className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                value={newRosterName}
-                onChange={event => setNewRosterName(event.target.value)}
-                onKeyDown={handleNewRosterKeyDown}
-                placeholder="Singer name"
-              />
-            </label>
-            <label className="block text-sm font-medium text-slate-600">
-              Default fee (£)
-              <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                <span className="text-xs text-slate-500">£</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
-                  value={newRosterFee}
-                  onChange={event => setNewRosterFee(event.target.value)}
-                  onKeyDown={handleNewRosterKeyDown}
-                  placeholder="0.00"
-                />
-              </div>
-            </label>
-            <label className="sm:col-span-2 block text-sm font-medium text-slate-600">
-              Notes
-              <input
-                type="text"
-                className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                value={newRosterComments}
-                onChange={event => setNewRosterComments(event.target.value)}
-                onKeyDown={handleNewRosterKeyDown}
-                placeholder="Optional comments"
-              />
-            </label>
-          </div>
-          <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-500">
-            <label className="flex items-center gap-1">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                checked={newRosterDefaultIncluded}
-                onChange={event => setNewRosterDefaultIncluded(event.target.checked)}
-              />
-              Default include for new jobs
-            </label>
-            <label className="flex items-center gap-1 text-indigo-600">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                checked={newRosterAddToLineup}
-                onChange={event => setNewRosterAddToLineup(event.target.checked)}
-              />
-              Add to this lineup now
-            </label>
-          </div>
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={handleAddRosterSinger}
-              disabled={!canAddRosterSinger || rosterSaving}
-              className="inline-flex items-center rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Add to roster
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  useEffect(() => {
-    const base = totals.base || 0;
-    const custom = Number(formState.pricing_custom_fees) || 0;
-    const discount = Number(formState.pricing_discount) || 0;
-    const total = Math.max(base + custom - discount, 0);
-    const nextTotal = total.toFixed(2);
-    const currentTotal = formState.pricing_total ? Number(formState.pricing_total).toFixed(2) : '';
-    if (currentTotal !== nextTotal) {
-      onChange('pricing_total', nextTotal);
+    try {
+      setAddingSinger(true);
+      setAddError('');
+      await onUpdateSingerPool(nextPool);
+      setNewSingerName('');
+      setNewSingerBaseFee('');
+      setNewSingerServiceFee('');
+      setNewSingerDefaultIncluded(false);
+    } catch (err) {
+      console.error('Failed to add singer to pool', err);
+      setAddError(err?.message || 'Unable to add singer');
+    } finally {
+      setAddingSinger(false);
     }
-  }, [totals.base, formState.pricing_custom_fees, formState.pricing_discount, formState.pricing_total, onChange]);
+  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId]);
 
-  useEffect(() => {
-    if (!formState.pricing_total) return;
-    const total = Number(formState.pricing_total);
-    if (Number.isFinite(total) && total > 0) {
-      onChange('ahmen_fee', total.toFixed(2));
-    }
-  }, [formState.pricing_total, onChange]);
-
-  const handleSelectService = (serviceId) => {
-    const current = formState.pricing_service_id != null ? String(formState.pricing_service_id) : '';
-    const target = serviceId != null ? String(serviceId) : '';
-    const nextValue = target === current ? '' : target;
-    onChange('pricing_service_id', nextValue);
-  };
+  const canAddSinger = Boolean(onUpdateSingerPool) && newSingerName.trim().length > 0 && !addingSinger;
 
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
-      <div>
+    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-6">
+      <section className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="text-sm font-medium text-slate-600">Service configuration</span>
           {selectedService ? (
-            <span className="text-xs text-slate-400">{Array.isArray(selectedService.singers) ? selectedService.singers.length : 0} preset singers</span>
+            <span className="text-xs text-slate-400">{selectedService.label}</span>
           ) : null}
         </div>
         <div className="mt-2 flex flex-wrap gap-2">
           {serviceTypes.length ? serviceTypes.map(type => {
             const typeId = type.id != null ? String(type.id) : '';
-            const isActive = typeId === (formState.pricing_service_id != null ? String(formState.pricing_service_id) : '');
+            const isActive = typeId === selectedServiceId;
             return (
               <button
                 key={type.id}
                 type="button"
-                onClick={() => handleSelectService(type.id)}
+                onClick={() => onChange('pricing_service_id', isActive ? '' : type.id)}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'}`}
               >
                 {type.label}
@@ -1205,11 +899,246 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             <span className="text-sm text-slate-500">No service templates configured.</span>
           )}
         </div>
-      </div>
+      </section>
 
-      {renderSingers()}
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm font-medium text-slate-600">Select your lineup</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleSelectDefaultTeam}
+              disabled={!hasDefaultSingers || !selectedServiceId}
+              className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Use default team
+            </button>
+            <button
+              type="button"
+              onClick={handleClearSelection}
+              disabled={!selectedEntries.length}
+              className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Clear selection
+            </button>
+          </div>
+        </div>
+        {sortedSingers.length ? (
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {sortedSingers.map(singer => {
+              const singerId = singer.id;
+              const isSelected = selectedIdSet.has(singerId);
+              const serviceDetails = currentServiceId ? singer.serviceFees?.[currentServiceId] : null;
+              const displayFee = serviceDetails?.fee != null ? serviceDetails.fee : singer.fee;
+              const isDefault = serviceDetails ? serviceDetails.defaultIncluded : singer.defaultIncluded;
+              return (
+                <button
+                  key={singerId}
+                  type="button"
+                  onClick={() => handleToggleSinger(singerId)}
+                  className={`text-left rounded border px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isSelected ? 'border-indigo-300 bg-indigo-50/80 shadow-sm' : 'border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70'}`}
+                >
+                  <div className="flex items-start justify-between">
+                    <span className="text-sm font-medium text-slate-700 leading-tight">{singer.name || 'Unnamed singer'}</span>
+                    {isDefault ? (
+                      <span className="text-[10px] uppercase tracking-wide text-indigo-600">Default</span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1 text-xs text-slate-500">Fee {toCurrency(displayFee)}</div>
+                  {isSelected ? <div className="mt-1 text-[11px] text-indigo-600">In lineup</div> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            No singers available yet. Add them below.
+          </div>
+        )}
+      </section>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <section className="space-y-2">
+        <div className="text-sm font-medium text-slate-600">Selected lineup</div>
+        {selectedRows.length ? (
+          <div className="space-y-2">
+            {selectedRows.map(({ entry, singer }, index) => {
+              const singerId = entry.id;
+              if (entry.custom && !singer) {
+                return (
+                  <div
+                    key={singerId}
+                    className="rounded border border-amber-200 bg-amber-50/70 px-3 py-2 space-y-2"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-amber-700">Custom singer</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveCustomSinger(singerId)}
+                        className="inline-flex h-7 w-7 items-center justify-center rounded border border-red-200 text-xs text-red-600 hover:bg-red-50"
+                        aria-label="Remove custom singer"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="block text-[11px] uppercase tracking-wide text-slate-400">
+                        Name
+                        <input
+                          type="text"
+                          className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          value={entry.name || ''}
+                          onChange={event => handleCustomSingerChange(singerId, { name: event.target.value })}
+                        />
+                      </label>
+                      <label className="block text-[11px] uppercase tracking-wide text-slate-400">
+                        Fee
+                        <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                          <span className="text-xs text-slate-500">£</span>
+                          <input
+                            type="number"
+                            step="0.01"
+                            className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                            value={entry.fee ?? ''}
+                            onChange={event => handleCustomSingerChange(singerId, { fee: event.target.value })}
+                          />
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div
+                  key={singerId}
+                  className="flex flex-col gap-2 rounded border border-indigo-200 bg-indigo-50/80 px-3 py-2 sm:flex-row sm:items-center sm:gap-3"
+                >
+                  <div className="flex items-center gap-1 self-start sm:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => handleMoveSelected(singerId, -1)}
+                      disabled={index === 0}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-300 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Move singer up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleMoveSelected(singerId, 1)}
+                      disabled={index === selectedRows.length - 1}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-300 text-xs text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                      aria-label="Move singer down"
+                    >
+                      ↓
+                    </button>
+                  </div>
+                  <div className="flex-1">
+                    <div className="text-sm font-medium text-slate-700 leading-tight">{singer?.name || entry.name || 'Singer'}</div>
+                    <div className="text-[11px] text-slate-500">
+                      {singer ? `Default fee ${toCurrency(singer.serviceFees?.[currentServiceId]?.fee ?? singer.fee)}` : 'Custom selection'}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                    <span className="text-xs text-slate-500">£</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      className="w-20 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                      value={entry.fee ?? ''}
+                      onChange={event => handleSingerFeeChange(singerId, event.target.value)}
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSinger(singerId)}
+                    className="inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+                  >
+                    Remove
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            No singers selected yet.
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">Add singer to pool</div>
+        {addError ? (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{addError}</div>
+        ) : null}
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="flex min-w-[200px] flex-1 flex-col">
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">Name</span>
+            <input
+              type="text"
+              className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              value={newSingerName}
+              onChange={event => setNewSingerName(event.target.value)}
+              placeholder="Add new singer…"
+            />
+          </div>
+          <div className="flex w-28 flex-col">
+            <span className="text-[11px] uppercase tracking-wide text-slate-400">Base fee</span>
+            <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+              <span className="text-xs text-slate-500">£</span>
+              <input
+                type="number"
+                step="0.01"
+                className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                value={newSingerBaseFee}
+                onChange={event => setNewSingerBaseFee(event.target.value)}
+                placeholder="0"
+              />
+            </div>
+          </div>
+          {selectedService ? (
+            <div className="flex w-32 flex-col">
+              <span className="text-[11px] uppercase tracking-wide text-slate-400">Fee for {selectedService.label}</span>
+              <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                <span className="text-xs text-slate-500">£</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  className="w-20 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                  value={newSingerServiceFee}
+                  onChange={event => setNewSingerServiceFee(event.target.value)}
+                  placeholder="0"
+                />
+              </div>
+            </div>
+          ) : null}
+          {selectedService ? (
+            <label className="flex items-center gap-1 text-[11px] text-slate-600">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                checked={newSingerDefaultIncluded}
+                onChange={event => setNewSingerDefaultIncluded(event.target.checked)}
+              />
+              Default for {selectedService.label}
+            </label>
+          ) : null}
+          <button
+            type="button"
+            onClick={handleAddSingerToPool}
+            disabled={!canAddSinger}
+            className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {addingSinger ? 'Adding…' : 'Add singer'}
+          </button>
+        </div>
+        {typeof onUpdateSingerPool !== 'function' ? (
+          <p className="text-xs text-slate-500">Pool updates unavailable in this context.</p>
+        ) : null}
+      </section>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field
           label="Custom fees (£)"
           type="number"
@@ -1236,13 +1165,12 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
       <div className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-700">
         <div className="font-semibold">Quote summary</div>
-        <div>{totals.singerCount} singers selected · Base fee {toCurrency(totals.base)}</div>
+        <div>{totals.singerCount} singer{totals.singerCount === 1 ? '' : 's'} selected · Base fee {toCurrency(totals.base)}</div>
         <div>Total after adjustments: {toCurrency(formState.pricing_total)}</div>
       </div>
     </div>
   );
 }
-
 
 function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options }) {
   const common = {
@@ -1355,7 +1283,8 @@ function JobsheetEditor({
   onSaveVenue,
   venueSaving,
   pricingConfig,
-  pricingTotals
+  pricingTotals,
+  onUpdateSingerPool
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -1502,7 +1431,7 @@ function JobsheetEditor({
               <div className="space-y-4">
                 {activeGroup.fields.map(field => {
                   if (field.component === 'pricingPanel') {
-                    return (
+                    return pricingConfig ? (
                       <PricingPanel
                         key={field.name}
                         pricingConfig={pricingConfig}
@@ -1510,8 +1439,12 @@ function JobsheetEditor({
                         formState={formState}
                         onChange={handleFieldChange}
                         hasExisting={hasExisting}
-                        onUpdateRoster={handleUpdateServiceRoster}
+                        onUpdateSingerPool={onUpdateSingerPool}
                       />
+                    ) : (
+                      <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                        Loading pricing configuration…
+                      </div>
                     );
                   }
                   if (field.component === 'savedVenueSelector') {
@@ -1836,14 +1769,6 @@ function BusinessWorkspace({ business, onSwitch }) {
     }
   }, [business.id, normalizeJobsheet]);
 
-  const handleUpdateServiceRoster = useCallback(async (serviceId, singers) => {
-    const api = window.api;
-    if (!api || !api.updateAhmenPricingService) {
-      throw new Error('Unable to update roster: API unavailable');
-    }
-    const nextConfig = await api.updateAhmenPricingService(serviceId, singers);
-    setPricingConfig(nextConfig || null);
-  }, []);
 
   const handleSort = useCallback((columnKey) => {
     if (!columnKey) return;
@@ -1997,24 +1922,33 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     formStateRef.current = formState;
   }, [formState]);
 
+  const handleUpdateSingerPool = useCallback(async (singers) => {
+    const api = window.api;
+    if (!api || !api.updateAhmenSingerPool) {
+      throw new Error('Unable to update singer pool: API unavailable');
+    }
+    const nextConfig = await api.updateAhmenSingerPool(singers);
+    setPricingConfig(nextConfig || null);
+    return nextConfig;
+  }, []);
+
   const pricingDerived = useMemo(() => {
     if (!pricingConfig) return null;
-    const service = pricingConfig.serviceTypes?.find(type => type.id === formState.pricing_service_id);
+    const pool = Array.isArray(pricingConfig.singerPool) ? pricingConfig.singerPool : [];
+    const poolMap = new Map(pool.map(singer => [String(singer.id), singer]));
     const selectedEntries = normalizeSingerEntries(formState.pricing_selected_singers);
-    const serviceSingerList = Array.isArray(service?.singers) ? service.singers : [];
-    const serviceSingerMap = new Map(serviceSingerList.map(singer => [String(singer.id), singer]));
     let base = 0;
     let singerCount = 0;
 
     selectedEntries.forEach(entry => {
-      const singer = serviceSingerMap.get(entry.id);
+      const singer = poolMap.get(entry.id);
       let feeValue = 0;
       if (singer) {
         feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
           ? Number(entry.fee)
           : Number(singer.fee);
         singerCount += 1;
-      } else if (entry.custom || !service) {
+      } else if (entry.custom) {
         feeValue = entry.fee !== undefined && entry.fee !== null && entry.fee !== ''
           ? Number(entry.fee)
           : 0;
@@ -2024,6 +1958,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       }
       base += Number.isFinite(feeValue) ? feeValue : 0;
     });
+
     const custom = Number(formState.pricing_custom_fees) || 0;
     const discount = Number(formState.pricing_discount) || 0;
     const hasSelection = singerCount > 0 || custom !== 0 || discount !== 0;
@@ -2360,6 +2295,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               venueSaving={venueSaving}
               pricingConfig={pricingConfig}
               pricingTotals={pricingDerived}
+              onUpdateSingerPool={handleUpdateSingerPool}
             />
           </>
         )}
