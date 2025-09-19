@@ -100,7 +100,12 @@ const FORM_GROUPS = [
     title: 'Client Details',
     description: 'Captured during the initial enquiry.',
     fields: [
-      { name: 'status', label: 'Status', type: 'select', options: STATUS_OPTIONS },
+      {
+        name: 'status',
+        label: 'Status',
+        component: 'statusSelect',
+        options: STATUS_OPTIONS
+      },
       { name: 'client_name', label: 'Client Name', required: true },
       { name: 'client_email', label: 'Email', type: 'email' },
       { name: 'client_phone', label: 'Phone' },
@@ -662,7 +667,7 @@ function SavedVenues({ venues, formState, onChange, onSaveVenue, saving }) {
   );
 }
 
-function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step }) {
+function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options }) {
   const common = {
     className: 'mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500',
     value: value ?? '',
@@ -673,7 +678,19 @@ function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3
   };
 
   let input;
-  if (type === 'textarea') {
+  if (component === 'statusSelect') {
+    input = (
+      <select
+        className='mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
+        value={value || 'enquiry'}
+        onChange={event => onChange(event.target.value)}
+      >
+        {(options || STATUS_OPTIONS).map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    );
+  } else if (type === 'textarea') {
     input = <textarea {...common} rows={rows} />;
   } else if (type === 'checkbox') {
     input = (
@@ -757,8 +774,17 @@ function JobsheetEditor({
                   rows={field.rows}
                   hint={field.hint}
                   readOnly={field.readOnly}
-                  value={field.type === 'checkbox' ? Boolean(formState[field.name]) : formState[field.name] ?? ''}
-                  onChange={value => handleFieldChange(field.name, field.type === 'checkbox' ? Boolean(value) : value)}
+                  component={field.component}
+                  options={field.options}
+                  value={field.name === 'status'
+                    ? (formState.status || 'enquiry')
+                    : field.type === 'checkbox'
+                      ? Boolean(formState[field.name])
+                      : formState[field.name] ?? ''}
+                  onChange={value => handleFieldChange(
+                    field.name,
+                    field.type === 'checkbox' ? Boolean(value) : value
+                  )}
                 />
               ))}
             </div>
