@@ -194,8 +194,8 @@ const FORM_GROUPS = [
   },
   {
     key: 'billing',
-    title: 'Billing Details',
-    description: 'Financial breakdown that feeds quotes and invoices.',
+    title: 'Invoicing Details',
+    description: 'Invoicing breakdown that feeds quotes and invoices.',
     defaultOpen: false,
     fields: [
       { name: 'ahmen_fee', label: 'AhMen Fee (£)', type: 'number', step: '0.01', hint: 'Total fee for the booking.' },
@@ -616,6 +616,14 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   );
   const [newSingerName, setNewSingerName] = useState('');
   const [newSingerFee, setNewSingerFee] = useState('');
+
+  const updateSelected = useCallback((entries) => {
+    const normalized = normalizeSingerEntries(entries);
+    if (!equalSingerEntries(normalized, selectedEntries)) {
+      onChange('pricing_selected_singers', normalized);
+    }
+  }, [onChange, selectedEntries]);
+
   const customEntries = useMemo(
     () => selectedEntries.filter(entry => !serviceSingerMap.has(entry.id)),
     [selectedEntries, serviceSingerMap]
@@ -651,12 +659,41 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
   const canAddCustomSinger = newSingerName.trim().length > 0;
 
-  const updateSelected = useCallback((entries) => {
-    const normalized = normalizeSingerEntries(entries);
-    if (!equalSingerEntries(normalized, selectedEntries)) {
-      onChange('pricing_selected_singers', normalized);
+  const handleCustomInputKeyDown = useCallback((event) => {
+    if (event.key === 'Enter' && canAddCustomSinger) {
+      event.preventDefault();
+      handleAddCustomSinger();
     }
-  }, [onChange, selectedEntries]);
+  }, [canAddCustomSinger, handleAddCustomSinger]);
+
+  const selectionDetails = useMemo(() => selectedEntries.map(entry => {
+    const singer = serviceSingerMap.get(entry.id);
+    return {
+      ...entry,
+      displayName: entry.name || singer?.name || 'Singer',
+      preset: Boolean(singer)
+    };
+  }), [selectedEntries, serviceSingerMap]);
+
+  const handleMoveEntry = useCallback((entryId, offset) => {
+    const index = selectedEntries.findIndex(entry => entry.id === entryId);
+    if (index === -1) return;
+    const targetIndex = index + offset;
+    if (targetIndex < 0 || targetIndex >= selectedEntries.length) return;
+    const next = [...selectedEntries];
+    const [moved] = next.splice(index, 1);
+    next.splice(targetIndex, 0, moved);
+    updateSelected(next);
+  }, [selectedEntries, updateSelected]);
+
+  const handleRemoveEntry = useCallback((entryId) => {
+    const singer = serviceSingerMap.get(entryId);
+    if (singer) {
+      handleToggleSinger(singer, false);
+    } else {
+      handleRemoveCustomSinger(entryId);
+    }
+  }, [handleRemoveCustomSinger, handleToggleSinger, serviceSingerMap]);
 
   useEffect(() => {
     if (!selectedService) {
@@ -872,38 +909,47 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             ) : null}
           </div>
           {customEntries.length ? (
-            <div className="space-y-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               {customEntries.map(entry => (
-                <div key={entry.id} className="flex flex-wrap items-end gap-2 rounded border border-slate-200 bg-slate-50/80 px-3 py-2">
-                  <div className="flex min-w-[180px] flex-1 flex-col">
-                    <span className="text-[11px] uppercase tracking-wide text-slate-400">Name</span>
-                    <input
-                      type="text"
-                      className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={entry.name || ''}
-                      onChange={event => handleCustomSingerChange(entry.id, { name: event.target.value })}
-                    />
+                <div
+                  key={entry.id}
+                  className="rounded-lg border border-slate-200 bg-slate-50/80 px-3 py-2 space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-amber-600">Custom singer</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveCustomSinger(entry.id)}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-red-200 text-xs text-red-600 hover:bg-red-50"
+                      aria-label="Remove custom singer"
+                    >
+                      ×
+                    </button>
                   </div>
-                  <div className="flex w-28 flex-col">
-                    <span className="text-[11px] uppercase tracking-wide text-slate-400">Fee</span>
-                    <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                      <span className="text-xs text-slate-500">£</span>
+                  <div className="space-y-2">
+                    <label className="block text-[11px] uppercase tracking-wide text-slate-400">
+                      Name
                       <input
-                        type="number"
-                        step="0.01"
-                        className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
-                        value={entry.fee ?? ''}
-                        onChange={event => handleCustomSingerChange(entry.id, { fee: event.target.value })}
+                        type="text"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={entry.name || ''}
+                        onChange={event => handleCustomSingerChange(entry.id, { name: event.target.value })}
                       />
-                    </div>
+                    </label>
+                    <label className="block text-[11px] uppercase tracking-wide text-slate-400">
+                      Fee
+                      <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                        <span className="text-xs text-slate-500">£</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
+                          value={entry.fee ?? ''}
+                          onChange={event => handleCustomSingerChange(entry.id, { fee: event.target.value })}
+                        />
+                      </div>
+                    </label>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleRemoveCustomSinger(entry.id)}
-                    className="ml-auto inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-                  >
-                    Remove
-                  </button>
                 </div>
               ))}
             </div>
@@ -919,6 +965,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                 className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 value={newSingerName}
                 onChange={event => setNewSingerName(event.target.value)}
+                onKeyDown={handleCustomInputKeyDown}
                 placeholder="Add new singer…"
               />
             </div>
@@ -932,20 +979,73 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                   className="w-16 border-0 bg-transparent p-0 text-sm focus:outline-none"
                   value={newSingerFee}
                   onChange={event => setNewSingerFee(event.target.value)}
+                  onKeyDown={handleCustomInputKeyDown}
                   placeholder="0"
                 />
               </div>
             </div>
             <button
-              type="button"
-              onClick={handleAddCustomSinger}
-              disabled={!canAddCustomSinger}
-              className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Add singer
-            </button>
+            type="button"
+            onClick={handleAddCustomSinger}
+            disabled={!canAddCustomSinger}
+            className="inline-flex items-center rounded bg-slate-800 px-3 py-2 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Add singer
+          </button>
           </div>
         </div>
+
+        {selectionDetails.length ? (
+          <div className="rounded-lg border border-slate-200 bg-white p-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">Selected lineup</span>
+              <span className="text-[11px] text-slate-400">{selectionDetails.length} total</span>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {selectionDetails.map((entry, index) => (
+                <div
+                  key={entry.id}
+                  className="flex flex-wrap items-center gap-2 rounded border border-slate-200 px-3 py-2"
+                >
+                  <span className="text-xs font-semibold text-slate-500">{index + 1}.</span>
+                  <span className="text-sm font-medium text-slate-700">{entry.displayName}</span>
+                  <span className={`text-[11px] uppercase tracking-wide ${entry.preset ? 'text-indigo-500' : 'text-amber-600'}`}>
+                    {entry.preset ? 'Preset' : 'Custom'}
+                  </span>
+                  <span className="text-xs text-slate-400">£{entry.fee || '0'}</span>
+                  <div className="ml-auto flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => handleMoveEntry(entry.id, -1)}
+                      disabled={index === 0}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 text-[11px] text-slate-500 hover:bg-slate-100 disabled:opacity-30"
+                      aria-label="Move up"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleMoveEntry(entry.id, 1)}
+                      disabled={index === selectionDetails.length - 1}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 text-[11px] text-slate-500 hover:bg-slate-100 disabled:opacity-30"
+                      aria-label="Move down"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveEntry(entry.id)}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded border border-red-200 text-[11px] text-red-600 hover:bg-red-50"
+                      aria-label="Remove singer"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   };
@@ -995,7 +1095,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                 key={type.id}
                 type="button"
                 onClick={() => handleSelectService(type.id)}
-                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'}`}
               >
                 {type.label}
               </button>
@@ -1265,7 +1365,7 @@ function JobsheetEditor({
       </div>
 
       <div className="flex flex-col gap-6 lg:flex-row">
-        <nav className="lg:w-64 flex-shrink-0">
+        <nav className="lg:w-64 flex-shrink-0 lg:sticky lg:top-4 self-start">
           <div className="space-y-2" role="tablist" aria-orientation="vertical">
             {FORM_GROUPS.map(group => {
               const isActive = activeGroup?.key === group.key;
