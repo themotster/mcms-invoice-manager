@@ -80,14 +80,16 @@ function normalizeStatus(value) {
 }
 
 const JOBSHEET_COLUMNS = [
-  { key: 'client_name', label: 'Client', sortable: true },
-  { key: 'event_type', label: 'Event', sortable: true },
-  { key: 'event_date', label: 'Event Date', sortable: true },
-  { key: 'venue_name', label: 'Venue', sortable: true },
-  { key: 'status', label: 'Status', sortable: true },
+  { key: 'client_name', label: 'Client', sortable: true, align: 'left' },
+  { key: 'event_type', label: 'Event', sortable: true, align: 'left' },
+  { key: 'event_date', label: 'Event Date', sortable: true, align: 'left' },
+  { key: 'venue_name', label: 'Venue', sortable: true, align: 'left' },
+  { key: 'status', label: 'Status', sortable: true, align: 'center' },
   { key: 'ahmen_fee', label: 'Fee', sortable: true, align: 'right' },
   { key: 'actions', label: '', sortable: false, align: 'right' }
 ];
+
+const JOBSHEET_GRID_TEMPLATE = 'minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.15fr) minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1fr) auto';
 
 const DEFAULT_JOBSHEET = (businessId) => ({
   business_id: businessId,
@@ -120,7 +122,6 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   balance_due_date: '',
   balance_reminder_date: '',
   service_types: '',
-  specialist_singers: '',
   notes: '',
   pricing_service_id: '',
   pricing_selected_singers: [],
@@ -227,7 +228,6 @@ const FORM_GROUPS = [
     defaultOpen: false,
     fields: [
       { name: 'service_types', label: 'Service Type(s)', type: 'textarea', rows: 2 },
-      { name: 'specialist_singers', label: 'Specialist Singers', type: 'textarea', rows: 2 },
       { name: 'notes', label: 'Internal Notes', type: 'textarea', rows: 3 }
     ]
   }
@@ -422,7 +422,8 @@ function JobsheetList({
   deletingId,
   statusUpdatingId,
   sortConfig,
-  onSort
+  onSort,
+  activeJobsheetId = null
 }) {
   const sortedJobsheets = useMemo(() => {
     const list = [...jobsheets];
@@ -497,90 +498,140 @@ function JobsheetList({
           <div className="p-6 text-center text-slate-500">No jobsheets yet. Create your first one!</div>
         ) : (
           <div className="overflow-y-auto">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50">
-                <tr>
-                  {JOBSHEET_COLUMNS.map(column => {
-                    const alignment = column.align === 'right' ? 'text-right' : column.align === 'center' ? 'text-center' : 'text-left';
-                    if (!column.sortable) {
-                      return (
-                        <th
-                          key={column.key}
-                          scope="col"
-                          className={`px-4 py-3 font-semibold uppercase tracking-wide text-xs text-slate-500 ${alignment}`}
-                        >
-                          {column.label}
-                        </th>
-                      );
-                    }
-                    return (
-                      <th key={column.key} scope="col" className={`px-4 py-3 font-semibold uppercase tracking-wide text-xs text-slate-500 ${alignment}`}>
-                        <button
-                          type="button"
-                          onClick={() => onSort(column.key)}
-                          className="inline-flex items-center gap-1 text-slate-600 hover:text-indigo-600"
-                        >
-                          {column.label}
-                          {renderSortIndicator(column.key)}
-                        </button>
-                      </th>
-                    );
-                  })}
-                </tr>
-              </thead>
+            <table className="min-w-full text-sm border-separate border-spacing-y-2">
               <tbody className="divide-y divide-slate-100">
+                <tr key="jobsheet-header">
+                  <td colSpan={JOBSHEET_COLUMNS.length} className="px-3 py-2">
+                    <div
+                      className="grid items-center gap-3 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600"
+                      style={{ gridTemplateColumns: JOBSHEET_GRID_TEMPLATE }}
+                    >
+                      {JOBSHEET_COLUMNS.map(column => {
+                        const justifyClass = column.align === 'right'
+                          ? 'justify-end text-right'
+                          : column.align === 'center'
+                            ? 'justify-center text-center'
+                            : 'justify-start text-left';
+                        if (!column.sortable) {
+                          return (
+                            <div
+                              key={column.key}
+                              className={`flex w-full items-center ${justifyClass}`}
+                            >
+                              {column.label}
+                            </div>
+                          );
+                        }
+                        return (
+                          <button
+                            key={column.key}
+                            type="button"
+                            onClick={() => onSort(column.key)}
+                            className={`flex w-full items-center gap-1 text-slate-600 hover:text-indigo-600 ${justifyClass}`}
+                          >
+                            {column.label}
+                            {renderSortIndicator(column.key)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </td>
+                </tr>
                 {sortedJobsheets.map(sheet => {
                   const statusKey = normalizeStatus(sheet.status) || 'enquiry';
                   const statusStyles = STATUS_STYLES[statusKey] || 'bg-slate-200 text-slate-700 border border-slate-300';
                   const statusDisabled = statusUpdatingId === sheet.jobsheet_id;
                   const statusRowClass = STATUS_ROW_CLASSES[statusKey] || 'bg-white';
+                  const numericRowId = sheet.jobsheet_id != null ? Number(sheet.jobsheet_id) : null;
+                  const isActive = numericRowId != null && activeJobsheetId != null && Number(activeJobsheetId) === numericRowId;
+                  const highlightClasses = isActive
+                    ? 'border-2 border-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.15)]'
+                    : 'border border-transparent shadow-sm';
                   return (
                     <tr
                       key={sheet.jobsheet_id || sheet.client_name}
                       onClick={() => onOpen(sheet.jobsheet_id)}
-                      className={`${statusRowClass} hover:shadow-sm cursor-pointer transition`}
+                      className="cursor-pointer"
                     >
-                      <td className="px-4 py-3 text-sm font-medium text-slate-800 whitespace-nowrap">
-                        {sheet.client_name || 'Untitled booking'}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-600">{sheet.event_type || '—'}</td>
-                      <td className="px-4 py-3 text-sm text-slate-600 whitespace-nowrap">{formatDateDisplay(sheet.event_date)}</td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
-                        {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
-                      </td>
-                      <td className="px-4 py-3">
-                        <select
-                          value={statusKey}
-                          disabled={statusDisabled}
-                          className={`rounded-full px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 ${statusStyles} ${statusDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
-                          onClick={event => event.stopPropagation()}
-                          onMouseDown={event => event.stopPropagation()}
-                          onChange={event => {
-                            event.stopPropagation();
-                            const nextStatus = event.target.value;
-                            if (!nextStatus || nextStatus === statusKey) return;
-                            onStatusChange?.(sheet.jobsheet_id, nextStatus);
-                          }}
+                      <td colSpan={JOBSHEET_COLUMNS.length} className="px-3 py-1">
+                        <div
+                          className={`${statusRowClass} ${highlightClasses} grid items-center gap-3 rounded-lg px-3 py-2 transition`}
+                          style={{ gridTemplateColumns: JOBSHEET_GRID_TEMPLATE }}
                         >
-                          {STATUS_OPTIONS.map(option => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-4 py-3 text-right text-sm text-slate-600">{toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)))}</td>
-                      <td className="px-4 py-3 text-right text-sm">
-                        <div className="inline-flex items-center">
-                          <button
-                            type="button"
-                            disabled={deletingId === sheet.jobsheet_id}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              onDelete(sheet.jobsheet_id);
-                            }}
-                            className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
-                          >
-                            Delete
-                          </button>
+                          {JOBSHEET_COLUMNS.map(column => {
+                            switch (column.key) {
+                              case 'client_name':
+                                return (
+                                  <div key={column.key} className="text-sm font-medium text-slate-800 whitespace-nowrap">
+                                    {sheet.client_name || 'Untitled booking'}
+                                  </div>
+                                );
+                              case 'event_type':
+                                return (
+                                  <div key={column.key} className="text-sm text-slate-600">
+                                    {sheet.event_type || '—'}
+                                  </div>
+                                );
+                              case 'event_date':
+                                return (
+                                  <div key={column.key} className="text-sm text-slate-600 whitespace-nowrap">
+                                    {formatDateDisplay(sheet.event_date)}
+                                  </div>
+                                );
+                              case 'venue_name':
+                                return (
+                                  <div key={column.key} className="text-sm text-slate-600 truncate">
+                                    {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
+                                  </div>
+                                );
+                              case 'status':
+                                return (
+                                  <div key={column.key} className="flex justify-center">
+                                    <select
+                                      value={statusKey}
+                                      disabled={statusDisabled}
+                                      className={`rounded-full px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 ${statusStyles} ${statusDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                                      onClick={event => event.stopPropagation()}
+                                      onMouseDown={event => event.stopPropagation()}
+                                      onChange={event => {
+                                        event.stopPropagation();
+                                        const nextStatus = event.target.value;
+                                        if (!nextStatus || nextStatus === statusKey) return;
+                                        onStatusChange?.(sheet.jobsheet_id, nextStatus);
+                                      }}
+                                    >
+                                      {STATUS_OPTIONS.map(option => (
+                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                );
+                              case 'ahmen_fee':
+                                return (
+                                  <div key={column.key} className="text-right text-sm text-slate-600">
+                                    {toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)))}
+                                  </div>
+                                );
+                              case 'actions':
+                                return (
+                                  <div key={column.key} className="flex justify-end">
+                                    <button
+                                      type="button"
+                                      disabled={deletingId === sheet.jobsheet_id}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        onDelete(sheet.jobsheet_id);
+                                      }}
+                                      className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                );
+                              default:
+                                return null;
+                            }
+                          })}
                         </div>
                       </td>
                     </tr>
@@ -2479,6 +2530,7 @@ function BusinessWorkspace({ business, onSwitch }) {
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [activeJobsheetId, setActiveJobsheetId] = useState(null);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -2537,6 +2589,26 @@ function BusinessWorkspace({ business, onSwitch }) {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
       if (!payload || payload.businessId !== business.id) return;
+      if (payload.type === 'jobsheet-editor-focus') {
+        const focusedId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
+        if (payload.active) {
+          setActiveJobsheetId(focusedId);
+        } else if (focusedId != null) {
+          setActiveJobsheetId(prev => (prev === focusedId ? null : prev));
+        } else if (!focusedId) {
+          setActiveJobsheetId(null);
+        }
+        return;
+      }
+      if (payload.type === 'jobsheet-deleted' && payload.jobsheetId != null) {
+        setActiveJobsheetId(prev => (prev === Number(payload.jobsheetId) ? null : prev));
+        return;
+      }
+      if (payload.type === 'jobsheet-load-request') {
+        const requestedId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
+        setActiveJobsheetId(requestedId);
+        return;
+      }
       if (payload.type === 'jobsheet-updated' && payload.snapshot) {
         mergeJobsheetSnapshot(payload.snapshot);
       } else {
@@ -2544,7 +2616,7 @@ function BusinessWorkspace({ business, onSwitch }) {
       }
     });
     return () => unsubscribe?.();
-  }, [business.id, refreshJobsheets, mergeJobsheetSnapshot]);
+  }, [business.id, refreshJobsheets, mergeJobsheetSnapshot, setActiveJobsheetId]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -2560,13 +2632,15 @@ function BusinessWorkspace({ business, onSwitch }) {
   }, [business.id, business.business_name]);
 
   const handleNew = useCallback(() => {
+    setActiveJobsheetId(null);
     openJobsheetWindow(undefined);
-  }, [openJobsheetWindow]);
+  }, [openJobsheetWindow, setActiveJobsheetId]);
 
   const handleOpenExisting = useCallback((jobsheetId) => {
     if (!jobsheetId) return;
+    setActiveJobsheetId(Number(jobsheetId));
     openJobsheetWindow(jobsheetId);
-  }, [openJobsheetWindow]);
+  }, [openJobsheetWindow, setActiveJobsheetId]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
     if (!jobsheetId) return;
@@ -2675,6 +2749,7 @@ function BusinessWorkspace({ business, onSwitch }) {
               statusUpdatingId={statusUpdatingId}
               sortConfig={sortConfig}
               onSort={handleSort}
+              activeJobsheetId={activeJobsheetId}
             />
             <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
               Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
@@ -2704,6 +2779,62 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
   const creatingRef = useRef(false);
+
+  useEffect(() => {
+    if (!jobsheetId) return;
+    window.api?.notifyJobsheetChange?.({
+      type: 'jobsheet-editor-focus',
+      businessId: numericBusinessId,
+      jobsheetId,
+      active: true
+    });
+    return () => {
+      window.api?.notifyJobsheetChange?.({
+        type: 'jobsheet-editor-focus',
+        businessId: numericBusinessId,
+        jobsheetId,
+        active: false
+      });
+    };
+  }, [numericBusinessId, jobsheetId, setBusiness, setFormState, setLoading, setActiveEditorSection, setError, setMessage]);
+
+  useEffect(() => {
+    if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
+    const unsubscribe = window.api.onJobsheetChange(payload => {
+      if (!payload || payload.businessId !== numericBusinessId) return;
+      if (payload.type !== 'jobsheet-load-request') return;
+      const requestedId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
+      if (requestedId != null && requestedId === jobsheetId) {
+        window.focus();
+        return;
+      }
+      initialLoadRef.current = true;
+      creatingRef.current = false;
+      setError('');
+      setMessage('');
+      setActiveEditorSection('client');
+      if (payload.businessName) {
+        setBusiness(prev => prev || { id: numericBusinessId, business_name: payload.businessName });
+      }
+      if (requestedId != null) {
+        setLoading(true);
+        setJobsheetId(requestedId);
+        const url = new URL(window.location.href);
+        url.searchParams.set('jobsheetId', requestedId);
+        window.history.replaceState({}, '', url.toString());
+      } else {
+        const resetState = DEFAULT_JOBSHEET(numericBusinessId);
+        setJobsheetId(null);
+        setFormState(resetState);
+        formStateRef.current = resetState;
+        setLoading(false);
+        const url = new URL(window.location.href);
+        url.searchParams.set('jobsheetId', 'new');
+        window.history.replaceState({}, '', url.toString());
+      }
+    });
+    return () => unsubscribe();
+  }, [numericBusinessId, jobsheetId]);
 
   const buildSnapshot = useCallback((state, id) => ({
     jobsheet_id: id ?? state.jobsheet_id ?? null,

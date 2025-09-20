@@ -13,6 +13,7 @@ const DEFAULT_JOBSHEET_WINDOW_STATE = {
 };
 
 let mainWindow = null;
+let jobsheetWindow = null;
 
 function getStateStorePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
@@ -146,6 +147,9 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
   }
 
   const child = new BrowserWindow(childOptions);
+  jobsheetWindow = child;
+  child.__jobsheetBusinessId = businessId != null ? Number(businessId) : null;
+  child.__jobsheetId = jobsheetId != null ? Number(jobsheetId) : null;
 
   const query = {
     mode: 'jobsheet'
@@ -159,6 +163,9 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
   child.on('closed', () => {
     if (parent && !parent.isDestroyed()) {
       parent.focus();
+    }
+    if (jobsheetWindow === child) {
+      jobsheetWindow = null;
     }
   });
 
@@ -186,6 +193,8 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
   if (savedState.isMaximized) {
     child.maximize();
   }
+
+  return child;
 }
 
 app.whenReady().then(() => {
@@ -200,12 +209,49 @@ app.whenReady().then(() => {
 
 ipcMain.handle('open-jobsheet-window', (event, args = {}) => {
   const parent = BrowserWindow.fromWebContents(event.sender);
-  createJobsheetWindow(parent || null, args || {});
+  const targetBusinessId = args.businessId != null ? Number(args.businessId) : null;
+  const targetJobsheetId = args.jobsheetId != null ? Number(args.jobsheetId) : null;
+
+  if (jobsheetWindow && !jobsheetWindow.isDestroyed()) {
+    const currentBusinessId = jobsheetWindow.__jobsheetBusinessId;
+    if (currentBusinessId != null && targetBusinessId != null && currentBusinessId !== targetBusinessId) {
+      jobsheetWindow.destroy();
+      jobsheetWindow = null;
+    } else {
+      if (jobsheetWindow.isMinimized()) jobsheetWindow.restore();
+      jobsheetWindow.focus();
+      jobsheetWindow.__jobsheetBusinessId = targetBusinessId;
+      jobsheetWindow.__jobsheetId = targetJobsheetId;
+      jobsheetWindow.webContents.send('jobsheet-change', {
+        type: 'jobsheet-load-request',
+        businessId: targetBusinessId,
+        businessName: args.businessName || '',
+        jobsheetId: targetJobsheetId
+      });
+      return;
+    }
+  }
+
+  jobsheetWindow = createJobsheetWindow(parent || null, args || {});
 });
 
 ipcMain.on('jobsheet-change', (event, payload = {}) => {
+  if (
+    payload &&
+    payload.type === 'jobsheet-editor-focus' &&
+    payload.active &&
+    jobsheetWindow &&
+    !jobsheetWindow.isDestroyed() &&
+    event.sender === jobsheetWindow.webContents
+  ) {
+    jobsheetWindow.__jobsheetId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
+    jobsheetWindow.__jobsheetBusinessId = payload.businessId != null ? Number(payload.businessId) : jobsheetWindow.__jobsheetBusinessId;
+  }
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('jobsheet-change', payload);
+  }
+  if (jobsheetWindow && !jobsheetWindow.isDestroyed() && event.sender !== jobsheetWindow.webContents) {
+    jobsheetWindow.webContents.send('jobsheet-change', payload);
   }
 });
 
