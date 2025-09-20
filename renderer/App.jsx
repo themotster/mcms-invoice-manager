@@ -575,6 +575,7 @@ function normalizeSingerEntries(entries) {
     const normalizedEntry = { id: key, fee };
     if (name) normalizedEntry.name = String(name);
     if (custom) normalizedEntry.custom = true;
+    if (typeof entry === 'object' && entry && entry.locked === true) normalizedEntry.locked = true;
     normalized.push(normalizedEntry);
   });
   return normalized;
@@ -593,6 +594,9 @@ function equalSingerEntries(a, b) {
     const customA = Boolean(a[i].custom);
     const customB = Boolean(b[i].custom);
     if (customA !== customB) return false;
+    const lockedA = Boolean(a[i].locked);
+    const lockedB = Boolean(b[i].locked);
+    if (lockedA !== lockedB) return false;
   }
   return true;
 }
@@ -656,6 +660,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
     if (currentServiceId !== lastServiceIdRef.current) {
       lastServiceIdRef.current = currentServiceId;
+      const previousMap = new Map(selectedEntries.map(e => [e.id, e]));
       const defaults = sortedSingers
         .filter(singer => {
           const serviceDetails = singer.serviceFees?.[currentServiceId];
@@ -666,13 +671,20 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
           const serviceDetails = singer.serviceFees?.[currentServiceId];
           const fallbackFee = singer.fee != null ? String(singer.fee) : '';
           const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
+          const prev = previousMap.get(singer.id);
+          if (prev && prev.locked) {
+            return { ...prev };
+          }
           return {
             id: singer.id,
             name: singer.name,
             fee
           };
         });
-      updateSelected(defaults);
+      // Carry over any previously selected entries that aren't in defaults (custom or non-default picks), preserving locked ones
+      const defaultIds = new Set(defaults.map(d => d.id));
+      const carry = selectedEntries.filter(e => !defaultIds.has(e.id));
+      updateSelected([...defaults, ...carry]);
       return;
     }
 
@@ -681,6 +693,9 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         const poolSinger = poolMap.get(entry.id);
         if (!poolSinger) {
           return entry.custom ? entry : null;
+        }
+        if (entry.locked) {
+          return entry;
         }
         const serviceDetails = poolSinger.serviceFees?.[currentServiceId];
         const fallbackFee = poolSinger.fee != null ? String(poolSinger.fee) : '';
@@ -744,7 +759,8 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       {
         id: singerId,
         name: poolSinger.name,
-        fee
+        fee,
+        locked: false
       }
     ]);
   }, [poolMap, selectedEntries, selectedService, updateSelected]);
@@ -1044,7 +1060,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                 key={type.id}
                 type="button"
                 onClick={() => onChange('pricing_service_id', isActive ? '' : type.id)}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'}`}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'}`}
               >
                 {type.label}
               </button>
@@ -1086,7 +1102,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
           </div>
         </div>
         {sortedSingers.length ? (
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+          <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
             {sortedSingers.map(singer => {
               const singerId = singer.id;
               const isSelected = selectedIdSet.has(singerId);
@@ -1097,10 +1113,33 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                   key={singerId}
                   type="button"
                   onClick={() => handleToggleSinger(singerId)}
-                  className={`text-left rounded px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isSelected ? 'bg-indigo-500 text-white shadow-sm' : 'border border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70 text-slate-700'}`}
+                  className={`w-full text-left rounded px-2 py-1.5 transition focus:outline-none focus:ring-2 ${
+                    isSelected
+                      ? (selectedEntries.find(e => e.id === singerId)?.locked
+                          ? 'bg-red-500 text-white shadow-sm focus:ring-red-200'
+                          : 'bg-indigo-500 text-white shadow-sm focus:ring-indigo-200')
+                      : 'border border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70 text-slate-700 focus:ring-indigo-500'
+                  }`}
                 >
-                  <div className="flex items-start justify-between">
-                    <span className={`text-sm font-medium leading-tight ${isSelected ? 'text-white' : ''}`}>{singer.name || 'Unnamed singer'}</span>
+                  <div className="flex items-start justify-between gap-1">
+                   <span className={`inline-flex items-center gap-1 text-sm font-medium leading-tight ${isSelected ? 'text-white' : ''}`}>
+                     {singer.name || 'Unnamed singer'}
+                     <button
+                       type="button"
+                       className={`inline-flex items-center justify-center rounded ${isSelected ? 'text-indigo-100 hover:text-white' : 'text-slate-500 hover:text-slate-700'}`}
+                       title={(selectedEntries.find(e => e.id === singerId)?.locked) ? 'Unlock fee' : 'Lock fee'}
+                       onClick={(e) => {
+                         e.stopPropagation();
+                         const prev = selectedEntries.find(e => e.id === singerId);
+                         const next = selectedEntries.map(entry => entry.id === singerId ? { ...entry, locked: !Boolean(prev?.locked) } : entry);
+                         updateSelected(next);
+                       }}
+                       aria-label={(selectedEntries.find(e => e.id === singerId)?.locked) ? 'Unlock fee' : 'Lock fee'}
+                       style={{ fontSize: '0.9em' }}
+                     >
+                       {(selectedEntries.find(e => e.id === singerId)?.locked) ? '🔒' : '🔓'}
+                     </button>
+                   </span>
                     {canManagePool ? (
                       <button
                         type="button"
@@ -1108,13 +1147,40 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                           event.stopPropagation();
                           handleOpenEditSingerModal(singer);
                         }}
-                        className={`text-[11px] font-medium ${isSelected ? 'text-indigo-100 hover:text-white' : 'text-indigo-600 hover:text-indigo-500'}`}
+                        className={`font-medium ${isSelected ? 'text-indigo-100 hover:text-white' : 'text-indigo-600 hover:text-indigo-500'}`}
+                        style={{ fontSize: '0.65rem' }}
                       >
                         Edit
                       </button>
                     ) : null}
                   </div>
-                  <div className={`mt-1 text-xs ${isSelected ? 'text-indigo-100' : 'text-slate-500'}`}>Fee {toCurrency(displayFee)}</div>
+                  {isSelected ? (
+                    <div className="mt-1 flex items-center gap-2">
+                      <label className={`flex items-center gap-1 ${isSelected ? 'text-white' : 'text-slate-700'}`} style={{ fontSize: '0.8rem' }}>
+                        <span>Fee £</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          className={`w-24 rounded border px-1.5 py-1 text-sm focus:outline-none focus:ring-2 ${isSelected ? 'border-indigo-100 text-white placeholder-indigo-100/70 bg-transparent focus:ring-white' : 'border-slate-300 text-slate-800 placeholder-slate-400 bg-white focus:ring-indigo-500'}`}
+                          value={(selectedEntries.find(e => e.id === singerId)?.fee) ?? ''}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => {
+                            e.stopPropagation();
+                            const next = selectedEntries.map(entry => entry.id === singerId ? { ...entry, fee: e.target.value } : entry);
+                            updateSelected(next);
+                          }}
+                        />
+                      </label>
+                      {/* lock icon moved next to name */}
+                    </div>
+                  ) : (
+                    <div
+                      className={`mt-0.5 ${isSelected ? 'text-indigo-100' : 'text-slate-500'}`}
+                      style={{ fontSize: '0.7rem' }}
+                    >
+                      Fee {toCurrency(displayFee)}
+                    </div>
+                  )}
                 </button>
               );
             })}
@@ -1213,7 +1279,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                     <div key={service.id} className="rounded border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium text-slate-700">{service.label}</span>
-                        <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                        <label className="flex items-center gap-1 text-[12px] text-slate-600">
                           <input
                             type="checkbox"
                             className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
@@ -1338,7 +1404,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                     <div key={service.id} className="rounded border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
                       <div className="flex items-center justify-between">
                         <span className="text-sm font-medium text-slate-700">{service.label}</span>
-                        <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                        <label className="flex items-center gap-1 text-[12px] text-slate-600">
                           <input
                             type="checkbox"
                             className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
