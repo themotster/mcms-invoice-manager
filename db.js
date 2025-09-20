@@ -647,6 +647,37 @@ function saveAhmenVenue(data) {
   });
 }
 
+function deleteAhmenVenue(venueId) {
+  return new Promise((resolve, reject) => {
+    const id = Number(venueId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid venue id'));
+      return;
+    }
+
+    db.serialize(() => {
+      db.run(
+        'UPDATE ahmen_jobsheets SET venue_id = NULL WHERE venue_id = ?',
+        [id],
+        (updateErr) => {
+          if (updateErr) {
+            reject(updateErr);
+            return;
+          }
+          db.run(
+            'DELETE FROM ahmen_venues WHERE venue_id = ?',
+            [id],
+            function (err) {
+              if (err) reject(err);
+              else resolve(this.changes);
+            }
+          );
+        }
+      );
+    });
+  });
+}
+
 module.exports = {
   getInvoices: () => {
     return new Promise((resolve, reject) => {
@@ -1500,5 +1531,6 @@ module.exports = {
   updateAhmenJobsheetStatus,
   deleteAhmenJobsheet,
   getAhmenVenues,
-  saveAhmenVenue
+  saveAhmenVenue,
+  deleteAhmenVenue
 };

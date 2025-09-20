@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { normalizeVenues, buildVenueDraft } from './helpers/venues';
 
 const AHMEN_NUMERIC_FIELDS = new Set([
   'ahmen_fee',
@@ -66,20 +67,6 @@ function normalizeStatus(value) {
   if (!value) return '';
   if (typeof value === 'string') return value.toLowerCase();
   return String(value).toLowerCase();
-}
-
-function normalizeVenues(list = []) {
-  return (list || []).map(item => ({
-    ...item,
-    venue_id: item.venue_id ?? item.id,
-    name: item.name || item.venue_name || '',
-    address1: item.address1 || item.venue_address1 || '',
-    address2: item.address2 || item.venue_address2 || '',
-    address3: item.address3 || item.venue_address3 || '',
-    town: item.town || item.venue_town || '',
-    postcode: item.postcode || item.venue_postcode || '',
-    is_private: Boolean(item.is_private)
-  }));
 }
 
 const JOBSHEET_COLUMNS = [
@@ -1592,6 +1579,8 @@ function SavedVenueSelector({
   onSelect,
   onSaveCurrent,
   onCreateNew,
+  onEdit,
+  onDelete,
   saving
 }) {
   return (
@@ -1622,6 +1611,22 @@ function SavedVenueSelector({
         </button>
         <button
           type="button"
+          onClick={onEdit}
+          disabled={saving || !value}
+          className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          Edit selected
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          disabled={saving || !value}
+          className="inline-flex items-center rounded border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60 disabled:cursor-not-allowed"
+        >
+          Delete selected
+        </button>
+        <button
+          type="button"
           onClick={onCreateNew}
           className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
         >
@@ -1634,6 +1639,7 @@ function SavedVenueSelector({
 
 function JobsheetEditor({
   business,
+  businessId,
   formState,
   onChange,
   onDelete,
@@ -1641,8 +1647,10 @@ function JobsheetEditor({
   deleting,
   hasExisting,
   venues,
+  setVenues,
   onSaveVenue,
   venueSaving,
+  setVenueSaving,
   pricingConfig,
   pricingTotals,
   onUpdateSingerPool,
@@ -1665,26 +1673,23 @@ function JobsheetEditor({
   }, [formState.venue_id]);
 
   const [showVenueModal, setShowVenueModal] = useState(false);
-  const [venueDraft, setVenueDraft] = useState({
-    name: '',
-    address1: '',
-    address2: '',
-    address3: '',
-    town: '',
-    postcode: '',
-    is_private: false
-  });
+  const [venueDraft, setVenueDraft] = useState(() => buildVenueDraft());
 
-  const openVenueModal = () => {
-    setVenueDraft({
-      name: formState.venue_name || '',
-      address1: formState.venue_address1 || '',
-      address2: formState.venue_address2 || '',
-      address3: formState.venue_address3 || '',
-      town: formState.venue_town || '',
-      postcode: formState.venue_postcode || '',
-      is_private: Boolean(formState.venue_same_as_client)
-    });
+  const openVenueModal = (venue = null) => {
+    if (venue) {
+      setVenueDraft(buildVenueDraft(venue));
+    } else {
+      setVenueDraft(buildVenueDraft({
+        venue_id: formState.venue_id,
+        name: formState.venue_name,
+        address1: formState.venue_address1,
+        address2: formState.venue_address2,
+        address3: formState.venue_address3,
+        town: formState.venue_town,
+        postcode: formState.venue_postcode,
+        is_private: formState.venue_same_as_client
+      }));
+    }
     setShowVenueModal(true);
   };
 
@@ -1697,11 +1702,19 @@ function JobsheetEditor({
   };
 
   const handleCreateVenue = async () => {
+    if (venueSaving) return;
     if (!venueDraft.name.trim()) return;
-    const result = await onSaveVenue({ ...venueDraft });
-    if (result) {
-      setShowVenueModal(false);
-    }
+    const savedId = await onSaveVenue({ ...venueDraft });
+    if (!savedId) return;
+    setVenues(prev => {
+      const draft = buildVenueDraft({ ...venueDraft, venue_id: savedId });
+      const others = prev.filter(item => Number(item.venue_id) !== Number(savedId));
+      const next = [...others, draft];
+      next.sort((a, b) => a.name.localeCompare(b.name));
+      return next;
+    });
+    setSavedVenueId(String(savedId));
+    setShowVenueModal(false);
   };
 
   const [activeGroupKey, setActiveGroupKey] = useState(() => {
@@ -1750,6 +1763,55 @@ function JobsheetEditor({
     handleFieldChange('venue_town', venue.town || '');
     handleFieldChange('venue_postcode', venue.postcode || '');
     handleFieldChange('venue_same_as_client', Boolean(venue.is_private));
+  };
+
+  const handleEditSavedVenue = () => {
+    if (!savedVenueId) return;
+    const venue = venues.find(v => String(v.venue_id) === savedVenueId);
+    if (!venue) return;
+    openVenueModal(venue);
+  };
+
+  const handleDeleteSavedVenue = async () => {
+    if (!savedVenueId) return;
+    const venue = venues.find(v => String(v.venue_id) === savedVenueId);
+    if (!venue) return;
+    const confirmed = window.confirm(`Delete venue "${venue.name || 'Untitled venue'}"? This cannot be undone.`);
+    if (!confirmed) return;
+    const api = window.api;
+    if (!api || !api.deleteAhmenVenue) {
+      setError('Unable to delete venue: API unavailable');
+      return;
+    }
+    setVenueSaving(true);
+    try {
+      await api.deleteAhmenVenue(Number(venue.venue_id));
+      setVenues(prev => prev.filter(item => Number(item.venue_id) !== Number(venue.venue_id)));
+      setSavedVenueId('');
+      setFormState(prev => {
+        if (prev.venue_id !== venue.venue_id) return prev;
+        return applyDerivedFields({
+          ...prev,
+          venue_id: null,
+          venue_name: '',
+          venue_address1: '',
+          venue_address2: '',
+          venue_address3: '',
+          venue_town: '',
+          venue_postcode: '',
+          venue_same_as_client: false
+        });
+      });
+      const updatedVenues = await api.getAhmenVenues({ businessId });
+      setVenues(normalizeVenues(updatedVenues));
+      setMessage('Venue deleted');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to delete venue', err);
+      setError(err?.message || 'Unable to delete venue');
+    } finally {
+      setVenueSaving(false);
+    }
   };
 
   return (
@@ -1833,7 +1895,9 @@ function JobsheetEditor({
                         venues={venues}
                         onSelect={handleSelectSavedVenue}
                         onSaveCurrent={() => onSaveVenue()}
-                        onCreateNew={openVenueModal}
+                        onCreateNew={() => openVenueModal()}
+                        onEdit={handleEditSavedVenue}
+                        onDelete={handleDeleteSavedVenue}
                         saving={venueSaving}
                       />
                     );
@@ -1901,15 +1965,7 @@ function JobsheetEditor({
                 <button
                   type="button"
                   className="inline-flex items-center rounded bg-indigo-50 text-indigo-800 border border-indigo-200 px-3 py-1.5 text-xs font-medium hover:bg-indigo-100"
-                  onClick={() => {
-                    handleVenueDraftChange('name', '');
-                    handleVenueDraftChange('address1', '');
-                    handleVenueDraftChange('address2', '');
-                    handleVenueDraftChange('address3', '');
-                    handleVenueDraftChange('town', '');
-                    handleVenueDraftChange('postcode', '');
-                    handleVenueDraftChange('is_private', false);
-                  }}
+                  onClick={() => setVenueDraft(buildVenueDraft())}
                 >
                   Clear fields
                 </button>
@@ -2575,12 +2631,32 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       }
 
       const result = await api.saveAhmenVenue(payload);
-      const updatedVenues = await api.getAhmenVenues({ businessId: numericBusinessId });
-      const normalized = normalizeVenues(updatedVenues);
-      setVenues(normalized);
-
       const savedVenueId = result?.venue_id ?? payload.venue_id ?? null;
       if (savedVenueId) {
+        const optimisticVenue = normalizeVenues([
+          {
+            venue_id: savedVenueId,
+            name: payload.name,
+            address1: payload.address1,
+            address2: payload.address2,
+            address3: payload.address3,
+            town: payload.town,
+            postcode: payload.postcode,
+            is_private: payload.is_private
+          }
+        ])[0];
+
+        setVenues(prev => {
+          const others = prev.filter(item => Number(item.venue_id) !== Number(savedVenueId));
+          const nextList = [...others, optimisticVenue];
+          nextList.sort((a, b) => a.name.localeCompare(b.name));
+          return nextList;
+        });
+
+        const updatedVenues = await api.getAhmenVenues({ businessId: numericBusinessId });
+        const normalized = normalizeVenues(updatedVenues);
+        setVenues(normalized);
+
         const savedVenue = normalized.find(v => v.venue_id === savedVenueId);
         if (savedVenue) {
           setFormState(prev => applyDerivedFields({
@@ -2706,8 +2782,9 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               </div>
             </div>
 
-           <JobsheetEditor
+          <JobsheetEditor
               business={resolvedBusiness}
+              businessId={numericBusinessId}
               formState={formState}
               onChange={setFormState}
               onDelete={handleDelete}
@@ -2715,8 +2792,10 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               deleting={false}
               hasExisting={Boolean(jobsheetId)}
               venues={venues}
+              setVenues={setVenues}
               onSaveVenue={handleSaveVenue}
               venueSaving={venueSaving}
+              setVenueSaving={setVenueSaving}
               pricingConfig={pricingConfig}
               pricingTotals={pricingDerived}
               onUpdateSingerPool={handleUpdateSingerPool}
