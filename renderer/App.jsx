@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
+import {
+  normalizeProductionItems,
+  calculateProductionItemTotal,
+  calculateProductionTotal,
+  calculateDiscountValue
+} from './helpers/pricing';
 
 const AHMEN_NUMERIC_FIELDS = new Set([
   'ahmen_fee',
@@ -9,7 +15,11 @@ const AHMEN_NUMERIC_FIELDS = new Set([
   'deposit_amount',
   'balance_amount',
   'pricing_discount',
-  'pricing_total'
+  'pricing_total',
+  'pricing_production_subtotal',
+  'pricing_production_total',
+  'pricing_discount_value',
+  'pricing_production_discount_value'
 ]);
 
 const AHMEN_BOOLEAN_FIELDS = new Set(['venue_same_as_client']);
@@ -116,6 +126,14 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   pricing_selected_singers: [],
   pricing_custom_fees: '',
   pricing_discount: '',
+  pricing_discount_type: 'amount',
+  pricing_discount_value: '',
+  pricing_production_items: [],
+  pricing_production_subtotal: '',
+  pricing_production_discount: '',
+  pricing_production_discount_type: 'amount',
+  pricing_production_discount_value: '',
+  pricing_production_total: '',
   pricing_total: ''
 });
 
@@ -180,13 +198,22 @@ const FORM_GROUPS = [
     ]
   },
   {
+    key: 'production',
+    title: 'Production & Services',
+    description: 'Manage external suppliers, markup, and related discounts.',
+    defaultOpen: false,
+    fields: [
+      { name: 'production_panel', component: 'productionPanel' }
+    ]
+  },
+  {
     key: 'billing',
     title: 'Invoicing Details',
     description: 'Invoicing breakdown that feeds quotes and invoices.',
     defaultOpen: false,
     fields: [
-      { name: 'ahmen_fee', label: 'AhMen Fee (£)', type: 'number', step: '0.01', hint: 'Total fee for the booking.' },
-      { name: 'production_fees', label: 'Sound / AV / Production (£)', type: 'number', step: '0.01' },
+      { name: 'ahmen_fee', label: 'AhMen Fee (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Singer fees after discount.' },
+      { name: 'production_fees', label: 'Sound / AV / Production (£)', type: 'number', step: '0.01', readOnly: true },
       { name: 'deposit_amount', label: 'Deposit (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Automatically 30% of AhMen fee.' },
       { name: 'balance_amount', label: 'Balance (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Remaining balance after deposit (70%).' },
       { name: 'balance_due_date', label: 'Balance Due Date', type: 'date', readOnly: true, hint: 'Automatically 10 days before the event.' },
@@ -252,6 +279,17 @@ function parseSelectedSingers(raw) {
   }
 }
 
+function parseProductionItems(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return normalizeProductionItems(raw);
+  try {
+    const parsed = JSON.parse(raw);
+    return normalizeProductionItems(parsed);
+  } catch (_) {
+    return [];
+  }
+}
+
 function preparePayload(formState, businessId) {
   const payload = { ...formState, business_id: businessId };
 
@@ -259,6 +297,16 @@ function preparePayload(formState, businessId) {
     payload.pricing_selected_singers = JSON.stringify(
       normalizeSingerEntries(payload.pricing_selected_singers)
     );
+  }
+
+  if (Array.isArray(payload.pricing_production_items)) {
+    payload.pricing_production_items = JSON.stringify(
+      normalizeProductionItems(payload.pricing_production_items)
+    );
+  }
+
+  if (payload.pricing_discount_type) {
+    payload.pricing_discount_type = String(payload.pricing_discount_type);
   }
 
   AHMEN_NUMERIC_FIELDS.forEach(field => {
@@ -289,6 +337,11 @@ function applyDerivedFields(nextState) {
   } else {
     next.deposit_amount = '';
     next.balance_amount = '';
+  }
+
+  if (next.pricing_production_total !== undefined) {
+    const productionString = next.pricing_production_total ? String(next.pricing_production_total) : '';
+    next.production_fees = productionString;
   }
 
   if (next.event_date) {
@@ -382,7 +435,13 @@ function JobsheetList({
         case 'event_date':
           return sheet.event_date ? new Date(sheet.event_date).valueOf() : 0;
         case 'ahmen_fee':
-          return Number(sheet.ahmen_fee) || 0;
+          {
+            const total = Number(sheet.pricing_total);
+            if (Number.isFinite(total) && total > 0) return total;
+            const singerFee = Number(sheet.ahmen_fee) || 0;
+            const productionFee = Number(sheet.production_fees) || 0;
+            return singerFee + productionFee;
+          }
         case 'status':
           return STATUS_ORDER[sheet.status] ?? STATUS_OPTIONS.length;
         case 'client_name':
@@ -508,7 +567,7 @@ function JobsheetList({
                           ))}
                         </select>
                       </td>
-                      <td className="px-4 py-3 text-right text-sm text-slate-600">{toCurrency(sheet.ahmen_fee)}</td>
+                      <td className="px-4 py-3 text-right text-sm text-slate-600">{toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)))}</td>
                       <td className="px-4 py-3 text-right text-sm">
                         <div className="inline-flex items-center">
                           <button
@@ -627,6 +686,35 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     [formState.pricing_selected_singers]
   );
 
+  const productionItems = useMemo(
+    () => normalizeProductionItems(formState.pricing_production_items),
+    [formState.pricing_production_items]
+  );
+
+  const productionTotalValue = useMemo(
+    () => calculateProductionTotal(productionItems),
+    [productionItems]
+  );
+
+  useEffect(() => {
+    const nextSubtotalString = productionItems.length ? productionTotalValue.toFixed(2) : '';
+    const current = formState.pricing_production_subtotal ?? '';
+    if (nextSubtotalString !== current) {
+      onChange('pricing_production_subtotal', nextSubtotalString);
+    }
+  }, [productionItems, productionTotalValue, formState.pricing_production_subtotal, onChange]);
+
+  useEffect(() => {
+    const hasProductionValues = productionSubtotalValue > 0 || productionDiscountValueNumber > 0;
+    const nextNetString = hasProductionValues ? productionNetValue.toFixed(2) : '';
+    const current = formState.pricing_production_total ?? '';
+    if (nextNetString !== current) {
+      onChange('pricing_production_total', nextNetString);
+    }
+  }, [productionSubtotalValue, productionDiscountValueNumber, productionNetValue, formState.pricing_production_total, onChange]);
+
+  const customFeesNumber = Number(formState.pricing_custom_fees) || 0;
+
   const updateSelected = useCallback((entries) => {
     const normalized = normalizeSingerEntries(entries);
     if (!equalSingerEntries(normalized, selectedEntries)) {
@@ -720,10 +808,64 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         singerCount += 1;
       }
     });
-    return { base, singerCount };
-  }, [selectedEntries, poolMap]);
+
+    const singerSubtotal = base + customFeesNumber;
+    const singerDiscountValue = calculateDiscountValue({
+      type: formState.pricing_discount_type || 'amount',
+      value: formState.pricing_discount,
+      subtotal: singerSubtotal
+    });
+    const singerNet = Math.max(singerSubtotal - singerDiscountValue, 0);
+
+    const productionDiscountValue = calculateDiscountValue({
+      type: formState.pricing_production_discount_type || 'amount',
+      value: formState.pricing_production_discount,
+      subtotal: productionTotalValue
+    });
+    const productionNet = Math.max(productionTotalValue - productionDiscountValue, 0);
+    const total = Math.max(singerNet + productionNet, 0);
+    const hasSelection = singerCount > 0 || customFeesNumber !== 0 || productionTotalValue !== 0 || singerDiscountValue > 0 || productionDiscountValue > 0;
+    return {
+      base,
+      singerCount,
+      productionSubtotal: productionTotalValue,
+      productionNet,
+      productionDiscountValue,
+      custom: customFeesNumber,
+      singerDiscountValue,
+      singerNet,
+      subtotal: singerSubtotal + productionTotalValue,
+      total,
+      hasSelection
+    };
+  }, [selectedEntries, poolMap, productionTotalValue, customFeesNumber, formState.pricing_discount, formState.pricing_discount_type, formState.pricing_production_discount, formState.pricing_production_discount_type]);
 
   const totals = pricingTotals || internalTotals;
+  const singerDiscountType = formState.pricing_discount_type || 'amount';
+  const singerDiscountValueNumber = totals.singerDiscountValue || 0;
+  const productionDiscountType = formState.pricing_production_discount_type || 'amount';
+  const productionDiscountValueNumber = totals.productionDiscountValue || 0;
+  const productionSubtotalValue = totals.productionSubtotal ?? productionTotalValue;
+  const productionNetValue = totals.productionNet ?? Math.max(productionSubtotalValue - productionDiscountValueNumber, 0);
+  const singerNetValue = totals.singerNet ?? Math.max((totals.base || 0) + customFeesNumber - singerDiscountValueNumber, 0);
+  const totalValue = totals.total ?? (singerNetValue + productionNetValue);
+  const totalDerivedString = totals.hasSelection ? totalValue.toFixed(2) : '';
+
+  useEffect(() => {
+    const nextDiscountString = singerDiscountValueNumber > 0 ? singerDiscountValueNumber.toFixed(2) : '';
+    const current = formState.pricing_discount_value ?? '';
+    if (nextDiscountString !== current) {
+      onChange('pricing_discount_value', nextDiscountString);
+    }
+  }, [singerDiscountValueNumber, formState.pricing_discount_value, onChange]);
+
+  useEffect(() => {
+    const nextProductionDiscountString = productionDiscountValueNumber > 0 ? productionDiscountValueNumber.toFixed(2) : '';
+    const current = formState.pricing_production_discount_value ?? '';
+    if (nextProductionDiscountString !== current) {
+      onChange('pricing_production_discount_value', nextProductionDiscountString);
+    }
+  }, [productionDiscountValueNumber, formState.pricing_production_discount_value, onChange]);
 
   const selectedIdSet = useMemo(
     () => new Set(selectedEntries.map(entry => entry.id)),
@@ -752,6 +894,28 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       }
     ]);
   }, [poolMap, selectedEntries, selectedService, updateSelected]);
+
+  const handleAddProductionItem = useCallback(() => {
+    const newItem = {
+      id: `production-${Date.now()}`,
+      name: '',
+      description: '',
+      cost: '',
+      markup: '',
+      notes: ''
+    };
+    onChange('pricing_production_items', normalizeProductionItems([...productionItems, newItem]));
+  }, [onChange, productionItems]);
+
+  const handleProductionChange = useCallback((id, field, value) => {
+    const next = productionItems.map(item => (item.id === id ? { ...item, [field]: value } : item));
+    onChange('pricing_production_items', normalizeProductionItems(next));
+  }, [onChange, productionItems]);
+
+  const handleRemoveProductionItem = useCallback((id) => {
+    const next = productionItems.filter(item => item.id !== id);
+    onChange('pricing_production_items', normalizeProductionItems(next));
+  }, [onChange, productionItems]);
 
   const handleClearSelection = useCallback(() => {
     // Preserve locked status in memory by re-adding entries but marked as unselected is equivalent to clearing list.
@@ -1192,6 +1356,186 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         )}
       </section>
 
+      <div className="rounded border border-slate-200 bg-white p-3 text-sm space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="font-medium text-slate-600">Singer discount</span>
+          {singerDiscountType === 'percent' && singerDiscountValueNumber > 0 ? (
+            <span className="text-xs text-slate-500">≈ {toCurrency(singerDiscountValueNumber)}</span>
+          ) : null}
+        </div>
+        <div className="flex gap-1">
+          {['amount', 'percent'].map(type => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => {
+                if (type !== singerDiscountType) onChange('pricing_discount_type', type);
+              }}
+              className={`inline-flex flex-1 items-center justify-center rounded-full border px-2.5 py-1 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                type === singerDiscountType ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'
+              }`}
+            >
+              {type === 'amount' ? 'Amount (£)' : 'Percent (%)'}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+              {singerDiscountType === 'amount' ? '£' : '%'}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              className="w-full rounded border border-slate-300 px-6 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              value={formState.pricing_discount || ''}
+              onChange={event => onChange('pricing_discount', event.target.value)}
+            />
+          </div>
+          {singerDiscountType === 'percent' ? (
+            <span className="text-xs text-slate-500">≈ {toCurrency(singerDiscountValueNumber)}</span>
+          ) : null}
+        </div>
+      </div>
+
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span className="text-sm font-medium text-slate-600">Production & external services</span>
+            <p className="text-xs text-slate-500">Track external suppliers, apply markup, and include totals automatically.</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleAddProductionItem}
+          className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+        >
+          + Add item
+        </button>
+        {productionItems.length ? (
+          <div className="space-y-3">
+            {productionItems.map(item => {
+              const lineTotal = calculateProductionItemTotal(item);
+              return (
+                <div key={item.id} className="rounded border border-slate-200 bg-white p-3 space-y-3">
+                  <div className="grid gap-2 sm:grid-cols-5">
+                    <label className="sm:col-span-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Supplier / Company
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.name}
+                        onChange={event => handleProductionChange(item.id, 'name', event.target.value)}
+                      />
+                    </label>
+                    <label className="sm:col-span-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Description
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.description}
+                        onChange={event => handleProductionChange(item.id, 'description', event.target.value)}
+                      />
+                    </label>
+                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Cost (£)
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.cost}
+                        onChange={event => handleProductionChange(item.id, 'cost', event.target.value)}
+                      />
+                    </label>
+                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Markup (%)
+                      <input
+                        type="number"
+                        step="0.1"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.markup}
+                        onChange={event => handleProductionChange(item.id, 'markup', event.target.value)}
+                      />
+                    </label>
+                    <div className="flex flex-col justify-between">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Line total</div>
+                        <div className="text-sm font-semibold text-slate-700">{toCurrency(lineTotal)}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveProductionItem(item.id)}
+                        className="self-end text-xs font-medium text-red-600 hover:text-red-500"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Notes
+                    <textarea
+                      rows={2}
+                      className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={item.notes}
+                      onChange={event => handleProductionChange(item.id, 'notes', event.target.value)}
+                    />
+                  </label>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            No production items yet. Add suppliers or services to include third-party costs.
+          </div>
+        )}
+        <div className="rounded border border-slate-200 bg-white p-3 text-sm space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="font-medium text-slate-600">Production discount</span>
+            {productionDiscountType === 'percent' && productionDiscountValueNumber > 0 ? (
+              <span className="text-xs text-slate-500">≈ {toCurrency(productionDiscountValueNumber)}</span>
+            ) : null}
+          </div>
+          <div className="flex gap-1">
+            {['amount', 'percent'].map(type => (
+              <button
+                key={type}
+                type="button"
+                onClick={() => {
+                  if (type !== productionDiscountType) onChange('pricing_production_discount_type', type);
+                }}
+                className={`inline-flex flex-1 items-center justify-center rounded-full border px-2.5 py-1 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                  type === productionDiscountType ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'
+                }`}
+              >
+                {type === 'amount' ? 'Amount (£)' : 'Percent (%)'}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+                {productionDiscountType === 'amount' ? '£' : '%'}
+              </span>
+              <input
+                type="number"
+                step="0.01"
+                className="w-full rounded border border-slate-300 px-6 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                value={formState.pricing_production_discount || ''}
+                onChange={event => onChange('pricing_production_discount', event.target.value)}
+              />
+            </div>
+            {productionDiscountType === 'percent' ? (
+              <span className="text-xs text-slate-500">≈ {toCurrency(productionDiscountValueNumber)}</span>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex items-center justify-between text-sm text-slate-600">
+          <span>Total production</span>
+          <span className="font-semibold text-slate-700">{toCurrency(productionNetValue)}</span>
+        </div>
+      </section>
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <Field
           label="Custom fees (£)"
@@ -1201,17 +1545,26 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
           onChange={value => onChange('pricing_custom_fees', value)}
         />
         <Field
-          label="Discount (£)"
+          label="Singer discount (£)"
           type="number"
           step="0.01"
-          value={formState.pricing_discount || ''}
-          onChange={value => onChange('pricing_discount', value)}
+          value={formState.pricing_discount_value || (singerDiscountValueNumber ? singerDiscountValueNumber.toFixed(2) : '')}
+          onChange={value => onChange('pricing_discount_value', value)}
+          readOnly
+        />
+        <Field
+          label="Production discount (£)"
+          type="number"
+          step="0.01"
+          value={formState.pricing_production_discount_value || (productionDiscountValueNumber ? productionDiscountValueNumber.toFixed(2) : '')}
+          onChange={value => onChange('pricing_production_discount_value', value)}
+          readOnly
         />
         <Field
           label="Pricing total (£)"
           type="number"
           step="0.01"
-          value={formState.pricing_total || ''}
+          value={formState.pricing_total || totalDerivedString}
           onChange={value => onChange('pricing_total', value)}
           readOnly
         />
@@ -1220,7 +1573,12 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       <div className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-700">
         <div className="font-semibold">Quote summary</div>
         <div>{totals.singerCount} singer{totals.singerCount === 1 ? '' : 's'} selected · Base fee {toCurrency(totals.base)}</div>
-        <div>Total after adjustments: {toCurrency(formState.pricing_total)}</div>
+        <div>Singer fees after discount: {toCurrency(totals.singerNet ?? singerNetValue)}</div>
+        <div>Production after discount: {toCurrency(totals.productionNet ?? productionNetValue)}</div>
+        <div>Singer discount: -{toCurrency(singerDiscountValueNumber)}</div>
+        <div>Production discount: -{toCurrency(productionDiscountValueNumber)}</div>
+        <div>Custom fees: {toCurrency(customFeesNumber)}</div>
+        <div className="font-semibold text-indigo-900">Total after adjustments: {toCurrency(totalValue)}</div>
       </div>
       </div>
 
@@ -1886,6 +2244,16 @@ function JobsheetEditor({
                       </div>
                     );
                   }
+                  if (field.component === 'productionPanel') {
+                    return (
+                      <ProductionPanel
+                        key={field.name}
+                        formState={formState}
+                        onChange={handleFieldChange}
+                        totals={pricingTotals}
+                      />
+                    );
+                  }
                   if (field.component === 'savedVenueSelector') {
                     return (
                       <SavedVenueSelector
@@ -2440,13 +2808,35 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     });
 
     const custom = Number(formState.pricing_custom_fees) || 0;
-    const discount = Number(formState.pricing_discount) || 0;
-    const hasSelection = singerCount > 0 || custom !== 0 || discount !== 0;
-    const total = Math.max(base + custom - discount, 0);
+    const singerSubtotal = base + custom;
+    const singerDiscountValue = calculateDiscountValue({
+      type: formState.pricing_discount_type || 'amount',
+      value: formState.pricing_discount,
+      subtotal: singerSubtotal
+    });
+    const singerNet = Math.max(singerSubtotal - singerDiscountValue, 0);
+
+    const productionSubtotal = Number(formState.pricing_production_subtotal) || 0;
+    const productionDiscountValue = calculateDiscountValue({
+      type: formState.pricing_production_discount_type || 'amount',
+      value: formState.pricing_production_discount,
+      subtotal: productionSubtotal
+    });
+    const productionNet = Math.max(productionSubtotal - productionDiscountValue, 0);
+
+    const total = Math.max(singerNet + productionNet, 0);
+    const hasSelection = singerCount > 0 || custom !== 0 || productionSubtotal !== 0 || singerDiscountValue > 0 || productionDiscountValue > 0;
     const totalString = hasSelection ? total.toFixed(2) : '';
     return {
       base,
       singerCount,
+      custom,
+      singerSubtotal,
+      singerNet,
+      singerDiscountValue,
+      productionSubtotal,
+      productionNet,
+      productionDiscountValue,
       hasSelection,
       total,
       totalString
@@ -2462,11 +2852,11 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
 
       let shouldUpdateFee = false;
       let nextFeeValue = prev.ahmen_fee ?? '';
+      const derivedAhmenFee = pricingDerived.hasSelection ? pricingDerived.singerNet.toFixed(2) : '';
       if (pricingDerived.hasSelection) {
-        const candidateFee = pricingDerived.totalString || '';
-        if (candidateFee && candidateFee !== (prev.ahmen_fee ?? '')) {
+        if (derivedAhmenFee && derivedAhmenFee !== (prev.ahmen_fee ?? '')) {
           shouldUpdateFee = true;
-          nextFeeValue = candidateFee;
+          nextFeeValue = derivedAhmenFee;
         }
       } else if (!pricingDerived.hasSelection && !pricingDerived.totalString && prev.ahmen_fee) {
         shouldUpdateFee = true;
@@ -2481,6 +2871,18 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       return applyDerivedFields(next);
     });
   }, [pricingDerived]);
+
+  useEffect(() => {
+    setFormState(prev => {
+      const nextProduction = formState.pricing_production_total ?? '';
+      const currentFees = prev.production_fees ?? '';
+      const previousAuto = prev.pricing_production_total ?? '';
+      const shouldUpdate = currentFees === previousAuto || currentFees === '';
+      if (!shouldUpdate) return prev;
+      if (currentFees === nextProduction) return prev;
+      return applyDerivedFields({ ...prev, production_fees: nextProduction });
+    });
+  }, [formState.pricing_production_total]);
 
   useEffect(() => {
     if (loading || !jobsheetId) return;
@@ -2732,6 +3134,10 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     return () => window.removeEventListener('beforeunload', handler);
   }, [numericBusinessId, jobsheetId, buildSnapshot]);
 
+  const summarySingerFee = Number(formState.ahmen_fee) || (pricingDerived ? pricingDerived.singerNet : 0);
+  const summaryProductionFee = Number(formState.production_fees) || (pricingDerived ? pricingDerived.productionNet : 0);
+  const summaryTotal = pricingDerived ? pricingDerived.total : summarySingerFee + summaryProductionFee;
+
   const resolvedBusiness = business || { id: numericBusinessId, business_name: businessName || 'Jobsheet' };
 
   return (
@@ -2771,7 +3177,8 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
                 </div>
                 <div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Fee</div>
-                  <div className="text-base font-semibold text-slate-800">{toCurrency(formState.ahmen_fee || pricingDerived?.total || 0)}</div>
+                  <div className="text-base font-semibold text-slate-800">{toCurrency(summaryTotal)}</div>
+                  <div className="text-xs text-slate-500">Singers {toCurrency(summarySingerFee)} · Production {toCurrency(summaryProductionFee)}</div>
                 </div>
                 <div>
                   <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
@@ -2816,6 +3223,10 @@ function mapApiToForm(apiData, businessId) {
       base[key] = parseSelectedSingers(value);
       return;
     }
+    if (key === 'pricing_production_items') {
+      base[key] = parseProductionItems(value);
+      return;
+    }
     if (key === 'venue_same_as_client') {
       base[key] = Boolean(value);
       return;
@@ -2825,8 +3236,37 @@ function mapApiToForm(apiData, businessId) {
       base[key] = normalized;
       return;
     }
+    if (key === 'pricing_discount_type') {
+      base[key] = value || 'amount';
+      return;
+    }
+    if (key === 'pricing_discount_value' || key === 'pricing_production_total') {
+      base[key] = value != null ? String(value) : '';
+      return;
+    }
+    if (key === 'pricing_production_subtotal' || key === 'pricing_production_discount_value') {
+      base[key] = value != null ? String(value) : '';
+      return;
+    }
+    if (key === 'pricing_production_discount' || key === 'pricing_production_discount_type') {
+      base[key] = value != null ? String(value) : '';
+      return;
+    }
     base[key] = value ?? base[key] ?? '';
   });
+  if (!base.pricing_discount_type) base.pricing_discount_type = 'amount';
+  if (base.pricing_discount === undefined || base.pricing_discount === null) base.pricing_discount = '';
+  if (!base.pricing_discount_value) base.pricing_discount_value = '';
+  if (!base.pricing_production_discount_type) base.pricing_production_discount_type = 'amount';
+  if (base.pricing_production_discount === undefined || base.pricing_production_discount === null) base.pricing_production_discount = '';
+  if (!base.pricing_production_discount_value) base.pricing_production_discount_value = '';
+  if (!base.pricing_production_subtotal) base.pricing_production_subtotal = '';
+  if (!base.pricing_production_total && base.production_fees != null) {
+    base.pricing_production_total = String(base.production_fees);
+  }
+  if (!base.pricing_production_subtotal && base.production_fees != null) {
+    base.pricing_production_subtotal = String(base.production_fees);
+  }
   return applyDerivedFields(base);
 }
 
