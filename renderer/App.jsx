@@ -40,7 +40,6 @@ const STATUS_ORDER = STATUS_OPTIONS.reduce((acc, option, index) => {
 }, {});
 
 const LAST_BUSINESS_STORAGE_KEY = 'invoiceMaster:lastBusinessId';
-const LAST_SECTION_STORAGE_KEY = 'invoiceMaster:lastJobsheetSection';
 
 function readLastBusinessId() {
   try {
@@ -60,25 +59,6 @@ function storeLastBusinessId(id) {
     }
   } catch (err) {
     console.warn('Unable to persist last business id', err);
-  }
-}
-
-function readLastJobsheetSection() {
-  try {
-    return window.localStorage.getItem(LAST_SECTION_STORAGE_KEY) || FORM_GROUPS[0]?.key || 'client';
-  } catch (err) {
-    console.warn('Unable to read last jobsheet section', err);
-    return FORM_GROUPS[0]?.key || 'client';
-  }
-}
-
-function storeLastJobsheetSection(sectionKey) {
-  try {
-    if (sectionKey) {
-      window.localStorage.setItem(LAST_SECTION_STORAGE_KEY, sectionKey);
-    }
-  } catch (err) {
-    console.warn('Unable to persist jobsheet section', err);
   }
 }
 
@@ -806,8 +786,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
   const [newSingerName, setNewSingerName] = useState('');
   const [newSingerBaseFee, setNewSingerBaseFee] = useState('');
-  const [newSingerServiceFee, setNewSingerServiceFee] = useState('');
-  const [newSingerDefaultIncluded, setNewSingerDefaultIncluded] = useState(false);
+  const [newSingerServiceFees, setNewSingerServiceFees] = useState(() => ({}));
   const [addingSinger, setAddingSinger] = useState(false);
   const [addError, setAddError] = useState('');
   const [showAddSingerModal, setShowAddSingerModal] = useState(false);
@@ -823,28 +802,32 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const resetAddSingerForm = useCallback(() => {
     setNewSingerName('');
     setNewSingerBaseFee('');
-    setNewSingerServiceFee('');
-    setNewSingerDefaultIncluded(false);
     setAddError('');
-  }, []);
+    setNewSingerServiceFees(() => {
+      const initial = {};
+      serviceTypes.forEach(service => {
+        const serviceId = service.id != null ? String(service.id) : '';
+        if (!serviceId) return;
+        initial[serviceId] = { fee: '', defaultIncluded: Boolean(service.defaultIncluded) };
+      });
+      return initial;
+    });
+  }, [serviceTypes]);
 
   const handleOpenAddSingerModal = useCallback(() => {
     if (!canManagePool) return;
     resetAddSingerForm();
-    onFocusPricingPanel?.();
     setShowAddSingerModal(true);
-  }, [canManagePool, resetAddSingerForm, onFocusPricingPanel]);
+  }, [canManagePool, resetAddSingerForm]);
 
   const handleCloseAddSingerModal = useCallback(() => {
     if (addingSinger) return;
     resetAddSingerForm();
     setShowAddSingerModal(false);
-    onFocusPricingPanel?.();
-  }, [addingSinger, resetAddSingerForm, onFocusPricingPanel]);
+  }, [addingSinger, resetAddSingerForm]);
 
   const handleOpenEditSingerModal = useCallback((singer) => {
     if (!singer || !canManagePool) return;
-    onFocusPricingPanel?.();
     setEditSingerId(singer.id);
     setEditSingerName(singer.name || '');
     setEditSingerBaseFee(
@@ -870,7 +853,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     setEditError('');
     setShowAddSingerModal(false);
     setShowEditSingerModal(true);
-  }, [canManagePool, serviceTypes, onFocusPricingPanel]);
+  }, [canManagePool, serviceTypes]);
 
   const handleCloseEditSingerModal = useCallback(() => {
     if (editingSinger) return;
@@ -894,16 +877,21 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       : Number.isFinite(baseFeeNumber) && baseFeeNumber >= 0 ? baseFeeNumber : 0;
 
     const serviceFees = {};
-    if (currentServiceId) {
-      const serviceFeeNumber = Number(newSingerServiceFee);
-      const normalizedServiceFee = newSingerServiceFee !== '' && Number.isFinite(serviceFeeNumber) && serviceFeeNumber >= 0
-        ? serviceFeeNumber
+    serviceTypes.forEach(service => {
+      const serviceId = service.id != null ? String(service.id) : '';
+      if (!serviceId) return;
+      const config = newSingerServiceFees[serviceId] || { fee: '', defaultIncluded: false };
+      const hasFee = config.fee !== '';
+      const feeNumber = Number(config.fee);
+      if (!hasFee && !config.defaultIncluded) return;
+      const normalizedFee = hasFee && Number.isFinite(feeNumber) && feeNumber >= 0
+        ? feeNumber
         : baseFee;
-      serviceFees[currentServiceId] = {
-        fee: normalizedServiceFee,
-        defaultIncluded: Boolean(newSingerDefaultIncluded)
+      serviceFees[serviceId] = {
+        fee: normalizedFee,
+        defaultIncluded: Boolean(config.defaultIncluded)
       };
-    }
+    });
 
     const nextPool = [
       ...existingPool,
@@ -911,7 +899,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         id: `pool-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         name: trimmedName,
         fee: baseFee,
-        defaultIncluded: currentServiceId ? false : Boolean(newSingerDefaultIncluded),
+        defaultIncluded: false,
         serviceFees
       }
     ];
@@ -929,9 +917,21 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     } finally {
       setAddingSinger(false);
     }
-  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFee, newSingerDefaultIncluded, currentServiceId, resetAddSingerForm]);
+  }, [onUpdateSingerPool, existingPool, newSingerName, newSingerBaseFee, newSingerServiceFees, serviceTypes, resetAddSingerForm]);
 
   const confirmDisabled = !canManagePool || !newSingerName.trim().length || addingSinger;
+
+  const handleNewSingerServiceFeeChange = useCallback((serviceId, field, value) => {
+    setNewSingerServiceFees(prev => ({
+      ...prev,
+      [serviceId]: {
+        fee: field === 'fee' ? value : (prev[serviceId]?.fee ?? ''),
+        defaultIncluded: field === 'defaultIncluded'
+          ? Boolean(value)
+          : Boolean(prev[serviceId]?.defaultIncluded)
+      }
+    }));
+  }, []);
 
   const handleEditServiceFeeChange = useCallback((serviceId, field, value) => {
     setEditSingerServiceFees(prev => ({
@@ -1176,7 +1176,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                 ✕
               </button>
             </div>
-            <div className="mt-4 space-y-3">
+            <div className="mt-4 space-y-4">
               <label className="block text-sm font-medium text-slate-600">
                 Name
                 <input
@@ -1203,35 +1203,47 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                   />
                 </div>
               </label>
-              {selectedService ? (
-                <label className="block text-sm font-medium text-slate-600">
-                  Fee for {selectedService.label} (£)
-                  <div className="mt-1 flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
-                    <span className="text-xs text-slate-500">£</span>
-                    <input
-                      type="number"
-                      step="0.01"
-                      className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
-                      value={newSingerServiceFee}
-                      onChange={event => setNewSingerServiceFee(event.target.value)}
-                      placeholder="Defaults to base fee"
-                      disabled={addingSinger}
-                    />
+              <div className="space-y-3">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Service pricing</div>
+                {serviceTypes.length ? serviceTypes.map(service => {
+                  const serviceId = service.id != null ? String(service.id) : '';
+                  if (!serviceId) return null;
+                  const config = newSingerServiceFees[serviceId] || { fee: '', defaultIncluded: false };
+                  return (
+                    <div key={service.id} className="rounded border border-slate-200 bg-slate-50 px-3 py-2 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-slate-700">{service.label}</span>
+                        <label className="flex items-center gap-1 text-[11px] text-slate-600">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                            checked={Boolean(config.defaultIncluded)}
+                            onChange={event => handleNewSingerServiceFeeChange(serviceId, 'defaultIncluded', event.target.checked)}
+                            disabled={addingSinger}
+                          />
+                          Default lineup
+                        </label>
+                      </div>
+                      <div className="flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1">
+                        <span className="text-xs text-slate-500">£</span>
+                        <input
+                          type="number"
+                          step="0.01"
+                          className="w-full border-0 bg-transparent p-0 text-sm focus:outline-none"
+                          value={config.fee}
+                          onChange={event => handleNewSingerServiceFeeChange(serviceId, 'fee', event.target.value)}
+                          placeholder="Defaults to base fee"
+                          disabled={addingSinger}
+                        />
+                      </div>
+                    </div>
+                  );
+                }) : (
+                  <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                    No service templates found. Base fee will be used.
                   </div>
-                </label>
-              ) : null}
-              {selectedService ? (
-                <label className="flex items-center gap-2 text-sm text-slate-600">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                    checked={newSingerDefaultIncluded}
-                    onChange={event => setNewSingerDefaultIncluded(event.target.checked)}
-                    disabled={addingSinger}
-                  />
-                  Default lineup for {selectedService.label}
-                </label>
-              ) : null}
+                )}
+              </div>
               {addError ? (
                 <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{addError}</div>
               ) : null}
@@ -1563,36 +1575,33 @@ function JobsheetEditor({
     }
   };
 
-  const [internalActiveGroupKey, setInternalActiveGroupKey] = useState(() => {
+  const [activeGroupKey, setActiveGroupKey] = useState(() => {
+    if (activeGroupKeyProp) return activeGroupKeyProp;
     const defaultGroup = FORM_GROUPS.find(group => group.defaultOpen) || FORM_GROUPS[0];
     return defaultGroup ? defaultGroup.key : null;
   });
 
   useEffect(() => {
-    if (activeGroupKeyProp !== undefined && activeGroupKeyProp !== internalActiveGroupKey) {
-      setInternalActiveGroupKey(activeGroupKeyProp);
+    if (activeGroupKeyProp && activeGroupKeyProp !== activeGroupKey) {
+      setActiveGroupKey(activeGroupKeyProp);
     }
-  }, [activeGroupKeyProp, internalActiveGroupKey]);
+  }, [activeGroupKeyProp, activeGroupKey]);
 
-  const resolvedActiveGroupKey = activeGroupKeyProp !== undefined ? activeGroupKeyProp : internalActiveGroupKey;
-
-  const updateActiveGroupKey = useCallback((nextKey) => {
+  const setGroupKey = useCallback((nextKey) => {
     if (!nextKey) return;
-    if (onActiveGroupChange) onActiveGroupChange(nextKey);
-    if (activeGroupKeyProp === undefined) {
-      setInternalActiveGroupKey(nextKey);
-    }
-  }, [activeGroupKeyProp, onActiveGroupChange]);
+    setActiveGroupKey(nextKey);
+    onActiveGroupChange?.(nextKey);
+  }, [onActiveGroupChange]);
 
   const activeGroup = useMemo(() => (
-    FORM_GROUPS.find(group => group.key === resolvedActiveGroupKey) || FORM_GROUPS[0] || null
-  ), [resolvedActiveGroupKey]);
+    FORM_GROUPS.find(group => group.key === activeGroupKey) || FORM_GROUPS[0] || null
+  ), [activeGroupKey]);
 
   useEffect(() => {
     if (!activeGroup && FORM_GROUPS.length) {
-      updateActiveGroupKey(FORM_GROUPS[0].key);
+      setGroupKey(FORM_GROUPS[0].key);
     }
-  }, [activeGroup, updateActiveGroupKey]);
+  }, [activeGroup, setGroupKey]);
 
   const handleSelectSavedVenue = (venueIdValue) => {
     const value = venueIdValue || '';
@@ -1644,7 +1653,7 @@ function JobsheetEditor({
                   type="button"
                   role="tab"
                   aria-selected={isActive}
-                  onClick={() => updateActiveGroupKey(group.key)}
+                  onClick={() => setGroupKey(group.key)}
                   className={`w-full text-left rounded-lg border px-4 py-3 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
                 >
                   <div className="text-sm font-semibold">{group.title}</div>
@@ -1678,7 +1687,7 @@ function JobsheetEditor({
                         onChange={handleFieldChange}
                         hasExisting={hasExisting}
                         onUpdateSingerPool={onUpdateSingerPool}
-                        onFocusPricingPanel={() => updateActiveGroupKey('pricing')}
+                        onFocusPricingPanel={() => setGroupKey('pricing')}
                       />
                     ) : (
                       <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
@@ -2078,13 +2087,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
-  const [activeEditorSectionState, setActiveEditorSectionState] = useState(() => readLastJobsheetSection());
-
-  const setActiveEditorSection = useCallback((sectionKey) => {
-    const resolved = sectionKey || FORM_GROUPS[0]?.key || 'client';
-    setActiveEditorSectionState(resolved);
-    storeLastJobsheetSection(resolved);
-  }, []);
+  const [activeEditorSection, setActiveEditorSection] = useState('client');
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
@@ -2168,14 +2171,14 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     formStateRef.current = formState;
   }, [formState]);
 
-  const handleUpdateSingerPool = useCallback(async (singers) => {
+  const handleUpdateSingerPool = useCallback(async (singers, options = {}) => {
     const api = window.api;
     if (!api || !api.updateAhmenSingerPool) {
       throw new Error('Unable to update singer pool: API unavailable');
     }
     const nextConfig = await api.updateAhmenSingerPool(singers);
     setPricingConfig(nextConfig || null);
-    setActiveEditorSection('pricing');
+    // JobsheetEditor handles focusing the pricing panel when needed.
     return nextConfig;
   }, []);
 
@@ -2543,7 +2546,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               pricingConfig={pricingConfig}
               pricingTotals={pricingDerived}
               onUpdateSingerPool={handleUpdateSingerPool}
-              activeGroupKey={activeEditorSectionState}
+              activeGroupKey={activeEditorSection}
               onActiveGroupChange={setActiveEditorSection}
             />
           </>

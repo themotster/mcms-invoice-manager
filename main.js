@@ -7,6 +7,11 @@ const DEFAULT_WINDOW_STATE = {
   height: 800
 };
 
+const DEFAULT_JOBSHEET_WINDOW_STATE = {
+  width: 1280,
+  height: 900
+};
+
 let mainWindow = null;
 
 function getStateStorePath() {
@@ -14,8 +19,6 @@ function getStateStorePath() {
 }
 
 const CHILD_WINDOW_OPTIONS = {
-  width: 1280,
-  height: 900,
   webPreferences: {
     preload: path.join(__dirname, 'preload.js'),
     contextIsolation: true,
@@ -43,6 +46,31 @@ function persistWindowState(state) {
     fs.writeFileSync(getStateStorePath(), JSON.stringify(state), 'utf-8');
   } catch (err) {
     console.warn('Failed to persist window state', err);
+  }
+}
+
+function getJobsheetStateStorePath() {
+  return path.join(app.getPath('userData'), 'jobsheet-window-state.json');
+}
+
+function restoreJobsheetWindowState() {
+  try {
+    const raw = fs.readFileSync(getJobsheetStateStorePath(), 'utf-8');
+    const state = JSON.parse(raw);
+    return {
+      ...DEFAULT_JOBSHEET_WINDOW_STATE,
+      ...state
+    };
+  } catch (err) {
+    return { ...DEFAULT_JOBSHEET_WINDOW_STATE };
+  }
+}
+
+function persistJobsheetWindowState(state) {
+  try {
+    fs.writeFileSync(getJobsheetStateStorePath(), JSON.stringify(state), 'utf-8');
+  } catch (err) {
+    console.warn('Failed to persist jobsheet window state', err);
   }
 }
 
@@ -104,10 +132,20 @@ function createWindow() {
 }
 
 function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) {
-  const child = new BrowserWindow({
+  const savedState = restoreJobsheetWindowState();
+  const childOptions = {
     ...CHILD_WINDOW_OPTIONS,
+    width: savedState.width,
+    height: savedState.height,
     parent
-  });
+  };
+
+  if (typeof savedState.x === 'number' && typeof savedState.y === 'number') {
+    childOptions.x = savedState.x;
+    childOptions.y = savedState.y;
+  }
+
+  const child = new BrowserWindow(childOptions);
 
   const query = {
     mode: 'jobsheet'
@@ -123,6 +161,31 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
       parent.focus();
     }
   });
+
+  const saveChildState = () => {
+    if (child.isDestroyed()) return;
+    const bounds = child.getBounds();
+    persistJobsheetWindowState({
+      ...bounds,
+      isMaximized: child.isMaximized()
+    });
+  };
+
+  child.on('close', saveChildState);
+  child.on('move', () => {
+    if (!child.isMaximized() && !child.isMinimized()) {
+      saveChildState();
+    }
+  });
+  child.on('resize', () => {
+    if (!child.isMaximized() && !child.isMinimized()) {
+      saveChildState();
+    }
+  });
+
+  if (savedState.isMaximized) {
+    child.maximize();
+  }
 }
 
 app.whenReady().then(() => {
