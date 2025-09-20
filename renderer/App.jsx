@@ -199,7 +199,6 @@ const FORM_GROUPS = [
     defaultOpen: false,
     fields: [
       { name: 'ahmen_fee', label: 'AhMen Fee (£)', type: 'number', step: '0.01', hint: 'Total fee for the booking.' },
-      { name: 'specialist_fees', label: 'Specialist Singers / Other Fees (£)', type: 'number', step: '0.01' },
       { name: 'production_fees', label: 'Sound / AV / Production (£)', type: 'number', step: '0.01' },
       { name: 'deposit_amount', label: 'Deposit (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Automatically 30% of AhMen fee.' },
       { name: 'balance_amount', label: 'Balance (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Remaining balance after deposit (70%).' },
@@ -313,8 +312,10 @@ function applyDerivedFields(nextState) {
     next.balance_reminder_date = '';
   }
 
-  if (next.venue_same_as_client && !next.venue_id) {
-    next.venue_name = next.client_name || next.venue_name;
+  if (next.venue_same_as_client) {
+    // Force override: ignore/clear any saved venue selection
+    next.venue_id = null;
+    next.venue_name = 'Private residence';
     next.venue_address1 = next.client_address1 || '';
     next.venue_address2 = next.client_address2 || '';
     next.venue_address3 = next.client_address3 || '';
@@ -1494,16 +1495,66 @@ function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3
 
   let input;
   if (component === 'statusSelect') {
+    const current = normalizeStatus(value) || 'enquiry';
+    const list = options || STATUS_OPTIONS;
     input = (
-      <select
-        className='mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500'
-        value={value || 'enquiry'}
-        onChange={event => onChange(event.target.value)}
-      >
-        {(options || STATUS_OPTIONS).map(option => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
+      <div className="mt-1 flex flex-wrap gap-2">
+        {list.map(opt => {
+          const active = opt.value === current;
+          const base = 'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-sm font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500';
+          const activeStyles = STATUS_STYLES[opt.value] || 'bg-slate-200 text-slate-700 border-slate-300';
+          const inactiveStyles = 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600';
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              className={`${base} ${active ? activeStyles : inactiveStyles}`}
+              onClick={() => {
+                if (!active) onChange(opt.value);
+              }}
+            >
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  } else if (component === 'venueSearch') {
+    const venueQueryParts = [];
+    if (options?.useClient) {
+      // alternate mode if we ever want client search
+    }
+    input = (
+      <div className="mt-1 flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          onClick={() => {
+            const name = document.querySelector('input[name="venue_name"]')?.value || '';
+            const town = document.querySelector('input[name="venue_town"]')?.value || '';
+            const postcode = document.querySelector('input[name="venue_postcode"]')?.value || '';
+            const query = [name, town, postcode].filter(Boolean).join(' ');
+            const url = `https://www.google.com/search?q=${encodeURIComponent(query || 'venue')}`;
+            window.api?.openExternal?.(url) || window.open(url, '_blank');
+          }}
+        >
+          Search Google
+        </button>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          onClick={() => {
+            const name = document.querySelector('input[name="venue_name"]')?.value || '';
+            const town = document.querySelector('input[name="venue_town"]')?.value || '';
+            const postcode = document.querySelector('input[name="venue_postcode"]')?.value || '';
+            const query = [name, town, postcode].filter(Boolean).join(' ');
+            const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query || 'venue')}`;
+            window.api?.openExternal?.(url) || window.open(url, '_blank');
+          }}
+        >
+          Search Maps
+        </button>
+      </div>
     );
   } else if (type === 'textarea') {
     input = <textarea {...common} rows={rows} />;
@@ -1802,7 +1853,7 @@ function JobsheetEditor({
                       step={field.step}
                       rows={field.rows}
                       hint={field.hint}
-                      readOnly={field.readOnly}
+                      readOnly={field.name === 'venue_name' ? Boolean(formState.venue_same_as_client) : field.readOnly}
                       component={field.component}
                       options={field.options}
                       value={resolvedValue}
@@ -1846,6 +1897,23 @@ function JobsheetEditor({
               </button>
             </div>
             <div className="mt-4 space-y-3">
+              <div className="flex items-center justify-start">
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded bg-indigo-50 text-indigo-800 border border-indigo-200 px-3 py-1.5 text-xs font-medium hover:bg-indigo-100"
+                  onClick={() => {
+                    handleVenueDraftChange('name', '');
+                    handleVenueDraftChange('address1', '');
+                    handleVenueDraftChange('address2', '');
+                    handleVenueDraftChange('address3', '');
+                    handleVenueDraftChange('town', '');
+                    handleVenueDraftChange('postcode', '');
+                    handleVenueDraftChange('is_private', false);
+                  }}
+                >
+                  Clear fields
+                </button>
+              </div>
               <label className="block text-sm font-medium text-slate-600">
                 Venue name
                 <input
@@ -1855,6 +1923,42 @@ function JobsheetEditor({
                   onChange={event => handleVenueDraftChange('name', event.target.value)}
                 />
               </label>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  onClick={() => {
+                    const queryParts = [venueDraft.name, venueDraft.town, venueDraft.postcode, venueDraft.address1]
+                      .filter(Boolean)
+                      .join(' ');
+                    const fallbackParts = [formState.venue_name, formState.venue_town, formState.venue_postcode, formState.venue_address1]
+                      .filter(Boolean)
+                      .join(' ');
+                    const q = queryParts || fallbackParts || 'venue address';
+                    const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+                    window.api?.openExternal?.(url) || window.open(url, '_blank');
+                  }}
+                >
+                  Search Google
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center gap-1.5 rounded border px-2.5 py-1 text-sm font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  onClick={() => {
+                    const queryParts = [venueDraft.name, venueDraft.town, venueDraft.postcode, venueDraft.address1]
+                      .filter(Boolean)
+                      .join(' ');
+                    const fallbackParts = [formState.venue_name, formState.venue_town, formState.venue_postcode, formState.venue_address1]
+                      .filter(Boolean)
+                      .join(' ');
+                    const q = queryParts || fallbackParts || 'venue address';
+                    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
+                    window.api?.openExternal?.(url) || window.open(url, '_blank');
+                  }}
+                >
+                  Search Maps
+                </button>
+              </div>
               <label className="block text-sm font-medium text-slate-600">
                 Address line 1
                 <input
@@ -1902,15 +2006,7 @@ function JobsheetEditor({
                   />
                 </label>
               </div>
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-600">
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                  checked={venueDraft.is_private}
-                  onChange={event => handleVenueDraftChange('is_private', event.target.checked)}
-                />
-                Private residence (use client address)
-              </label>
+              
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button
