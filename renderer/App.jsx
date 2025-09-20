@@ -1097,10 +1097,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                   key={singerId}
                   type="button"
                   onClick={() => handleToggleSinger(singerId)}
-                  className={`text-left rounded px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isSelected ? 'bg-indigo-500 text-white shadow-sm' : 'border border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70'}`}
+                  className={`text-left rounded px-3 py-2 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isSelected ? 'bg-indigo-500 text-white shadow-sm' : 'border border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70 text-slate-700'}`}
                 >
                   <div className="flex items-start justify-between">
-                    <span className={`text-sm font-medium leading-tight ${isSelected ? 'text-white' : 'text-slate-700'}`}>{singer.name || 'Unnamed singer'}</span>
+                    <span className={`text-sm font-medium leading-tight ${isSelected ? 'text-white' : ''}`}>{singer.name || 'Unnamed singer'}</span>
                     {canManagePool ? (
                       <button
                         type="button"
@@ -2171,14 +2171,14 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     formStateRef.current = formState;
   }, [formState]);
 
-  const handleUpdateSingerPool = useCallback(async (singers, options = {}) => {
+  const handleUpdateSingerPool = useCallback(async (singers) => {
     const api = window.api;
     if (!api || !api.updateAhmenSingerPool) {
       throw new Error('Unable to update singer pool: API unavailable');
     }
     const nextConfig = await api.updateAhmenSingerPool(singers);
     setPricingConfig(nextConfig || null);
-    // JobsheetEditor handles focusing the pricing panel when needed.
+    setActiveEditorSection('pricing');
     return nextConfig;
   }, []);
 
@@ -2532,7 +2532,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               </div>
             </div>
 
-            <JobsheetEditor
+           <JobsheetEditor
               business={resolvedBusiness}
               formState={formState}
               onChange={setFormState}
