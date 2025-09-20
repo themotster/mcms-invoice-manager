@@ -696,23 +696,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     [productionItems]
   );
 
-  useEffect(() => {
-    const nextSubtotalString = productionItems.length ? productionTotalValue.toFixed(2) : '';
-    const current = formState.pricing_production_subtotal ?? '';
-    if (nextSubtotalString !== current) {
-      onChange('pricing_production_subtotal', nextSubtotalString);
-    }
-  }, [productionItems, productionTotalValue, formState.pricing_production_subtotal, onChange]);
-
-  useEffect(() => {
-    const hasProductionValues = productionSubtotalValue > 0 || productionDiscountValueNumber > 0;
-    const nextNetString = hasProductionValues ? productionNetValue.toFixed(2) : '';
-    const current = formState.pricing_production_total ?? '';
-    if (nextNetString !== current) {
-      onChange('pricing_production_total', nextNetString);
-    }
-  }, [productionSubtotalValue, productionDiscountValueNumber, productionNetValue, formState.pricing_production_total, onChange]);
-
   const customFeesNumber = Number(formState.pricing_custom_fees) || 0;
 
   const updateSelected = useCallback((entries) => {
@@ -859,14 +842,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     }
   }, [singerDiscountValueNumber, formState.pricing_discount_value, onChange]);
 
-  useEffect(() => {
-    const nextProductionDiscountString = productionDiscountValueNumber > 0 ? productionDiscountValueNumber.toFixed(2) : '';
-    const current = formState.pricing_production_discount_value ?? '';
-    if (nextProductionDiscountString !== current) {
-      onChange('pricing_production_discount_value', nextProductionDiscountString);
-    }
-  }, [productionDiscountValueNumber, formState.pricing_production_discount_value, onChange]);
-
   const selectedIdSet = useMemo(
     () => new Set(selectedEntries.map(entry => entry.id)),
     [selectedEntries]
@@ -894,28 +869,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       }
     ]);
   }, [poolMap, selectedEntries, selectedService, updateSelected]);
-
-  const handleAddProductionItem = useCallback(() => {
-    const newItem = {
-      id: `production-${Date.now()}`,
-      name: '',
-      description: '',
-      cost: '',
-      markup: '',
-      notes: ''
-    };
-    onChange('pricing_production_items', normalizeProductionItems([...productionItems, newItem]));
-  }, [onChange, productionItems]);
-
-  const handleProductionChange = useCallback((id, field, value) => {
-    const next = productionItems.map(item => (item.id === id ? { ...item, [field]: value } : item));
-    onChange('pricing_production_items', normalizeProductionItems(next));
-  }, [onChange, productionItems]);
-
-  const handleRemoveProductionItem = useCallback((id) => {
-    const next = productionItems.filter(item => item.id !== id);
-    onChange('pricing_production_items', normalizeProductionItems(next));
-  }, [onChange, productionItems]);
 
   const handleClearSelection = useCallback(() => {
     // Preserve locked status in memory by re-adding entries but marked as unselected is equivalent to clearing list.
@@ -1363,7 +1316,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
             <span className="text-xs text-slate-500">≈ {toCurrency(singerDiscountValueNumber)}</span>
           ) : null}
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1 w-32 sm:w-36">
           {['amount', 'percent'].map(type => (
             <button
               key={type}
@@ -1380,7 +1333,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
           ))}
         </div>
         <div className="flex items-center gap-2">
-          <div className="relative flex-1">
+          <div className="relative w-32 sm:w-36">
             <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">
               {singerDiscountType === 'amount' ? '£' : '%'}
             </span>
@@ -1398,177 +1351,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         </div>
       </div>
 
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <span className="text-sm font-medium text-slate-600">Production & external services</span>
-            <p className="text-xs text-slate-500">Track external suppliers, apply markup, and include totals automatically.</p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onClick={handleAddProductionItem}
-          className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-        >
-          + Add item
-        </button>
-        {productionItems.length ? (
-          <div className="space-y-3">
-            {productionItems.map(item => {
-              const lineTotal = calculateProductionItemTotal(item);
-              return (
-                <div key={item.id} className="rounded border border-slate-200 bg-white p-3 space-y-3">
-                  <div className="grid gap-2 sm:grid-cols-5">
-                    <label className="sm:col-span-2 text-xs font-medium uppercase tracking-wide text-slate-500">
-                      Supplier / Company
-                      <input
-                        type="text"
-                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        value={item.name}
-                        onChange={event => handleProductionChange(item.id, 'name', event.target.value)}
-                      />
-                    </label>
-                    <label className="sm:col-span-2 text-xs font-medium uppercase tracking-wide text-slate-500">
-                      Description
-                      <input
-                        type="text"
-                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        value={item.description}
-                        onChange={event => handleProductionChange(item.id, 'description', event.target.value)}
-                      />
-                    </label>
-                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                      Cost (£)
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        value={item.cost}
-                        onChange={event => handleProductionChange(item.id, 'cost', event.target.value)}
-                      />
-                    </label>
-                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                      Markup (%)
-                      <input
-                        type="number"
-                        step="0.1"
-                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        value={item.markup}
-                        onChange={event => handleProductionChange(item.id, 'markup', event.target.value)}
-                      />
-                    </label>
-                    <div className="flex flex-col justify-between">
-                      <div>
-                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Line total</div>
-                        <div className="text-sm font-semibold text-slate-700">{toCurrency(lineTotal)}</div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveProductionItem(item.id)}
-                        className="self-end text-xs font-medium text-red-600 hover:text-red-500"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                  <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                    Notes
-                    <textarea
-                      rows={2}
-                      className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={item.notes}
-                      onChange={event => handleProductionChange(item.id, 'notes', event.target.value)}
-                    />
-                  </label>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-            No production items yet. Add suppliers or services to include third-party costs.
-          </div>
-        )}
-        <div className="rounded border border-slate-200 bg-white p-3 text-sm space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="font-medium text-slate-600">Production discount</span>
-            {productionDiscountType === 'percent' && productionDiscountValueNumber > 0 ? (
-              <span className="text-xs text-slate-500">≈ {toCurrency(productionDiscountValueNumber)}</span>
-            ) : null}
-          </div>
-          <div className="flex gap-1">
-            {['amount', 'percent'].map(type => (
-              <button
-                key={type}
-                type="button"
-                onClick={() => {
-                  if (type !== productionDiscountType) onChange('pricing_production_discount_type', type);
-                }}
-                className={`inline-flex flex-1 items-center justify-center rounded-full border px-2.5 py-1 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
-                  type === productionDiscountType ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'
-                }`}
-              >
-                {type === 'amount' ? 'Amount (£)' : 'Percent (%)'}
-              </button>
-            ))}
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
-              <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">
-                {productionDiscountType === 'amount' ? '£' : '%'}
-              </span>
-              <input
-                type="number"
-                step="0.01"
-                className="w-full rounded border border-slate-300 px-6 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                value={formState.pricing_production_discount || ''}
-                onChange={event => onChange('pricing_production_discount', event.target.value)}
-              />
-            </div>
-            {productionDiscountType === 'percent' ? (
-              <span className="text-xs text-slate-500">≈ {toCurrency(productionDiscountValueNumber)}</span>
-            ) : null}
-          </div>
-        </div>
-        <div className="flex items-center justify-between text-sm text-slate-600">
-          <span>Total production</span>
-          <span className="font-semibold text-slate-700">{toCurrency(productionNetValue)}</span>
-        </div>
-      </section>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <Field
-          label="Custom fees (£)"
-          type="number"
-          step="0.01"
-          value={formState.pricing_custom_fees || ''}
-          onChange={value => onChange('pricing_custom_fees', value)}
-        />
-        <Field
-          label="Singer discount (£)"
-          type="number"
-          step="0.01"
-          value={formState.pricing_discount_value || (singerDiscountValueNumber ? singerDiscountValueNumber.toFixed(2) : '')}
-          onChange={value => onChange('pricing_discount_value', value)}
-          readOnly
-        />
-        <Field
-          label="Production discount (£)"
-          type="number"
-          step="0.01"
-          value={formState.pricing_production_discount_value || (productionDiscountValueNumber ? productionDiscountValueNumber.toFixed(2) : '')}
-          onChange={value => onChange('pricing_production_discount_value', value)}
-          readOnly
-        />
-        <Field
-          label="Pricing total (£)"
-          type="number"
-          step="0.01"
-          value={formState.pricing_total || totalDerivedString}
-          onChange={value => onChange('pricing_total', value)}
-          readOnly
-        />
-      </div>
 
       <div className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-700">
         <div className="font-semibold">Quote summary</div>
@@ -1825,6 +1607,238 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         </div>
       ) : null}
     </>
+  );
+}
+
+function ProductionPanel({ formState, onChange, totals }) {
+  const productionItems = useMemo(
+    () => normalizeProductionItems(formState.pricing_production_items),
+    [formState.pricing_production_items]
+  );
+
+  const productionTotalValue = useMemo(
+    () => calculateProductionTotal(productionItems),
+    [productionItems]
+  );
+
+  const productionDiscountType = formState.pricing_production_discount_type || 'amount';
+  const productionDiscountValueNumber = useMemo(
+    () => calculateDiscountValue({
+      type: productionDiscountType,
+      value: formState.pricing_production_discount,
+      subtotal: productionTotalValue
+    }),
+    [productionDiscountType, formState.pricing_production_discount, productionTotalValue]
+  );
+
+  useEffect(() => {
+    const nextSubtotalString = productionItems.length ? productionTotalValue.toFixed(2) : '';
+    const current = formState.pricing_production_subtotal ?? '';
+    if (nextSubtotalString !== current) {
+      onChange('pricing_production_subtotal', nextSubtotalString);
+    }
+  }, [productionItems, productionTotalValue, formState.pricing_production_subtotal, onChange]);
+
+  useEffect(() => {
+    const netValue = Math.max(productionTotalValue - productionDiscountValueNumber, 0);
+    const hasValues = productionTotalValue > 0 || productionDiscountValueNumber > 0;
+    const nextNetString = hasValues ? netValue.toFixed(2) : '';
+    const current = formState.pricing_production_total ?? '';
+    if (nextNetString !== current) {
+      onChange('pricing_production_total', nextNetString);
+    }
+  }, [productionTotalValue, productionDiscountValueNumber, formState.pricing_production_total, onChange]);
+
+  useEffect(() => {
+    const nextDiscountString = productionDiscountValueNumber > 0 ? productionDiscountValueNumber.toFixed(2) : '';
+    const current = formState.pricing_production_discount_value ?? '';
+    if (nextDiscountString !== current) {
+      onChange('pricing_production_discount_value', nextDiscountString);
+    }
+  }, [productionDiscountValueNumber, formState.pricing_production_discount_value, onChange]);
+
+  const handleAddProductionItem = useCallback(() => {
+    const newItem = {
+      id: `production-${Date.now()}`,
+      name: '',
+      description: '',
+      cost: '',
+      markup: '20',
+      notes: ''
+    };
+    onChange('pricing_production_items', normalizeProductionItems([...productionItems, newItem]));
+  }, [productionItems, onChange]);
+
+  const handleProductionChange = useCallback((id, field, value) => {
+    const next = productionItems.map(item => (item.id === id ? { ...item, [field]: value } : item));
+    onChange('pricing_production_items', normalizeProductionItems(next));
+  }, [productionItems, onChange]);
+
+  const handleRemoveProductionItem = useCallback((id) => {
+    const next = productionItems.filter(item => item.id !== id);
+    onChange('pricing_production_items', normalizeProductionItems(next));
+  }, [productionItems, onChange]);
+
+  const productionNetValue = totals?.productionNet ?? Math.max(productionTotalValue - productionDiscountValueNumber, 0);
+  const productionDiscountValueDisplay = totals?.productionDiscountValue ?? productionDiscountValueNumber;
+  const singerDiscountValueNumber = totals?.singerDiscountValue ?? (Number(formState.pricing_discount_value) || 0);
+  const customFeesNumber = totals?.custom ?? (Number(formState.pricing_custom_fees) || 0);
+  const singerNetValue = totals?.singerNet ?? (Number(formState.ahmen_fee) || 0);
+  const totalValue = totals?.total ?? (singerNetValue + productionNetValue);
+
+  return (
+    <div className="space-y-6">
+      <section className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <span className="text-sm font-medium text-slate-600">Production & external services</span>
+            <p className="text-xs text-slate-500">Track external suppliers, apply markup, and include totals automatically.</p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleAddProductionItem}
+          className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+        >
+          + Add item
+        </button>
+        {productionItems.length ? (
+          <div className="space-y-3">
+            {productionItems.map(item => {
+              const lineTotal = calculateProductionItemTotal(item);
+              return (
+                <div key={item.id} className="rounded border border-slate-200 bg-white p-3 space-y-3">
+                  <div className="grid gap-2 sm:grid-cols-5">
+                    <label className="sm:col-span-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Supplier / Company
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.name}
+                        onChange={event => handleProductionChange(item.id, 'name', event.target.value)}
+                      />
+                    </label>
+                    <label className="sm:col-span-2 text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Description
+                      <input
+                        type="text"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.description}
+                        onChange={event => handleProductionChange(item.id, 'description', event.target.value)}
+                      />
+                    </label>
+                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Cost (£)
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.cost}
+                        onChange={event => handleProductionChange(item.id, 'cost', event.target.value)}
+                      />
+                    </label>
+                    <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                      Markup (%)
+                      <input
+                        type="number"
+                        step="0.1"
+                        className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        value={item.markup}
+                        onChange={event => handleProductionChange(item.id, 'markup', event.target.value)}
+                      />
+                    </label>
+                    <div className="flex flex-col justify-between">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Line total</div>
+                        <div className="text-sm font-semibold text-slate-700">{toCurrency(lineTotal)}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveProductionItem(item.id)}
+                        className="self-end text-xs font-medium text-red-600 hover:text-red-500"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                  <label className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Notes
+                    <textarea
+                      rows={2}
+                      className="mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      value={item.notes}
+                      onChange={event => handleProductionChange(item.id, 'notes', event.target.value)}
+                    />
+                  </label>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            No production items yet. Add suppliers or services to include third-party costs.
+          </div>
+        )}
+      </section>
+
+      <div className="rounded border border-slate-200 bg-white p-3 text-sm space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="font-medium text-slate-600">Production discount</span>
+          {productionDiscountType === 'percent' && productionDiscountValueDisplay > 0 ? (
+            <span className="text-xs text-slate-500">≈ {toCurrency(productionDiscountValueDisplay)}</span>
+          ) : null}
+        </div>
+        <div className="flex gap-1 w-32 sm:w-36">
+          {['amount', 'percent'].map(type => (
+            <button
+              key={type}
+              type="button"
+              onClick={() => {
+                if (type !== productionDiscountType) onChange('pricing_production_discount_type', type);
+              }}
+              className={`inline-flex flex-1 items-center justify-center rounded-full border px-2.5 py-1 text-xs font-medium transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${
+                type === productionDiscountType ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm' : 'bg-white border-slate-200 text-slate-600 hover:border-indigo-200 hover:text-indigo-600'
+              }`}
+            >
+              {type === 'amount' ? 'Amount (£)' : 'Percent (%)'}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative w-32 sm:w-36">
+            <span className="pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">
+              {productionDiscountType === 'amount' ? '£' : '%'}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              className="w-full rounded border border-slate-300 px-6 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              value={formState.pricing_production_discount || ''}
+              onChange={event => onChange('pricing_production_discount', event.target.value)}
+            />
+          </div>
+          {productionDiscountType === 'percent' ? (
+            <span className="text-xs text-slate-500">≈ {toCurrency(productionDiscountValueDisplay)}</span>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between text-sm text-slate-600">
+        <span>Total production</span>
+        <span className="font-semibold text-slate-700">{toCurrency(productionNetValue)}</span>
+      </div>
+
+      <div className="rounded-lg bg-indigo-50 p-3 text-sm text-indigo-700">
+        <div className="font-semibold">Quote summary</div>
+        <div>{totals?.singerCount ?? 0} singer{(totals?.singerCount ?? 0) === 1 ? '' : 's'} selected · Base fee {toCurrency(totals?.base ?? 0)}</div>
+        <div>Singer fees after discount: {toCurrency(totals?.singerNet ?? singerNetValue)}</div>
+        <div>Production after discount: {toCurrency(totals?.productionNet ?? productionNetValue)}</div>
+        <div>Singer discount: -{toCurrency(singerDiscountValueNumber)}</div>
+        <div>Production discount: -{toCurrency(productionDiscountValueDisplay)}</div>
+        <div>Custom fees: {toCurrency(customFeesNumber)}</div>
+        <div className="font-semibold text-indigo-900">Total after adjustments: {toCurrency(totalValue)}</div>
+      </div>
+    </div>
   );
 }
 

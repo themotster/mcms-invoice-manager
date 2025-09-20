@@ -68,6 +68,14 @@ const AHMEN_JOBSHEET_FIELDS = [
   'pricing_selected_singers',
   'pricing_custom_fees',
   'pricing_discount',
+  'pricing_discount_type',
+  'pricing_discount_value',
+  'pricing_production_items',
+  'pricing_production_subtotal',
+  'pricing_production_discount',
+  'pricing_production_discount_type',
+  'pricing_production_discount_value',
+  'pricing_production_total',
   'pricing_total'
 ];
 
@@ -78,6 +86,10 @@ const AHMEN_JOBSHEET_NUMERIC_FIELDS = new Set([
   'deposit_amount',
   'balance_amount',
   'pricing_discount',
+  'pricing_discount_value',
+  'pricing_production_subtotal',
+  'pricing_production_discount_value',
+  'pricing_production_total',
   'pricing_total'
 ]);
 
@@ -257,6 +269,14 @@ function initializeDatabase() {
       pricing_selected_singers TEXT,
       pricing_custom_fees TEXT,
       pricing_discount REAL,
+      pricing_discount_type TEXT,
+      pricing_discount_value REAL,
+      pricing_production_items TEXT,
+      pricing_production_subtotal REAL,
+      pricing_production_discount TEXT,
+      pricing_production_discount_type TEXT,
+      pricing_production_discount_value REAL,
+      pricing_production_total REAL,
       pricing_total REAL,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
@@ -278,6 +298,14 @@ function initializeDatabase() {
     db.run('ALTER TABLE business_settings ADD COLUMN quote_template_path TEXT', logDuplicateColumn);
     db.run('ALTER TABLE business_settings ADD COLUMN contract_template_path TEXT', logDuplicateColumn);
     db.run('ALTER TABLE business_settings ADD COLUMN gig_sheet_template_path TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_type TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_value REAL', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_items TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_subtotal REAL', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_discount TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_discount_type TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_discount_value REAL', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_total REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN venue_id INTEGER', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN venue_same_as_client INTEGER DEFAULT 0', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_service_id TEXT', logDuplicateColumn);
