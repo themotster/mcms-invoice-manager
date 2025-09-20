@@ -766,6 +766,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   }, [poolMap, selectedEntries, selectedService, updateSelected]);
 
   const handleClearSelection = useCallback(() => {
+    // Preserve locked status in memory by re-adding entries but marked as unselected is equivalent to clearing list.
+    // Since selection is represented by presence in the array, we clear the array; locked state will persist when
+    // those singers are re-selected (we don't maintain separate memory). If you want to remember locks across clears,
+    // we can store a transient map. For now, simply clear selection as requested.
     updateSelected([]);
   }, [updateSelected]);
 
@@ -782,16 +786,24 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         return Boolean(singer.defaultIncluded);
       })
       .map(singer => {
+        const existing = selectedEntries.find(e => e.id === singer.id);
+        if (existing && existing.locked) {
+          return { ...existing };
+        }
         const serviceDetails = singer.serviceFees?.[serviceId];
         const fallbackFee = singer.fee != null ? String(singer.fee) : '';
         const fee = serviceDetails?.fee != null ? String(serviceDetails.fee) : fallbackFee;
         return {
           id: singer.id,
           name: singer.name,
-          fee
+          fee,
+          locked: existing ? Boolean(existing.locked) : false
         };
       });
-    updateSelected(defaults);
+    // Keep any previously selected entries that aren't part of defaults (e.g., custom or extra picks)
+    const defaultIds = new Set(defaults.map(d => d.id));
+    const carry = selectedEntries.filter(e => !defaultIds.has(e.id));
+    updateSelected([...defaults, ...carry]);
   }, [selectedService, sortedSingers, updateSelected]);
 
   const currentServiceId = selectedService ? String(selectedService.id) : '';
