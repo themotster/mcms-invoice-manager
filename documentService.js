@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
+const JSZip = require('jszip');
 const db = require('./db');
 
 function ensureDirectoryExists(dirPath) {
@@ -33,6 +34,202 @@ function formatDateParts(dateInput) {
     year: 'numeric'
   });
   return { iso, human };
+}
+
+function escapeXmlText(value) {
+  if (value === undefined || value === null) return '';
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+    .replace(/\r?\n/g, '&#10;');
+}
+
+function normalizeNumericValue(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return Math.round(numeric * 100) / 100;
+}
+
+function formatNumericForCell(value) {
+  const normalized = normalizeNumericValue(value);
+  if (normalized === null) return null;
+  if (Number.isInteger(normalized)) return String(normalized);
+  return normalized.toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function ensureCalcPrAttributes(xml) {
+  if (!xml) return xml;
+  const attrCleanup = attrs => attrs
+    .replace(/\sfullCalcOnLoad="[^"]*"/i, '')
+    .replace(/\scalcOnSave="[^"]*"/i, '');
+
+  if (/<calcPr[^>]*\/>/i.test(xml)) {
+    return xml.replace(/<calcPr([^>]*)\/>/i, (_match, attrs = '') => {
+      const nextAttrs = attrCleanup(attrs);
+      return `<calcPr${nextAttrs} fullCalcOnLoad="1" calcOnSave="1"/>`;
+    });
+  }
+
+  if (/<calcPr[^>]*>/i.test(xml)) {
+    return xml.replace(/<calcPr([^>]*)>/i, (_match, attrs = '') => {
+      const nextAttrs = attrCleanup(attrs);
+      return `<calcPr${nextAttrs} fullCalcOnLoad="1" calcOnSave="1">`;
+    });
+  }
+
+  return xml.replace(/<\/workbook>/i, '<calcPr fullCalcOnLoad="1" calcOnSave="1"/>\n</workbook>');
+}
+
+async function removeCalcChainArtifacts(zip) {
+  const calcChainPath = 'xl/calcChain.xml';
+  if (!zip.file(calcChainPath)) return;
+
+  zip.remove(calcChainPath);
+
+  const workbookRelsPath = 'xl/_rels/workbook.xml.rels';
+  const workbookRelsEntry = zip.file(workbookRelsPath);
+  if (workbookRelsEntry) {
+    let relsXml = await workbookRelsEntry.async('string');
+    relsXml = relsXml.replace(/<Relationship[^>]*Type="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships\/calcChain"[^>]*\/>\s*/gi, '');
+    zip.file(workbookRelsPath, relsXml);
+  }
+
+  const contentTypesPath = '[Content_Types].xml';
+  const contentEntry = zip.file(contentTypesPath);
+  if (contentEntry) {
+    let contentXml = await contentEntry.async('string');
+    contentXml = contentXml.replace(/<Override PartName="\/xl\/calcChain\.xml"[^>]*\/>\s*/gi, '');
+    zip.file(contentTypesPath, contentXml);
+  }
+}
+
+function replaceAhmenSharedStrings(xml, replacements) {
+  let nextXml = xml;
+  Object.entries(replacements).forEach(([placeholder, rawValue]) => {
+    const safeValue = escapeXmlText(rawValue || '');
+    const pattern = new RegExp(`>${placeholder}<`, 'g');
+    nextXml = nextXml.replace(pattern, `>${safeValue}<`);
+  });
+  return nextXml;
+}
+
+function buildNumericCell(cellRef, styleId, value) {
+  const numeric = formatNumericForCell(value);
+  const styleAttr = styleId ? ` s="${styleId}"` : '';
+  if (numeric === null) {
+    return `<c r="${cellRef}"${styleAttr}/>`;
+  }
+  return `<c r="${cellRef}"${styleAttr}><v>${numeric}</v></c>`;
+}
+
+function replaceAhmenNumericCell(xml, cellRef, styleId, value) {
+  const cellPattern = new RegExp(`<c[^>]*r=\"${cellRef}\"[^>]*>([\\s\\S]*?)<\/c>`, 'i');
+  const selfClosingPattern = new RegExp(`<c[^>]*r=\"${cellRef}\"[^>]*/>`, 'i');
+  const replacement = buildNumericCell(cellRef, styleId, value);
+
+  const replaced = xml.replace(cellPattern, replacement);
+  if (replaced !== xml) {
+    return replaced;
+  }
+  const replacedSelf = xml.replace(selfClosingPattern, replacement);
+  if (replacedSelf !== xml) {
+    return replacedSelf;
+  }
+  return xml;
+}
+
+
+async function applyAhmenTemplateWithZip({ templatePath, destinationPath, context }) {
+  if (!templatePath || !fs.existsSync(templatePath)) {
+    throw new Error('AhMen template is missing');
+  }
+
+  const templateBuffer = fs.readFileSync(templatePath);
+  const zip = await JSZip.loadAsync(templateBuffer);
+  const sharedStringsPath = 'xl/sharedStrings.xml';
+  const sheetPath = 'xl/worksheets/sheet1.xml';
+  const workbookPath = 'xl/workbook.xml';
+
+  const sharedStringsEntry = zip.file(sharedStringsPath);
+  const sheetEntry = zip.file(sheetPath);
+  const workbookEntry = zip.file(workbookPath);
+  if (!sharedStringsEntry || !sheetEntry) {
+    throw new Error('AhMen template is missing required worksheet data');
+  }
+
+  let sharedStringsXml = await sharedStringsEntry.async('string');
+  let sheetXml = await sheetEntry.async('string');
+  let workbookXml = workbookEntry ? await workbookEntry.async('string') : null;
+
+  const eventDateHuman = context.event?.event_date ? formatDateParts(context.event.event_date).human : '';
+  const balanceDateHuman = context.balanceDate ? formatDateParts(context.balanceDate).human : '';
+
+  const totalAmountText = formatNumericForCell(context.totalAmount) ?? '';
+  const extraFeesText = formatNumericForCell(context.extraFees) ?? '';
+  const productionFeesText = formatNumericForCell(context.productionFees) ?? '';
+  const depositText = formatNumericForCell(context.deposit) ?? '';
+  const balanceAmountText = formatNumericForCell(context.balanceAmount) ?? '';
+
+  const sharedReplacements = {
+    CLIENT_NAME: context.client?.name || '',
+    CLIENT_EMAIL: context.client?.email || '',
+    CLIENT_PHONE: context.client?.phone || '',
+    CLIENT_ADDRESS1: context.client?.address1 || '',
+    CLIENT_ADDRESS2: context.client?.address2 || '',
+    CLIENT_ADDRESS3: context.client?.address3 || '',
+    CLIENT_TOWN: context.client?.town || '',
+    CLIENT_POSTCODE: context.client?.postcode || '',
+    EVENT_TYPE: context.event?.type || context.event?.event_name || '',
+    EVENT_DATE: eventDateHuman,
+    EVENT_START: context.event?.startTime || '',
+    EVENT_END: context.event?.endTime || '',
+    VENUE_NAME: context.event?.venue_name || '',
+    VENUE_ADDRESS1: context.event?.venue_address1 || '',
+    VENUE_ADDRESS2: context.event?.venue_address2 || '',
+    VENUE_ADDRESS3: context.event?.venue_address3 || '',
+    VENUE_TOWN: context.event?.venue_town || context.event?.town || '',
+    VENUE_POSTCODE: context.event?.venue_postcode || context.event?.postcode || '',
+    TOTAL_FEE: totalAmountText,
+    EXTRA_FEES: extraFeesText,
+    PRODUCTION_FEES: productionFeesText,
+    DEPOSIT_AMOUNT: depositText,
+    BALANCE_AMOUNT: balanceAmountText,
+    BALANCE_DATE: balanceDateHuman || '',
+    BALANCE_REMIND: context.balanceRemind || '',
+    SERVICE_TYPE: context.serviceType || '',
+    SPECIALIST_SINGERS: context.specialistSingers || ''
+  };
+
+  sharedStringsXml = replaceAhmenSharedStrings(sharedStringsXml, sharedReplacements);
+
+  const numericCells = [
+    { ref: 'B27', style: '12', value: context.totalAmount },
+    { ref: 'B28', style: '12', value: context.extraFees },
+    { ref: 'B29', style: '12', value: context.productionFees },
+    { ref: 'B30', style: '12', value: context.deposit },
+    { ref: 'B31', style: '12', value: context.balanceAmount }
+  ];
+
+  numericCells.forEach(cell => {
+    sheetXml = replaceAhmenNumericCell(sheetXml, cell.ref, cell.style, cell.value);
+  });
+
+  zip.file(sharedStringsPath, sharedStringsXml);
+  zip.file(sheetPath, sheetXml);
+
+  if (workbookXml) {
+    workbookXml = ensureCalcPrAttributes(workbookXml);
+    zip.file(workbookPath, workbookXml);
+  }
+
+  await removeCalcChainArtifacts(zip);
+
+  const output = await zip.generateAsync({ type: 'nodebuffer' });
+  fs.writeFileSync(destinationPath, output);
 }
 
 function defaultExtensionForType(docType) {
@@ -101,7 +298,10 @@ function setCellIfExists(worksheet, address, value) {
   if (!worksheet || !address) return;
   const cell = worksheet.getCell(address);
   if (cell) {
-    cell.value = value ?? '';
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+    cell.value = value;
   }
 }
 
@@ -233,49 +433,12 @@ function fillMcmsInvoiceWorksheet(worksheet, context) {
   }
 }
 
-function fillAhmenTemplate(workbook, context) {
-  const sheet = workbook.getWorksheet('Client Data') || workbook.worksheets[0];
-  if (!sheet) return;
-
-  // Client details
-  setCellIfExists(sheet, 'B3', context.client?.name || '');
-  setCellIfExists(sheet, 'B4', context.client?.email || '');
-  setCellIfExists(sheet, 'B5', context.client?.phone || '');
-  setCellIfExists(sheet, 'B6', context.client?.address1 || '');
-  setCellIfExists(sheet, 'B7', context.client?.address2 || '');
-  setCellIfExists(sheet, 'B8', context.client?.address3 || '');
-  setCellIfExists(sheet, 'B9', context.client?.town || '');
-  setCellIfExists(sheet, 'B10', context.client?.postcode || '');
-
-  // Event details
-  setCellIfExists(sheet, 'B13', context.event?.type || '');
-  setCellIfExists(sheet, 'B14', context.event?.event_date ? formatDateParts(context.event.event_date).human : '');
-  setCellIfExists(sheet, 'B15', context.event?.startTime || '');
-  setCellIfExists(sheet, 'B16', context.event?.endTime || '');
-
-  // Venue
-  setCellIfExists(sheet, 'B19', context.event?.venue_name || '');
-  setCellIfExists(sheet, 'B20', context.event?.venue_address1 || '');
-  setCellIfExists(sheet, 'B21', context.event?.venue_address2 || '');
-  setCellIfExists(sheet, 'B22', context.event?.venue_address3 || '');
-  setCellIfExists(sheet, 'B23', context.event?.venue_town || '');
-  setCellIfExists(sheet, 'B24', context.event?.venue_postcode || '');
-
-  // Billing
-  setCellIfExists(sheet, 'B27', context.totalAmount || '');
-  setCellIfExists(sheet, 'B28', context.extraFees || '');
-  setCellIfExists(sheet, 'B29', context.productionFees || '');
-  setCellIfExists(sheet, 'B30', context.deposit || '');
-  setCellIfExists(sheet, 'B31', context.balanceAmount || '');
-  setCellIfExists(sheet, 'B32', context.balanceDate || '');
-  setCellIfExists(sheet, 'B33', context.balanceRemind || '');
-
-  // Other
-  setCellIfExists(sheet, 'B36', context.serviceType || '');
-  setCellIfExists(sheet, 'B37', context.specialistSingers || '');
-}
-
 async function generateExcelDocument({ templatePath, destinationPath, business, docType, context }) {
+  if (business?.business_name === 'AhMen A Cappella Ltd') {
+    await applyAhmenTemplateWithZip({ templatePath, destinationPath, context });
+    return;
+  }
+
   const workbook = new ExcelJS.Workbook();
   if (templatePath && fs.existsSync(templatePath)) {
     const extension = path.extname(templatePath).toLowerCase();
@@ -288,13 +451,19 @@ async function generateExcelDocument({ templatePath, destinationPath, business, 
     workbook.addWorksheet('Sheet1');
   }
 
+  if (workbook.calcProperties) {
+    workbook.calcProperties.fullCalcOnLoad = true;
+    workbook.calcProperties.calcOnSave = true;
+  }
+  if (workbook.model && workbook.model.calcChain) {
+    delete workbook.model.calcChain;
+  }
+
   if (business?.business_name === 'Motti Cohen Music Services' && docType === 'invoice') {
     const sheet = workbook.worksheets[0];
     if (sheet) {
       fillMcmsInvoiceWorksheet(sheet, context);
     }
-  } else if (business?.business_name === 'AhMen A Cappella Ltd') {
-    fillAhmenTemplate(workbook, context);
   } else {
     workbook.worksheets.forEach(sheet => {
       const replacements = buildCommonReplacements(context);
@@ -388,6 +557,13 @@ function moveFile(source, destination) {
     }
     throw err;
   }
+}
+
+function appendFileSuffix(filePath, suffix) {
+  if (!filePath || !suffix) return filePath;
+  const extension = path.extname(filePath);
+  const base = extension ? filePath.slice(0, -extension.length) : filePath;
+  return `${base}${suffix}${extension}`;
 }
 
 async function relocateBusinessDocuments({ businessId, sourcePath, targetPath }) {
@@ -487,7 +663,42 @@ async function createDocument(documentData) {
   const sessionIds = Array.isArray(documentData.session_ids) ? documentData.session_ids.slice() : [];
   delete insertPayload.session_ids;
   const lineItems = Array.isArray(documentData.line_items) ? documentData.line_items.slice() : [];
+  const clientOverride = documentData.client_override ? { ...documentData.client_override } : null;
+  const eventOverride = documentData.event_override ? { ...documentData.event_override } : null;
+  const paymentTerms = documentData.payment_terms || documentData.payment_terms_text || '';
+  const notes = documentData.notes || '';
+  const quoteMeta = documentData.quote_meta ? { ...documentData.quote_meta } : {};
+  const contractMeta = documentData.contract_meta ? { ...documentData.contract_meta } : {};
+  const discountAmount = documentData.discount_amount;
+  const depositAmount = documentData.deposit_amount;
+  const extraFees = documentData.extra_fees;
+  const productionFees = documentData.production_fees;
+  const serviceType = documentData.service_types;
+  const specialistSingers = documentData.specialist_singers;
+  const balanceAmountOverride = documentData.balance_amount;
+  const balanceDateOverride = documentData.balance_due_date;
+  const balanceRemindOverride = documentData.balance_reminder_date;
+  const invoiceVariant = documentData.invoice_variant || null;
+  const fileNameSuffix = documentData.file_name_suffix || '';
+  const footerText = documentData.footer || business?.document_footer || '';
+
   delete insertPayload.line_items;
+  delete insertPayload.client_override;
+  delete insertPayload.event_override;
+  delete insertPayload.payment_terms;
+  delete insertPayload.payment_terms_text;
+  delete insertPayload.notes;
+  delete insertPayload.quote_meta;
+  delete insertPayload.contract_meta;
+  delete insertPayload.discount_amount;
+  delete insertPayload.deposit_amount;
+  delete insertPayload.extra_fees;
+  delete insertPayload.production_fees;
+  delete insertPayload.service_types;
+  delete insertPayload.specialist_singers;
+  delete insertPayload.invoice_variant;
+  delete insertPayload.file_name_suffix;
+  delete insertPayload.footer;
 
   const calculatedTotal = lineItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   if ((insertPayload.total_amount == null || insertPayload.total_amount === '') && calculatedTotal) {
@@ -503,8 +714,12 @@ async function createDocument(documentData) {
 
   const insertResult = await db.addDocument(insertPayload);
 
-  const templatePath = pickTemplatePath(business, documentData.doc_type);
-  const destinationPath = manualFilePath || buildDestinationPath({
+  let templatePath = pickTemplatePath(business, documentData.doc_type);
+  if (!templatePath && business?.business_name === 'AhMen A Cappella Ltd') {
+    templatePath = path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx');
+  }
+
+  let destinationPath = manualFilePath || buildDestinationPath({
     business,
     client,
     event,
@@ -517,17 +732,39 @@ async function createDocument(documentData) {
     ensureDirectoryExists(path.dirname(manualFilePath));
   }
 
+  const suffixLabel = fileNameSuffix
+    || (invoiceVariant === 'deposit' ? ' - Deposit' : invoiceVariant === 'balance' ? ' - Balance' : '');
+  if (suffixLabel) {
+    destinationPath = appendFileSuffix(destinationPath, suffixLabel);
+  }
+
   const context = {
     business,
-    client,
-    event,
+    client: clientOverride ? { ...client, ...clientOverride } : client,
+    event: eventOverride ? { ...event, ...eventOverride } : event,
     docType: documentData.doc_type,
     number: insertResult.number,
     documentDate: documentData.document_date || new Date().toISOString(),
     dueDate: insertPayload.due_date,
     totalAmount: insertPayload.total_amount,
     balanceDue: insertPayload.balance_due,
-    lineItems
+    lineItems,
+    paymentTerms,
+    notes,
+    quoteMeta,
+    contractMeta,
+    discountAmount,
+    depositAmount,
+    deposit: depositAmount,
+    extraFees,
+    productionFees,
+    serviceType,
+    specialistSingers,
+    balanceAmount: balanceAmountOverride ?? insertPayload.balance_due,
+    balanceDate: balanceDateOverride ?? insertPayload.due_date,
+    balanceRemind: balanceRemindOverride ?? '',
+    invoiceVariant,
+    footer: footerText
   };
 
   await generateDocumentFile({
@@ -577,5 +814,11 @@ module.exports = {
   buildDestinationPath,
   pickTemplatePath,
   deleteDocument,
-  relocateBusinessDocuments
+  relocateBusinessDocuments,
+  __private: {
+    applyAhmenTemplateWithZip,
+    replaceAhmenNumericCell,
+    buildNumericCell,
+    formatNumericForCell
+  }
 };

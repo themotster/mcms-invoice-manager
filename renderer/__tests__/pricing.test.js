@@ -2,7 +2,8 @@ import {
   normalizeProductionItems,
   calculateProductionItemTotal,
   calculateProductionTotal,
-  calculateDiscountValue
+  calculateDiscountValue,
+  formatProductionSummary
 } from '../helpers/pricing';
 
 describe('normalizeProductionItems', () => {

@@ -62,6 +62,8 @@ contextBridge.exposeInMainWorld('api', {
   updateBusinessSettings: async (businessId, updates) => await db.updateBusinessSettings(businessId, updates),
   relocateBusinessDocuments: async (options) => await documentService.relocateBusinessDocuments(options || {}),
   chooseDirectory: async (options) => await ipcRenderer.invoke('choose-directory', options || {}),
+  openPath: async (targetPath) => await ipcRenderer.invoke('open-path', targetPath),
+  showItemInFolder: async (targetPath) => await ipcRenderer.invoke('show-item-in-folder', targetPath),
   openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {}),
   notifyJobsheetChange: (payload) => ipcRenderer.send('jobsheet-change', payload || {}),
   onJobsheetChange: (callback) => {

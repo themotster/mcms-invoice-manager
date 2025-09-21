@@ -41,3 +41,10 @@ export function calculateDiscountValue({ type = 'amount', value, subtotal }) {
   }
   return Math.max(raw, 0);
 }
+
+export function formatProductionSummary(items = []) {
+  if (!Array.isArray(items)) return 'No production items';
+  const count = items.filter(Boolean).length;
+  if (count === 0) return 'No production items';
+  return `${count} production item${count === 1 ? '' : 's'}`;
+}

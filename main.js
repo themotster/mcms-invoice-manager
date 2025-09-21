@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -258,6 +258,29 @@ ipcMain.handle('choose-directory', async (event, args = {}) => {
     return null;
   }
   return result.filePaths[0] || null;
+});
+
+ipcMain.handle('open-path', async (_event, targetPath) => {
+  if (!targetPath || typeof targetPath !== 'string') return { ok: false, message: 'Missing path' };
+  try {
+    const result = await shell.openPath(targetPath);
+    if (result) {
+      return { ok: false, message: result };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('show-item-in-folder', async (_event, targetPath) => {
+  if (!targetPath || typeof targetPath !== 'string') return { ok: false, message: 'Missing path' };
+  try {
+    shell.showItemInFolder(targetPath);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
 });
 
 ipcMain.on('jobsheet-change', (event, payload = {}) => {

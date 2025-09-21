@@ -10,7 +10,6 @@ import {
 
 const AHMEN_NUMERIC_FIELDS = new Set([
   'ahmen_fee',
-  'specialist_fees',
   'production_fees',
   'deposit_amount',
   'balance_amount',
@@ -30,6 +29,16 @@ const STATUS_OPTIONS = [
   { value: 'confirmed', label: 'Confirmed' },
   { value: 'completed', label: 'Completed' }
 ];
+
+const DOCUMENT_CONFIG = {
+  workbook: { docType: 'invoice', label: 'Excel Workbook', fileSuffix: ' - Workbook' },
+  quote: { docType: 'quote', label: 'Quote', fileSuffix: ' - Quote' },
+  contract: { docType: 'contract', label: 'Contract', fileSuffix: ' - Contract' },
+  invoice_deposit: { docType: 'invoice', label: 'Invoice – Deposit', fileSuffix: ' - Deposit', invoiceVariant: 'deposit' },
+  invoice_balance: { docType: 'invoice', label: 'Invoice – Balance', fileSuffix: ' - Balance', invoiceVariant: 'balance' }
+};
+
+const DEFAULT_DOCUMENT_KEY = 'workbook';
 
 const STATUS_STYLES = {
   enquiry: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -128,7 +137,6 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   venue_town: '',
   venue_postcode: '',
   ahmen_fee: '',
-  specialist_fees: '',
   production_fees: '',
   deposit_amount: '',
   balance_amount: '',
@@ -341,10 +349,16 @@ function preparePayload(formState, businessId) {
 function applyDerivedFields(nextState) {
   const next = { ...nextState };
 
-  const fee = Number(next.ahmen_fee);
-  if (Number.isFinite(fee) && fee >= 0) {
-    const deposit = Math.round(fee * 0.3 * 100) / 100;
-    const balance = Math.max(fee - deposit, 0);
+  const singerFee = Number(next.ahmen_fee);
+  const productionSource = next.pricing_production_total ?? next.production_fees;
+  const productionFee = Number(productionSource);
+  const totalForDeposit = [singerFee, productionFee]
+    .map(amount => (Number.isFinite(amount) && amount > 0 ? amount : 0))
+    .reduce((sum, value) => sum + value, 0);
+
+  if (totalForDeposit > 0) {
+    const deposit = Math.round(totalForDeposit * 0.3 * 100) / 100;
+    const balance = Math.max(totalForDeposit - deposit, 0);
     next.deposit_amount = deposit.toFixed(2);
     next.balance_amount = balance.toFixed(2);
   } else {
@@ -2103,7 +2117,12 @@ function JobsheetEditor({
   pricingTotals,
   onUpdateSingerPool,
   activeGroupKey: activeGroupKeyProp,
-  onActiveGroupChange
+  onActiveGroupChange,
+  onGenerateDocument,
+  documentGenerating,
+  onOpenOutputFolder,
+  onOpenOutputFile,
+  lastGeneratedPath
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -2265,21 +2284,49 @@ function JobsheetEditor({
   return (
     <>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-slate-800">{hasExisting ? 'Edit jobsheet' : 'New jobsheet'}</h2>
             <p className="text-sm text-slate-500">Business: {business.business_name}</p>
           </div>
-        {hasExisting ? (
-          <button
-            onClick={onDelete}
-            disabled={deleting}
-            className="text-sm font-medium text-red-600 hover:text-red-500 disabled:opacity-60"
-          >
-            {deleting ? 'Deleting…' : 'Delete jobsheet'}
-          </button>
-        ) : null}
-      </div>
+          <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onGenerateDocument?.()}
+                disabled={!hasExisting || documentGenerating || deleting || saving}
+                className="inline-flex items-center justify-center rounded bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {documentGenerating ? 'Copying…' : 'Copy to Excel'}
+              </button>
+              <button
+                type="button"
+                onClick={onOpenOutputFolder}
+                disabled={!hasExisting || !onOpenOutputFolder}
+                className="inline-flex items-center justify-center rounded border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Open folder
+              </button>
+              <button
+                type="button"
+                onClick={onOpenOutputFile}
+                disabled={!lastGeneratedPath || !onOpenOutputFile}
+                className="inline-flex items-center justify-center rounded border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Open latest file
+              </button>
+            </div>
+            {hasExisting ? (
+              <button
+                onClick={onDelete}
+                disabled={deleting}
+                className="text-sm font-medium text-red-600 hover:text-red-500 disabled:opacity-60"
+              >
+                {deleting ? 'Deleting…' : 'Delete jobsheet'}
+              </button>
+            ) : null}
+          </div>
+        </div>
 
       <div className="flex flex-col gap-6 lg:flex-row">
         <nav className="lg:w-64 flex-shrink-0 lg:sticky lg:top-4 self-start">
@@ -2889,6 +2936,8 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const [message, setMessage] = useState('');
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
   const [activeEditorSection, setActiveEditorSection] = useState('client');
+  const [documentGenerating, setDocumentGenerating] = useState(false);
+  const [lastOutputPath, setLastOutputPath] = useState('');
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
@@ -2989,8 +3038,15 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
           api.getAhmenPricing()
         ]);
         if (!mounted) return;
-        const businessRecord = business || (businessList || []).find(item => item.id === numericBusinessId) || null;
-        setBusiness(businessRecord);
+        const foundBusiness = (businessList || []).find(item => item.id === numericBusinessId) || null;
+        if (foundBusiness) {
+          setBusiness(prev => {
+            if (prev && prev.id === foundBusiness.id && prev.save_path === foundBusiness.save_path && prev.business_name === foundBusiness.business_name) {
+              return prev;
+            }
+            return { ...foundBusiness };
+          });
+        }
         setVenues(normalizeVenues(venueData));
         setPricingConfig(pricingData || null);
 
@@ -3022,7 +3078,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     return () => {
       mounted = false;
     };
-  }, [numericBusinessId, business, initialJobsheetId, jobsheetId]);
+  }, [numericBusinessId, initialJobsheetId, jobsheetId]);
 
   useEffect(() => {
     formStateRef.current = formState;
@@ -3208,6 +3264,253 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     }
     saveJobsheet();
   }, [formState, jobsheetId, loading, saveJobsheet]);
+
+  const resolvedBusiness = useMemo(() => (
+    business ? { ...business } : {
+      id: numericBusinessId,
+      business_name: businessName || 'Jobsheet',
+      save_path: business?.save_path || ''
+    }
+  ), [business, numericBusinessId, businessName]);
+
+  const parseAmount = useCallback((value) => {
+    if (value === null || value === undefined || value === '') return null;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.round(numeric * 100) / 100;
+  }, []);
+
+  const buildDocumentPayload = useCallback((docKey) => {
+    const config = DOCUMENT_CONFIG[docKey];
+    if (!config) return null;
+
+    const current = formStateRef.current || DEFAULT_JOBSHEET(numericBusinessId);
+
+    const productionItems = normalizeProductionItems(current.pricing_production_items);
+    const productionSubtotal = parseAmount(current.pricing_production_subtotal) ?? productionItems.reduce((sum, item) => sum + parseAmount(item.cost) || 0, 0);
+
+    const totalAmount = parseAmount(current.pricing_total)
+      ?? (pricingDerived ? parseAmount(pricingDerived.total) : null)
+      ?? parseAmount(current.ahmen_fee);
+
+    const depositAmount = parseAmount(current.deposit_amount);
+    const balanceAmount = parseAmount(current.balance_amount);
+    const extraFees = parseAmount(current.extra_fees ?? current.pricing_custom_fees);
+    const productionFees = parseAmount(current.production_fees) ?? productionSubtotal;
+
+    const discountAmount = parseAmount(
+      (pricingDerived?.singerDiscountValue || 0)
+      + (pricingDerived?.productionDiscountValue || 0)
+    );
+
+    const formatCurrency = (amount) => {
+      if (amount === null || amount === undefined) return '';
+      return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(amount);
+    };
+
+    const paymentLines = [];
+    if (config.docType === 'invoice' || docKey === 'quote') {
+      if (current.balance_due_date) {
+        paymentLines.push(`Balance due by ${formatDateDisplay(current.balance_due_date)}`);
+      }
+      if (depositAmount) {
+        paymentLines.push(`Deposit: ${formatCurrency(depositAmount)}`);
+      }
+      if (balanceAmount && config.invoiceVariant === 'balance') {
+        paymentLines.push(`Outstanding balance: ${formatCurrency(balanceAmount)}`);
+      }
+    }
+    const paymentTerms = paymentLines.join('\n');
+
+    const clientOverride = {
+      name: current.client_name || '',
+      email: current.client_email || '',
+      phone: current.client_phone || '',
+      address1: current.client_address1 || '',
+      address2: current.client_address2 || '',
+      address3: current.client_address3 || '',
+      town: current.client_town || '',
+      postcode: current.client_postcode || ''
+    };
+
+    const eventOverride = {
+      type: current.event_type || '',
+      event_name: current.event_type || '',
+      event_date: current.event_date || '',
+      startTime: current.event_start || '',
+      endTime: current.event_end || '',
+      venue_name: current.venue_name || '',
+      venue_address1: current.venue_address1 || '',
+      venue_address2: current.venue_address2 || '',
+      venue_address3: current.venue_address3 || '',
+      venue_town: current.venue_town || '',
+      venue_postcode: current.venue_postcode || ''
+    };
+
+    const lineItems = [];
+    const addLineItem = (label, amount, notes = '') => {
+      const parsed = parseAmount(amount);
+      if (parsed === null || parsed === 0) return;
+      lineItems.push({
+        date: current.event_date || '',
+        description: label,
+        notes,
+        amount: parsed
+      });
+    };
+    addLineItem('Performance fee', current.ahmen_fee);
+    addLineItem('Production services', productionFees);
+    addLineItem('Extras', extraFees);
+
+    const payload = {
+      business_id: numericBusinessId,
+      doc_type: config.docType,
+      document_date: new Date().toISOString(),
+      total_amount: totalAmount ?? undefined,
+      balance_amount: balanceAmount ?? undefined,
+      balance_due: balanceAmount ?? undefined,
+      balance_due_date: current.balance_due_date || undefined,
+      balance_reminder_date: current.balance_reminder_date || undefined,
+      deposit_amount: depositAmount ?? undefined,
+      discount_amount: discountAmount ?? undefined,
+      extra_fees: extraFees ?? undefined,
+      production_fees: productionFees ?? undefined,
+      service_types: current.service_types || '',
+      specialist_singers: current.specialist_singers || '',
+      notes: current.notes || '',
+      payment_terms: paymentTerms,
+      client_override: clientOverride,
+      event_override: eventOverride,
+      line_items: lineItems
+    };
+
+    if (config.fileSuffix) payload.file_name_suffix = config.fileSuffix;
+    if (config.invoiceVariant) payload.invoice_variant = config.invoiceVariant;
+
+    if (config.docType === 'invoice') {
+      payload.due_date = current.balance_due_date || current.event_date || undefined;
+    }
+
+    if (config.docType === 'quote') {
+      payload.quote_meta = {
+        validUntil: current.balance_due_date || '',
+        includes: current.service_types || '',
+        nextSteps: ''
+      };
+    }
+
+    if (config.docType === 'contract') {
+      payload.contract_meta = {
+        terms: current.notes ? current.notes.split('\n').filter(Boolean) : [],
+        signature: null
+      };
+    }
+
+    if (!payload.footer && business?.document_footer) {
+      payload.footer = business.document_footer;
+    }
+
+    return payload;
+  }, [business, numericBusinessId, parseAmount, pricingDerived]);
+
+  const validateDocumentRequest = useCallback((docKey) => {
+    const current = formStateRef.current || DEFAULT_JOBSHEET(numericBusinessId);
+    const messages = [];
+
+    if (!current.client_name?.trim()) messages.push('Add the client name.');
+    if (!current.event_type?.trim()) messages.push('Add the event type.');
+    if (!current.event_date) messages.push('Select the event date.');
+
+    const total = parseAmount(current.pricing_total)
+      ?? (pricingDerived ? parseAmount(pricingDerived.total) : null)
+      ?? parseAmount(current.ahmen_fee);
+
+    const needsTotal = docKey === 'quote'
+      || docKey === 'workbook'
+      || (docKey && docKey.startsWith('invoice'));
+
+    if (needsTotal && !total) {
+      messages.push('Enter at least one fee before generating.');
+    }
+
+    return messages;
+  }, [numericBusinessId, parseAmount, pricingDerived]);
+
+  const handlePopulateExcel = useCallback(async () => {
+    const docKey = DEFAULT_DOCUMENT_KEY;
+    const config = DOCUMENT_CONFIG[docKey];
+    if (!config) return;
+
+    const errors = validateDocumentRequest(docKey);
+    if (errors.length) {
+      setError(errors.join(' '));
+      return;
+    }
+
+    const api = window.api;
+    if (!api || typeof api.createDocument !== 'function') {
+      setError('Unable to generate document: API unavailable');
+      return;
+    }
+
+    const payload = buildDocumentPayload(docKey);
+    if (!payload) {
+      setError('Unable to build document payload');
+      return;
+    }
+
+    setDocumentGenerating(true);
+    setError('');
+    try {
+      const result = await api.createDocument(payload);
+      if (result?.file_path) {
+        setLastOutputPath(result.file_path);
+      }
+      const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
+      setMessage(`${config.label}${suffix}`.trim());
+      setTimeout(() => setMessage(''), 4000);
+    } catch (err) {
+      console.error('Failed to populate workbook', err);
+      setError(err?.message || 'Unable to populate Excel template');
+    } finally {
+      setDocumentGenerating(false);
+    }
+  }, [buildDocumentPayload, setError, setMessage, validateDocumentRequest]);
+
+  const handleOpenOutputFolder = useCallback(async () => {
+    let folderPath = resolvedBusiness?.save_path;
+    if (!folderPath) {
+      try {
+        const businessList = await window.api?.businessSettings?.();
+        const match = (businessList || []).find(item => item.id === numericBusinessId);
+        if (match?.save_path) {
+          folderPath = match.save_path;
+          setBusiness(prev => ({ ...(prev || {}), ...match }));
+        }
+      } catch (err) {
+        console.error('Unable to reload business settings', err);
+      }
+    }
+    if (!folderPath) {
+      setError('Documents folder is not configured for this business.');
+      return;
+    }
+    const response = await window.api?.openPath?.(folderPath);
+    if (response && response.ok === false) {
+      setError(response.message || 'Unable to open folder');
+    }
+  }, [resolvedBusiness, numericBusinessId, setBusiness]);
+
+  const handleOpenOutputFile = useCallback(async () => {
+    if (!lastOutputPath) {
+      setError('Generate the workbook before opening the file.');
+      return;
+    }
+    const response = await window.api?.openPath?.(lastOutputPath);
+    if (response && response.ok === false) {
+      setError(response.message || 'Unable to open file');
+    }
+  }, [lastOutputPath]);
 
   useEffect(() => {
     if (loading) return;
@@ -3397,8 +3700,6 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const summaryProductionFee = Number(formState.production_fees) || (pricingDerived ? pricingDerived.productionNet : 0);
   const summaryTotal = pricingDerived ? pricingDerived.total : summarySingerFee + summaryProductionFee;
 
-  const resolvedBusiness = business || { id: numericBusinessId, business_name: businessName || 'Jobsheet' };
-
   return (
     <div className="min-h-screen bg-slate-100">
       <header className="bg-white border-b border-slate-200">
@@ -3448,26 +3749,31 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
               </div>
             </div>
 
-          <JobsheetEditor
-              business={resolvedBusiness}
-              businessId={numericBusinessId}
-              formState={formState}
-              onChange={setFormState}
-              onDelete={handleDelete}
-              saving={saving}
-              deleting={false}
-              hasExisting={Boolean(jobsheetId)}
-              venues={venues}
-              setVenues={setVenues}
-              onSaveVenue={handleSaveVenue}
-              venueSaving={venueSaving}
-              setVenueSaving={setVenueSaving}
-              pricingConfig={pricingConfig}
-              pricingTotals={pricingDerived}
-              onUpdateSingerPool={handleUpdateSingerPool}
-              activeGroupKey={activeEditorSection}
-              onActiveGroupChange={setActiveEditorSection}
-            />
+         <JobsheetEditor
+            business={resolvedBusiness}
+            businessId={numericBusinessId}
+            formState={formState}
+            onChange={setFormState}
+            onDelete={handleDelete}
+            saving={saving}
+            deleting={false}
+            hasExisting={Boolean(jobsheetId)}
+            venues={venues}
+            setVenues={setVenues}
+            onSaveVenue={handleSaveVenue}
+            venueSaving={venueSaving}
+            setVenueSaving={setVenueSaving}
+            pricingConfig={pricingConfig}
+            pricingTotals={pricingDerived}
+            onUpdateSingerPool={handleUpdateSingerPool}
+            activeGroupKey={activeEditorSection}
+            onActiveGroupChange={setActiveEditorSection}
+            onGenerateDocument={handlePopulateExcel}
+            documentGenerating={documentGenerating}
+            onOpenOutputFolder={handleOpenOutputFolder}
+            onOpenOutputFile={handleOpenOutputFile}
+            lastGeneratedPath={lastOutputPath}
+          />
           </>
         )}
       </main>

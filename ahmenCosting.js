@@ -132,12 +132,34 @@ function parseCostingSheet(sheet) {
 
 async function loadPricingConfig() {
   if (cachedPricing) return cachedPricing;
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(COSTING_CONFIG.templatePath);
-  const sheet = workbook.getWorksheet(COSTING_CONFIG.worksheet);
-  if (!sheet) throw new Error('Costing sheet not found in AhMen template');
-  const base = parseCostingSheet(sheet);
+
   const overrides = readPricingOverrides();
+  let base = {
+    serviceTypes: COSTING_CONFIG.serviceTypes.map(config => ({
+      id: config.id,
+      label: config.label,
+      totalSuggested: 0,
+      singers: []
+    })),
+    updatedAt: new Date().toISOString()
+  };
+
+  if (fs.existsSync(COSTING_CONFIG.templatePath)) {
+    try {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.readFile(COSTING_CONFIG.templatePath);
+      const sheet = workbook.getWorksheet(COSTING_CONFIG.worksheet);
+      if (sheet) {
+        base = parseCostingSheet(sheet);
+      } else {
+        console.warn('Costing worksheet not found in AhMen template, using overrides only');
+      }
+    } catch (err) {
+      console.warn('Unable to read AhMen costing template, using overrides only:', err?.message || err);
+    }
+  } else {
+    console.warn('AhMen costing template missing, using overrides only:', COSTING_CONFIG.templatePath);
+  }
 
   const mergedServiceTypes = base.serviceTypes.map(service => {
     const overrideList = overrides?.[service.id];

@@ -65,7 +65,6 @@ const AHMEN_JOBSHEET_FIELDS = [
   'venue_postcode',
   'venue_same_as_client',
   'ahmen_fee',
-  'specialist_fees',
   'production_fees',
   'deposit_amount',
   'balance_amount',
@@ -91,7 +90,6 @@ const AHMEN_JOBSHEET_FIELDS = [
 
 const AHMEN_JOBSHEET_NUMERIC_FIELDS = new Set([
   'ahmen_fee',
-  'specialist_fees',
   'production_fees',
   'deposit_amount',
   'balance_amount',
