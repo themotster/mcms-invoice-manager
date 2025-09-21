@@ -41,6 +41,21 @@ const DOCUMENT_CONFIG = {
 
 const DEFAULT_DOCUMENT_KEY = 'workbook';
 
+const DOCUMENT_TYPE_LABELS = {
+  invoice: 'Invoice',
+  quote: 'Quote',
+  contract: 'Contract',
+  workbook: 'Workbook'
+};
+
+const WORKSPACE_SECTIONS = [
+  { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses' },
+  { key: 'documents', label: 'Documents', description: 'Generated outputs and files' },
+  { key: 'settings', label: 'Settings', description: 'Folders, templates, and placeholders' }
+];
+
+const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
+
 const STATUS_STYLES = {
   enquiry: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
   quoted: 'bg-blue-100 text-blue-800 border border-blue-200',
@@ -160,100 +175,323 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   pricing_total: ''
 });
 
-const FORM_GROUPS = [
-  {
-    key: 'client',
+const CATEGORY_TO_GROUP_KEY = {
+  client: 'client',
+  event: 'event',
+  venue: 'venue',
+  financial: 'billing',
+  services: 'services'
+};
+
+const FIELD_META = {
+  status: {
+    label: 'Status',
+    component: 'statusSelect',
+    options: STATUS_OPTIONS,
+    always: true
+  },
+  saved_venue: {
+    label: 'Saved Venue',
+    component: 'savedVenueSelector',
+    always: true
+  },
+  venue_same_as_client: {
+    label: 'Use client address (private residence)',
+    type: 'checkbox',
+    hint: 'Copies the client address and does not save the venue to the shared directory.',
+    always: true
+  },
+  pricing_panel: {
+    component: 'pricingPanel',
+    always: true
+  },
+  production_panel: {
+    component: 'productionPanel',
+    always: true
+  },
+  notes: {
+    label: 'Internal Notes',
+    type: 'textarea',
+    rows: 3,
+    always: true,
+    fallback: true
+  },
+  client_name: { fallback: true },
+  client_email: { type: 'email', fallback: true },
+  client_phone: { type: 'tel', fallback: true },
+  client_address1: { fallback: true },
+  client_address2: { fallback: true },
+  client_address3: { fallback: true },
+  client_town: { fallback: true },
+  client_postcode: { fallback: true },
+  event_type: { fallback: true },
+  event_date: { type: 'date', fallback: true },
+  event_start: { type: 'time', fallback: true },
+  event_end: { type: 'time', fallback: true },
+  venue_name: { fallback: true },
+  venue_address1: { fallback: true },
+  venue_address2: { fallback: true },
+  venue_address3: { fallback: true },
+  venue_town: { fallback: true },
+  venue_postcode: { fallback: true },
+  caterer_name: {},
+  service_types: { type: 'textarea', rows: 2, fallback: true },
+  specialist_singers: { type: 'textarea', rows: 2 },
+  ahmen_fee: {
+    label: 'AhMen Fee (£)',
+    type: 'number',
+    step: '0.01',
+    readOnly: true,
+    hint: 'Singer fees after discount.',
+    always: true,
+    fallback: true
+  },
+  production_fees: {
+    label: 'Sound / AV / Production (£)',
+    type: 'number',
+    step: '0.01',
+    readOnly: true,
+    always: true,
+    fallback: true
+  },
+  extra_fees: {
+    label: 'Extra Fees',
+    type: 'number',
+    step: '0.01'
+  },
+  total_amount: {
+    label: 'Total Amount',
+    type: 'number',
+    step: '0.01',
+    readOnly: true
+  },
+  deposit_amount: {
+    label: 'Deposit (£)',
+    type: 'number',
+    step: '0.01',
+    readOnly: true,
+    hint: 'Automatically 30% of AhMen fee.',
+    always: true,
+    fallback: true
+  },
+  balance_amount: {
+    label: 'Balance (£)',
+    type: 'number',
+    step: '0.01',
+    readOnly: true,
+    hint: 'Remaining balance after deposit (70%).',
+    always: true,
+    fallback: true
+  },
+  balance_due_date: {
+    label: 'Balance Due Date',
+    type: 'date',
+    readOnly: true,
+    hint: 'Automatically 10 days before the event.',
+    always: true,
+    fallback: true
+  },
+  balance_reminder_date: {
+    label: 'Balance Reminder Date',
+    type: 'date',
+    readOnly: true,
+    hint: 'Automatically 20 days before the event.',
+    always: true,
+    fallback: true
+  }
+};
+
+const GROUP_CONFIG = {
+  client: {
     title: 'Client Details',
     description: 'Captured during the initial enquiry.',
-    defaultOpen: false,
-    fields: [
-      {
-        name: 'status',
-        label: 'Status',
-        component: 'statusSelect',
-        options: STATUS_OPTIONS
-      },
-      { name: 'client_name', label: 'Client Name', required: true },
-      { name: 'client_email', label: 'Email', type: 'email' },
-      { name: 'client_phone', label: 'Phone' },
-      { name: 'client_address1', label: 'Address Line 1' },
-      { name: 'client_address2', label: 'Address Line 2' },
-      { name: 'client_address3', label: 'Address Line 3' },
-      { name: 'client_town', label: 'Town / City' },
-      { name: 'client_postcode', label: 'Postcode' }
-    ]
+    category: 'client',
+    order: [
+      'client_name',
+      'client_email',
+      'client_phone',
+      'client_address1',
+      'client_address2',
+      'client_address3',
+      'client_town',
+      'client_postcode'
+    ],
+    prepend: ['status'],
+    defaultOpen: true
   },
-  {
-    key: 'event',
+  event: {
     title: 'Event Details',
     description: 'What, when, and how the event will run.',
-    defaultOpen: false,
-    fields: [
-      { name: 'event_type', label: 'Event Type' },
-      { name: 'event_date', label: 'Event Date', type: 'date' },
-      { name: 'event_start', label: 'Start Time', type: 'time' },
-      { name: 'event_end', label: 'End Time', type: 'time' }
-    ]
+    category: 'event',
+    order: ['event_type', 'event_date', 'event_start', 'event_end']
   },
-  {
-    key: 'venue',
+  venue: {
     title: 'Venue Details',
     description: 'Where your team will be performing and saved venue options.',
-    defaultOpen: false,
-    fields: [
-      { name: 'saved_venue', label: 'Saved Venue', component: 'savedVenueSelector' },
-      { name: 'venue_same_as_client', label: 'Use client address (private residence)', type: 'checkbox', hint: 'Copies the client address and does not save the venue to the shared directory.' },
-      { name: 'venue_name', label: 'Venue Name' },
-      { name: 'venue_address1', label: 'Address Line 1' },
-      { name: 'venue_address2', label: 'Address Line 2' },
-      { name: 'venue_address3', label: 'Address Line 3' },
-      { name: 'venue_town', label: 'Town / City' },
-      { name: 'venue_postcode', label: 'Postcode' }
-    ]
+    category: 'venue',
+    order: [
+      'venue_name',
+      'venue_address1',
+      'venue_address2',
+      'venue_address3',
+      'venue_town',
+      'venue_postcode',
+      'caterer_name'
+    ],
+    prepend: ['saved_venue', 'venue_same_as_client']
   },
-  {
-    key: 'pricing',
+  pricing: {
     title: 'Pricing & Personnel',
     description: 'Select singers and configure fees for the booking.',
-    defaultOpen: false,
-    fields: [
-      { name: 'pricing_panel', component: 'pricingPanel' }
-    ]
+    staticOnly: true,
+    fields: ['pricing_panel']
   },
-  {
-    key: 'production',
+  production: {
     title: 'Production & Services',
     description: 'Manage external suppliers, markup, and related discounts.',
-    defaultOpen: false,
-    fields: [
-      { name: 'production_panel', component: 'productionPanel' }
-    ]
+    staticOnly: true,
+    fields: ['production_panel']
   },
-  {
-    key: 'billing',
+  billing: {
     title: 'Invoicing Details',
     description: 'Invoicing breakdown that feeds quotes and invoices.',
-    defaultOpen: false,
-    fields: [
-      { name: 'ahmen_fee', label: 'AhMen Fee (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Singer fees after discount.' },
-      { name: 'production_fees', label: 'Sound / AV / Production (£)', type: 'number', step: '0.01', readOnly: true },
-      { name: 'deposit_amount', label: 'Deposit (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Automatically 30% of AhMen fee.' },
-      { name: 'balance_amount', label: 'Balance (£)', type: 'number', step: '0.01', readOnly: true, hint: 'Remaining balance after deposit (70%).' },
-      { name: 'balance_due_date', label: 'Balance Due Date', type: 'date', readOnly: true, hint: 'Automatically 10 days before the event.' },
-      { name: 'balance_reminder_date', label: 'Balance Reminder Date', type: 'date', readOnly: true, hint: 'Automatically 20 days before the event.' }
+    category: 'financial',
+    order: [
+      'ahmen_fee',
+      'production_fees',
+      'extra_fees',
+      'total_amount',
+      'deposit_amount',
+      'balance_amount',
+      'balance_due_date',
+      'balance_reminder_date'
     ]
   },
-  {
-    key: 'services',
+  services: {
     title: 'Services & Notes',
     description: 'Additional requirements and context for the booking.',
-    defaultOpen: false,
-    fields: [
-      { name: 'service_types', label: 'Service Type(s)', type: 'textarea', rows: 2 },
-      { name: 'notes', label: 'Internal Notes', type: 'textarea', rows: 3 }
-    ]
+    category: 'services',
+    order: ['service_types', 'specialist_singers'],
+    append: ['notes']
   }
-];
+};
+
+function startCaseKey(key) {
+  if (!key) return '';
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\w\S*/g, word => word.charAt(0).toUpperCase() + word.slice(1));
+}
+
+function buildFieldConfig(fieldKey, registryField) {
+  const meta = FIELD_META[fieldKey] || {};
+  const label = registryField?.label || meta.label || startCaseKey(fieldKey);
+  const hint = meta.hint !== undefined ? meta.hint : registryField?.description;
+  const config = {
+    name: fieldKey,
+    label
+  };
+
+  if (meta.component) {
+    config.component = meta.component;
+    if (meta.options) config.options = meta.options;
+  } else {
+    config.type = meta.type || 'text';
+  }
+
+  if (meta.rows != null) config.rows = meta.rows;
+  if (meta.readOnly != null) config.readOnly = meta.readOnly;
+  if (meta.step != null) config.step = meta.step;
+  if (hint) config.hint = hint;
+
+  return config;
+}
+
+function buildJobsheetGroups(mergeFields = []) {
+  const registryMap = new Map();
+  const categoryBuckets = new Map();
+
+  (Array.isArray(mergeFields) ? mergeFields : []).forEach(field => {
+    if (!field || !field.field_key) return;
+    registryMap.set(field.field_key, field);
+    const groupKey = CATEGORY_TO_GROUP_KEY[field.category];
+    if (!groupKey) return;
+    if (field.active === 0 || field.active === false) return;
+    if (field.show_in_jobsheet === 0 || field.show_in_jobsheet === false) return;
+    if (!categoryBuckets.has(groupKey)) {
+      categoryBuckets.set(groupKey, []);
+    }
+    categoryBuckets.get(groupKey).push(field);
+  });
+
+  const groups = [];
+
+  Object.entries(GROUP_CONFIG).forEach(([groupKey, config]) => {
+    const fields = [];
+    const used = new Set();
+    const bucket = categoryBuckets.get(groupKey) || [];
+    const bucketMap = new Map(bucket.map(field => [field.field_key, field]));
+    const hasRegistryData = registryMap.size > 0;
+
+    const addField = (fieldKey, { force } = {}) => {
+      if (!fieldKey || used.has(fieldKey)) return;
+      const meta = FIELD_META[fieldKey] || {};
+      const candidate = bucketMap.get(fieldKey) || registryMap.get(fieldKey);
+      const showFromRegistry = Boolean(candidate && candidate.show_in_jobsheet !== false && candidate.active !== false);
+      const fieldExistsInRegistry = registryMap.has(fieldKey);
+      const shouldInclude =
+        force ||
+        meta.always ||
+        showFromRegistry ||
+        (!fieldExistsInRegistry && meta.fallback) ||
+        (!hasRegistryData && meta.fallback);
+
+      if (!shouldInclude) return;
+
+      const fieldConfig = buildFieldConfig(fieldKey, candidate);
+      if (!fieldConfig) return;
+
+      if (!fieldConfig.hint && candidate?.description) {
+        fieldConfig.hint = candidate.description;
+      }
+
+      fields.push(fieldConfig);
+      used.add(fieldKey);
+    };
+
+    if (config.staticOnly) {
+      (config.fields || []).forEach(key => addField(key, { force: true }));
+    } else {
+      (config.prepend || []).forEach(key => addField(key, { force: true }));
+      (config.order || []).forEach(key => addField(key));
+      bucket
+        .filter(field => !used.has(field.field_key))
+        .sort((a, b) => {
+          const labelA = a.label || startCaseKey(a.field_key);
+          const labelB = b.label || startCaseKey(b.field_key);
+          return labelA.localeCompare(labelB);
+        })
+        .forEach(field => addField(field.field_key));
+      (config.append || []).forEach(key => addField(key, { force: true }));
+    }
+
+    if (fields.length > 0) {
+      groups.push({
+        key: groupKey,
+        title: config.title,
+        description: config.description,
+        defaultOpen: Boolean(config.defaultOpen),
+        fields
+      });
+    }
+  });
+
+  return groups;
+}
+
+const FALLBACK_JOBSHEET_GROUPS = buildJobsheetGroups([]);
 
 function formatDateInput(value) {
   if (!value) return '';
@@ -274,6 +512,22 @@ function formatDateDisplay(value) {
     month: 'long',
     year: 'numeric'
   });
+}
+
+function formatTimestampDisplay(value) {
+  if (!value) return '—';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.valueOf())) return value;
+  const datePart = parsed.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  });
+  const timePart = parsed.toLocaleTimeString('en-GB', {
+    hour: '2-digit',
+    minute: '2-digit'
+  });
+  return `${datePart} ${timePart}`;
 }
 
 function addDays(dateStr, offset) {
@@ -2123,7 +2377,8 @@ function JobsheetEditor({
   documentGenerating,
   onOpenOutputFolder,
   onOpenOutputFile,
-  lastGeneratedPath
+  lastGeneratedPath,
+  groups
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -2131,6 +2386,10 @@ function JobsheetEditor({
       return next;
     });
   };
+
+  const resolvedGroups = useMemo(() => (
+    Array.isArray(groups) && groups.length ? groups : FALLBACK_JOBSHEET_GROUPS
+  ), [groups]);
 
   const [savedVenueId, setSavedVenueId] = useState(() => (
     formState.venue_id ? String(formState.venue_id) : ''
@@ -2187,31 +2446,39 @@ function JobsheetEditor({
 
   const [activeGroupKey, setActiveGroupKey] = useState(() => {
     if (activeGroupKeyProp) return activeGroupKeyProp;
-    const defaultGroup = FORM_GROUPS.find(group => group.defaultOpen) || FORM_GROUPS[0];
+    const defaultGroup = resolvedGroups.find(group => group.defaultOpen) || resolvedGroups[0];
     return defaultGroup ? defaultGroup.key : null;
   });
 
   useEffect(() => {
-    if (activeGroupKeyProp && activeGroupKeyProp !== activeGroupKey) {
+    if (activeGroupKeyProp) {
       setActiveGroupKey(activeGroupKeyProp);
+      return;
     }
-  }, [activeGroupKeyProp, activeGroupKey]);
+    setActiveGroupKey(prev => {
+      if (prev && resolvedGroups.some(group => group.key === prev)) return prev;
+      const fallbackGroup = resolvedGroups.find(group => group.defaultOpen) || resolvedGroups[0] || null;
+      return fallbackGroup ? fallbackGroup.key : null;
+    });
+  }, [resolvedGroups, activeGroupKeyProp]);
 
   const setGroupKey = useCallback((nextKey) => {
     if (!nextKey) return;
+    if (!resolvedGroups.some(group => group.key === nextKey)) return;
     setActiveGroupKey(nextKey);
     onActiveGroupChange?.(nextKey);
-  }, [onActiveGroupChange]);
+  }, [resolvedGroups, onActiveGroupChange]);
 
   const activeGroup = useMemo(() => (
-    FORM_GROUPS.find(group => group.key === activeGroupKey) || FORM_GROUPS[0] || null
-  ), [activeGroupKey]);
+    resolvedGroups.find(group => group.key === activeGroupKey) || null
+  ), [resolvedGroups, activeGroupKey]);
 
   useEffect(() => {
-    if (!activeGroup && FORM_GROUPS.length) {
-      setGroupKey(FORM_GROUPS[0].key);
+    if (!activeGroup && resolvedGroups.length) {
+      const fallbackGroup = resolvedGroups.find(group => group.defaultOpen) || resolvedGroups[0] || null;
+      if (fallbackGroup) setGroupKey(fallbackGroup.key);
     }
-  }, [activeGroup, setGroupKey]);
+  }, [activeGroup, resolvedGroups, setGroupKey]);
 
   const handleSelectSavedVenue = (venueIdValue) => {
     const value = venueIdValue || '';
@@ -2332,7 +2599,7 @@ function JobsheetEditor({
       <div className="flex flex-col gap-6 lg:flex-row">
         <nav className="lg:w-64 flex-shrink-0 lg:sticky lg:top-4 self-start">
           <div className="space-y-2" role="tablist" aria-orientation="vertical">
-            {FORM_GROUPS.map(group => {
+            {resolvedGroups.map(group => {
               const isActive = activeGroup?.key === group.key;
               return (
                 <button
@@ -2596,7 +2863,6 @@ function JobsheetEditor({
 
 function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [jobsheets, setJobsheets] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(true);
   const [sortConfig, setSortConfig] = useState({ key: 'event_date', direction: 'desc' });
   const [deletingId, setDeletingId] = useState(null);
@@ -2608,6 +2874,20 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [openingTemplate, setOpeningTemplate] = useState(false);
   const [normalizingTemplate, setNormalizingTemplate] = useState(false);
   const [showMergeFieldManager, setShowMergeFieldManager] = useState(false);
+  const [workspaceSection, setWorkspaceSection] = useState(() => {
+    if (typeof window === 'undefined') return 'jobsheets';
+    try {
+      const stored = window.localStorage.getItem(WORKSPACE_SECTION_STORAGE_KEY);
+      const match = WORKSPACE_SECTIONS.find(section => section.key === stored);
+      return match ? match.key : 'jobsheets';
+    } catch (err) {
+      console.warn('Unable to read workspace section', err);
+      return 'jobsheets';
+    }
+  });
+  const [documents, setDocuments] = useState([]);
+  const [documentsLoading, setDocumentsLoading] = useState(true);
+  const [documentsError, setDocumentsError] = useState('');
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -2651,21 +2931,52 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business.id, normalizeJobsheet]);
 
+  const refreshDocuments = useCallback(async () => {
+    setDocumentsLoading(true);
+    setDocumentsError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.getDocuments !== 'function') {
+        throw new Error('Unable to load documents: API unavailable');
+      }
+      const data = await api.getDocuments({ businessId: business.id });
+      setDocuments(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Failed to refresh documents', err);
+      setDocumentsError(err?.message || 'Unable to load documents');
+    } finally {
+      setDocumentsLoading(false);
+    }
+  }, [business.id]);
+
   useEffect(() => {
-    let mounted = true;
-    (async () => {
-      setLoading(true);
-      setError('');
-      await refreshJobsheets();
-      if (mounted) setLoading(false);
-    })();
-    return () => { mounted = false; };
+    if (typeof window === 'undefined') return;
+    try {
+      const match = WORKSPACE_SECTIONS.find(section => section.key === workspaceSection);
+      const value = match ? match.key : 'jobsheets';
+      window.localStorage.setItem(WORKSPACE_SECTION_STORAGE_KEY, value);
+    } catch (err) {
+      console.warn('Unable to persist workspace section', err);
+    }
+  }, [workspaceSection]);
+
+  useEffect(() => {
+    setError('');
+    refreshJobsheets();
   }, [refreshJobsheets]);
+
+  useEffect(() => {
+    refreshDocuments();
+  }, [refreshDocuments]);
 
   useEffect(() => {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
       if (!payload || payload.businessId !== business.id) return;
+      if (payload.type === 'documents-updated') {
+        refreshDocuments();
+        return;
+      }
       if (payload.type === 'jobsheet-editor-focus') {
         const focusedId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
         if (payload.active) {
@@ -2693,7 +3004,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       }
     });
     return () => unsubscribe?.();
-  }, [business.id, refreshJobsheets, mergeJobsheetSnapshot, setActiveJobsheetId]);
+  }, [business.id, refreshJobsheets, refreshDocuments, mergeJobsheetSnapshot, setActiveJobsheetId]);
 
   const handleChangeDocumentsFolder = useCallback(async () => {
     const api = window.api;
@@ -2769,6 +3080,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business, onBusinessUpdate]);
 
   const handleOpenTemplate = useCallback(async () => {
+    setWorkspaceSection('settings');
     const api = window.api;
     if (!api || typeof api.openTemplate !== 'function') {
       setError('Unable to open template: API unavailable');
@@ -2790,9 +3102,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     } finally {
       setOpeningTemplate(false);
     }
-  }, [business.invoice_template_path]);
+  }, [business.invoice_template_path, setWorkspaceSection]);
 
   const handleNormalizeTemplate = useCallback(async () => {
+    setWorkspaceSection('settings');
     const api = window.api;
     if (!api || typeof api.normalizeTemplate !== 'function') {
       setError('Unable to normalize template: API unavailable');
@@ -2814,7 +3127,59 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     } finally {
       setNormalizingTemplate(false);
     }
-  }, [business.invoice_template_path]);
+  }, [business.invoice_template_path, setWorkspaceSection]);
+
+  const handleOpenDocumentsFolder = useCallback(async () => {
+    setDocumentsError('');
+    if (!business.save_path) {
+      setDocumentsError('Documents folder not configured');
+      return;
+    }
+    try {
+      if (window.api && typeof window.api.openPath === 'function') {
+        await window.api.openPath(business.save_path);
+      }
+    } catch (err) {
+      console.error('Failed to open documents folder', err);
+      setDocumentsError(err?.message || 'Unable to open documents folder');
+    }
+  }, [business.save_path]);
+
+  const handleOpenDocumentFile = useCallback(async (filePath) => {
+    setDocumentsError('');
+    if (!filePath) {
+      setDocumentsError('Document file not available');
+      return;
+    }
+    try {
+      if (window.api && typeof window.api.openPath === 'function') {
+        await window.api.openPath(filePath);
+      }
+    } catch (err) {
+      console.error('Failed to open document', err);
+      setDocumentsError(err?.message || 'Unable to open document');
+    }
+  }, []);
+
+  const handleRevealDocument = useCallback(async (filePath) => {
+    setDocumentsError('');
+    if (!filePath) {
+      setDocumentsError('Document file not available');
+      return;
+    }
+    try {
+      if (window.api && typeof window.api.showItemInFolder === 'function') {
+        await window.api.showItemInFolder(filePath);
+      }
+    } catch (err) {
+      console.error('Failed to reveal document', err);
+      setDocumentsError(err?.message || 'Unable to locate document on disk');
+    }
+  }, []);
+
+  const handleRefreshDocuments = useCallback(() => {
+    refreshDocuments();
+  }, [refreshDocuments]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -2918,7 +3283,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
-            <p className="text-sm text-slate-500">Manage AhMen jobsheets, venues, and pricing.</p>
+            <p className="text-sm text-slate-500">Manage jobsheets, documents, and templates in one workspace.</p>
           </div>
           <button
             onClick={onSwitch}
@@ -2929,68 +3294,226 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6 space-y-4">
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
         {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
         {message ? <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{message}</div> : null}
-        <section className="rounded-lg border border-slate-200 bg-white px-6 py-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="text-sm font-semibold text-slate-700">Documents folder</div>
-            <div className="text-sm text-slate-500 break-all" title={business.save_path || 'Not configured'}>
-              {business.save_path || 'Not configured'}
+
+        <div className="flex flex-col gap-6 lg:flex-row">
+          <nav className="lg:w-64 flex-shrink-0">
+            <div className="space-y-2" role="tablist" aria-orientation="vertical">
+              {WORKSPACE_SECTIONS.map(section => {
+                const isActive = workspaceSection === section.key;
+                return (
+                  <button
+                    key={section.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={isActive}
+                    onClick={() => setWorkspaceSection(section.key)}
+                    className={`w-full text-left rounded-lg border px-4 py-3 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
+                  >
+                    <div className="text-sm font-semibold">{section.label}</div>
+                    <p className="mt-1 text-xs text-slate-500">{section.description}</p>
+                  </button>
+                );
+              })}
             </div>
+          </nav>
+
+          <div className="flex-1 space-y-6">
+            {workspaceSection === 'jobsheets' ? (
+              <section className="space-y-4">
+                <JobsheetList
+                  jobsheets={jobsheets}
+                  onOpen={handleOpenExisting}
+                  onNew={handleNew}
+                  onDelete={handleDelete}
+                  onStatusChange={handleStatusChange}
+                  loading={listLoading}
+                  deletingId={deletingId}
+                  statusUpdatingId={statusUpdatingId}
+                  sortConfig={sortConfig}
+                  onSort={handleSort}
+                  activeJobsheetId={activeJobsheetId}
+                />
+                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
+                  Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
+                </div>
+              </section>
+            ) : null}
+
+            {workspaceSection === 'documents' ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
+                    <p className="text-sm text-slate-500">Generated outputs for {business.business_name}.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleOpenDocumentsFolder}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      Open folder
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRefreshDocuments}
+                      disabled={documentsLoading}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {documentsLoading ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                  </div>
+                </div>
+                {documentsError ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div> : null}
+                {documentsLoading ? (
+                  <div className="p-6 text-center text-slate-500">Loading documents…</div>
+                ) : documents.length === 0 ? (
+                  <div className="p-6 text-center text-slate-500">No documents generated yet.</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full table-fixed text-sm">
+                      <thead className="bg-slate-50">
+                        <tr>
+                          <th className="w-48 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Document</th>
+                          <th className="w-64 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Client / Event</th>
+                          <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Event Date</th>
+                          <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Created</th>
+                          <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Amount</th>
+                          <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {documents.map(doc => {
+                          const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'Document');
+                          const docTitle = doc.number != null ? `${typeLabel} #${doc.number}` : typeLabel;
+                          return (
+                            <tr key={doc.document_id} className="transition hover:bg-slate-50">
+                              <td className="px-4 py-3 align-top">
+                                <div className="font-semibold text-slate-700">{docTitle}</div>
+                                <div className="text-xs capitalize text-slate-500">{doc.status || 'draft'}</div>
+                              </td>
+                              <td className="px-4 py-3 align-top">
+                                <div className="font-medium text-slate-700">{doc.client_name || '—'}</div>
+                                <div className="text-xs text-slate-500 truncate">{doc.event_name || '—'}</div>
+                              </td>
+                              <td className="px-4 py-3 align-top text-sm text-slate-600">
+                                {formatDateDisplay(doc.event_date)}
+                              </td>
+                              <td className="px-4 py-3 align-top text-sm text-slate-600">
+                                {formatTimestampDisplay(doc.created_at)}
+                              </td>
+                              <td className="px-4 py-3 align-top text-right font-semibold text-slate-700">
+                                {toCurrency(doc.total_amount)}
+                              </td>
+                              <td className="px-4 py-3 align-top">
+                                <div className="flex justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenDocumentFile(doc.file_path)}
+                                    disabled={!doc.file_path}
+                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                                  >
+                                    Open
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRevealDocument(doc.file_path)}
+                                    disabled={!doc.file_path}
+                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                                  >
+                                    Reveal
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </section>
+            ) : null}
+
+            {workspaceSection === 'settings' ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-700">Documents settings</h2>
+                  <p className="text-sm text-slate-500">Configure output folders, templates, and placeholder registry.</p>
+                </div>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-700">Documents folder</h3>
+                      <p className="text-xs text-slate-500 break-all" title={business.save_path || 'Not configured'}>
+                        {business.save_path || 'Not configured'}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleChangeDocumentsFolder}
+                        disabled={updatingSavePath}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {updatingSavePath ? 'Updating…' : 'Change folder'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleOpenDocumentsFolder}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        Open folder
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-700">Template tools</h3>
+                      <p className="text-xs text-slate-500">Open or normalize the current workbook template.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenTemplate}
+                        disabled={openingTemplate}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {openingTemplate ? 'Opening…' : 'Edit template'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleNormalizeTemplate}
+                        disabled={normalizingTemplate}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
+                    <div>
+                      <h3 className="text-sm font-semibold text-slate-700">Placeholder registry</h3>
+                      <p className="text-xs text-slate-500">Add or edit merge fields used across templates.</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setShowMergeFieldManager(true)}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        Manage placeholders
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            ) : null}
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-            <button
-              onClick={handleChangeDocumentsFolder}
-              disabled={updatingSavePath}
-              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {updatingSavePath ? 'Updating…' : 'Change folder'}
-            </button>
-            <button
-              onClick={handleOpenTemplate}
-              disabled={openingTemplate}
-              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {openingTemplate ? 'Opening…' : 'Edit template'}
-            </button>
-            <button
-              onClick={handleNormalizeTemplate}
-              disabled={normalizingTemplate}
-              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
-            </button>
-            <button
-              onClick={() => setShowMergeFieldManager(true)}
-              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-            >
-              Manage placeholders
-            </button>
-          </div>
-        </section>
-        {loading ? (
-          <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading workspace…</div>
-        ) : (
-          <>
-            <JobsheetList
-              jobsheets={jobsheets}
-              onOpen={handleOpenExisting}
-              onNew={handleNew}
-              onDelete={handleDelete}
-              onStatusChange={handleStatusChange}
-              loading={listLoading}
-              deletingId={deletingId}
-              statusUpdatingId={statusUpdatingId}
-              sortConfig={sortConfig}
-              onSort={handleSort}
-              activeJobsheetId={activeJobsheetId}
-            />
-           <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
-             Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
-           </div>
-         </>
-       )}
+        </div>
 
         {showMergeFieldManager ? (
           <MergeFieldsManager
@@ -3008,6 +3531,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const [formState, setFormState] = useState(DEFAULT_JOBSHEET(numericBusinessId));
   const [jobsheetId, setJobsheetId] = useState(initialJobsheetId && initialJobsheetId !== 'new' ? Number(initialJobsheetId) : null);
   const [venues, setVenues] = useState([]);
+  const [fieldGroups, setFieldGroups] = useState(FALLBACK_JOBSHEET_GROUPS);
   const [pricingConfig, setPricingConfig] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -3112,10 +3636,14 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       }
       setLoading(true);
       try {
-        const [businessList, venueData, pricingData] = await Promise.all([
+        const mergeFieldPromise = typeof api.getMergeFields === 'function'
+          ? api.getMergeFields()
+          : Promise.resolve([]);
+        const [businessList, venueData, pricingData, mergeFieldData] = await Promise.all([
           api.businessSettings(),
           api.getAhmenVenues({ businessId: numericBusinessId }),
-          api.getAhmenPricing()
+          api.getAhmenPricing(),
+          mergeFieldPromise
         ]);
         if (!mounted) return;
         const foundBusiness = (businessList || []).find(item => item.id === numericBusinessId) || null;
@@ -3129,6 +3657,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         }
         setVenues(normalizeVenues(venueData));
         setPricingConfig(pricingData || null);
+        setFieldGroups(buildJobsheetGroups(mergeFieldData || []));
 
         let effectiveJobsheetId = jobsheetId;
         if (!effectiveJobsheetId && initialJobsheetId && initialJobsheetId !== 'new') {
@@ -3548,6 +4077,11 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       }
       const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
       setMessage(`${config.label}${suffix}`.trim());
+      window.api?.notifyJobsheetChange?.({
+        type: 'documents-updated',
+        businessId: numericBusinessId,
+        document: result || null
+      });
       setTimeout(() => setMessage(''), 4000);
     } catch (err) {
       console.error('Failed to populate workbook', err);
@@ -3853,6 +4387,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
             onOpenOutputFolder={handleOpenOutputFolder}
             onOpenOutputFile={handleOpenOutputFile}
             lastGeneratedPath={lastOutputPath}
+            groups={fieldGroups}
           />
           </>
         )}

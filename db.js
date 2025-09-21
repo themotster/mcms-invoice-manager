@@ -563,6 +563,124 @@ function getMergeFieldBindingsByTemplate(template) {
   });
 }
 
+function saveMergeField(field) {
+  return new Promise((resolve, reject) => {
+    if (!field || typeof field !== 'object') {
+      reject(new Error('Field payload required'));
+      return;
+    }
+
+    const key = field.field_key || field.fieldKey;
+    if (!key || typeof key !== 'string') {
+      reject(new Error('field_key is required'));
+      return;
+    }
+
+    const label = field.label || key;
+    const placeholder = field.placeholder || null;
+    const category = field.category || null;
+    const description = field.description || null;
+    const showInJobsheet = field.show_in_jobsheet ?? field.showInJobsheet;
+    const active = field.active == null ? true : Boolean(field.active);
+    const bindings = Array.isArray(field.bindings) ? field.bindings : [];
+
+    db.serialize(() => {
+      db.run(
+        `INSERT INTO ${MERGE_FIELD_TABLE} (field_key, label, placeholder, category, description, show_in_jobsheet, active, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+         ON CONFLICT(field_key) DO UPDATE SET
+           label = excluded.label,
+           placeholder = excluded.placeholder,
+           category = excluded.category,
+           description = excluded.description,
+           show_in_jobsheet = excluded.show_in_jobsheet,
+           active = excluded.active,
+           updated_at = datetime('now')`,
+        [
+          key,
+          label,
+          placeholder,
+          category,
+          description,
+          showInJobsheet ? 1 : 0,
+          active ? 1 : 0
+        ],
+        err => {
+          if (err) {
+            reject(err);
+            return;
+          }
+
+          db.run(
+            `DELETE FROM ${MERGE_FIELD_BINDINGS_TABLE} WHERE field_key = ?`,
+            [key],
+            deleteErr => {
+              if (deleteErr) {
+                reject(deleteErr);
+                return;
+              }
+
+              if (!bindings.length) {
+                resolve({ field_key: key });
+                return;
+              }
+
+              const insertBinding = db.prepare(
+                `INSERT INTO ${MERGE_FIELD_BINDINGS_TABLE} (field_key, template, sheet, cell, data_type, style, format)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`
+              );
+
+              bindings.forEach(binding => {
+                if (!binding || typeof binding !== 'object') return;
+                const template = binding.template;
+                if (!template) return;
+                insertBinding.run(
+                  key,
+                  template,
+                  binding.sheet || null,
+                  binding.cell || null,
+                  binding.data_type || binding.dataType || 'string',
+                  binding.style || null,
+                  binding.format || null
+                );
+              });
+
+              insertBinding.finalize(finalizeErr => {
+                if (finalizeErr) {
+                  reject(finalizeErr);
+                  return;
+                }
+                resolve({ field_key: key });
+              });
+            }
+          );
+        }
+      );
+    });
+  });
+}
+
+function deleteMergeField(fieldKey) {
+  return new Promise((resolve, reject) => {
+    if (!fieldKey) {
+      reject(new Error('field_key is required'));
+      return;
+    }
+
+    db.run(
+      `DELETE FROM ${MERGE_FIELD_TABLE} WHERE field_key = ?`,
+      [fieldKey],
+      function (err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({ deleted: this.changes });
+        }
+      }
+    );
+  });
+}
+
 initializeDatabase();
 
 function updateDocumentTimestamp(documentId) {
@@ -1790,5 +1908,7 @@ module.exports = {
   saveAhmenVenue,
   deleteAhmenVenue,
   getMergeFields,
-  getMergeFieldBindingsByTemplate
+  getMergeFieldBindingsByTemplate,
+  saveMergeField,
+  deleteMergeField
 };
