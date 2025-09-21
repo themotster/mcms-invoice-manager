@@ -333,6 +333,10 @@ function initializeDatabase() {
     db.run('ALTER TABLE clients ADD COLUMN postcode TEXT', logDuplicateColumn);
 
     db.run('ALTER TABLE events ADD COLUMN business_id INTEGER', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN client_name TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN event_name TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN event_date TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN document_date TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
 
@@ -1331,7 +1335,15 @@ module.exports = {
 
     return new Promise((resolve, reject) => {
       db.all(
-        `SELECT documents.*, events.event_name, events.event_date, clients.name AS client_name, business_settings.business_name
+        `SELECT
+           documents.*,
+           COALESCE(documents.client_name, clients.name) AS display_client_name,
+           COALESCE(documents.event_name, events.event_name) AS display_event_name,
+           COALESCE(documents.event_date, events.event_date) AS display_event_date,
+           events.event_name AS joined_event_name,
+           events.event_date AS joined_event_date,
+           clients.name AS joined_client_name,
+           business_settings.business_name
          FROM documents
          LEFT JOIN events ON documents.event_id = events.event_id
          LEFT JOIN clients ON events.client_id = clients.client_id
@@ -1362,16 +1374,47 @@ module.exports = {
       const balanceDue = documentData?.balance_due ?? totalAmount;
       const dueDate = documentData?.due_date || null;
       const filePath = documentData?.file_path || null;
+      const clientName = documentData?.client_name || null;
+      const eventName = documentData?.event_name || null;
+      const eventDate = documentData?.event_date || null;
+      const documentDate = documentData?.document_date || null;
 
       const requestedNumber = documentData?.number ? Number(documentData.number) : null;
       const counterColumn = getCounterColumn(docType);
 
       const finalizeInsert = (resolvedNumber) => {
         db.run(
-          `INSERT INTO documents (event_id, business_id, doc_type, number, status, total_amount, balance_due, due_date, file_path)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          `INSERT INTO documents (
+             event_id,
+             business_id,
+             doc_type,
+             number,
+             status,
+             total_amount,
+             balance_due,
+             due_date,
+             file_path,
+             client_name,
+             event_name,
+             event_date,
+             document_date
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ,
-          [eventId, businessId, docType, resolvedNumber, status, totalAmount, balanceDue, dueDate, filePath],
+          [
+            eventId,
+            businessId,
+            docType,
+            resolvedNumber,
+            status,
+            totalAmount,
+            balanceDue,
+            dueDate,
+            filePath,
+            clientName,
+            eventName,
+            eventDate,
+            documentDate
+          ],
           function (err) {
             if (err) {
               reject(err);

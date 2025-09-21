@@ -708,6 +708,7 @@ function JobsheetList({
   activeJobsheetId = null
 }) {
   const sortedJobsheets = useMemo(() => {
+    // TODO: add search and filtering controls for the jobsheet list.
     const list = [...jobsheets];
     const { key, direction } = sortConfig || {};
     if (!key) return list;
@@ -2888,6 +2889,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [documents, setDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(true);
   const [documentsError, setDocumentsError] = useState('');
+  const [documentsGroup, setDocumentsGroup] = useState('none');
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -3189,6 +3191,208 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     refreshDocuments();
   }, [refreshDocuments]);
 
+  const handleDeleteDocumentRecord = useCallback(async (doc) => {
+    if (!doc || doc.document_id == null) return;
+    const title = doc.typeLabel
+      ? `${doc.typeLabel}${doc.number ? ` #${doc.number}` : ''}`
+      : 'this document';
+    const confirmDelete = window.confirm(`Delete ${title}? This will remove it from the documents list.`);
+    if (!confirmDelete) return;
+
+    let removeFile = false;
+    if (doc.file_path) {
+      removeFile = window.confirm('Also remove the generated file from disk?');
+    }
+
+    try {
+      setError('');
+      await window.api.deleteDocument(doc.document_id, { removeFile });
+      setMessage('Document deleted');
+      await refreshDocuments();
+      window.api?.notifyJobsheetChange?.({ type: 'documents-updated', businessId: business.id });
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to delete document', err);
+      setError(err?.message || 'Unable to delete document');
+    }
+  }, [refreshDocuments, business.id]);
+
+  const normalizedDocuments = useMemo(() => {
+    return (documents || []).map(doc => {
+      const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
+      const displayClient = doc.display_client_name || doc.client_name || doc.joined_client_name || '';
+      const displayEvent = doc.display_event_name || doc.event_name || doc.joined_event_name || '';
+      const eventDateRaw = doc.display_event_date || doc.joined_event_date || doc.event_date || '';
+      const documentDateRaw = doc.document_date || '';
+      const eventDateIso = eventDateRaw ? formatDateInput(eventDateRaw) : '';
+      const formattedEventDate = eventDateIso ? formatDateDisplay(eventDateIso) : '—';
+      const formattedDocumentDate = documentDateRaw ? formatDateDisplay(documentDateRaw) : '';
+      const createdAtDisplay = doc.created_at ? formatTimestampDisplay(doc.created_at) : '—';
+      const statusLabel = (doc.status || 'draft').replace(/_/g, ' ');
+
+      return {
+        ...doc,
+        typeLabel,
+        displayClient: displayClient || '—',
+        displayEvent: displayEvent || '',
+        eventDateIso,
+        formattedEventDate,
+        formattedDocumentDate,
+        createdAtDisplay,
+        statusLabel,
+        fileAvailable: Boolean(doc.file_path)
+      };
+    });
+  }, [documents]);
+
+  const renderDocumentTable = useCallback((items) => {
+    if (!items.length) {
+      return null;
+    }
+
+    return (
+      <div className="overflow-x-auto">
+        <table className="min-w-full table-fixed text-sm">
+          <thead className="bg-slate-50">
+            <tr>
+              <th className="w-48 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Document</th>
+              <th className="w-64 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Client / Event</th>
+              <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Event Date</th>
+              <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Created</th>
+              <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Amount</th>
+              <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {items.map(doc => {
+              const docTitle = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
+              return (
+                <tr key={doc.document_id} className="transition hover:bg-slate-50">
+                  <td className="px-4 py-3 align-top">
+                    <div className="font-semibold text-slate-700">{docTitle}</div>
+                    <div className="text-xs uppercase tracking-wide text-slate-400">{doc.statusLabel}</div>
+                    {!doc.fileAvailable ? (
+                      <div className="mt-1 text-xs text-amber-600">File not found</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div className="font-medium text-slate-700">{doc.displayClient}</div>
+                    {doc.displayEvent ? (
+                      <div className="text-xs text-slate-500">{doc.displayEvent}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3 align-top text-sm text-slate-600">
+                    {doc.formattedEventDate}
+                    {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
+                      <div className="text-xs text-slate-400">Doc: {doc.formattedDocumentDate}</div>
+                    ) : null}
+                  </td>
+                  <td className="px-4 py-3 align-top text-sm text-slate-600">{doc.createdAtDisplay}</td>
+                  <td className="px-4 py-3 align-top text-right font-semibold text-slate-700">
+                    {toCurrency(doc.total_amount)}
+                  </td>
+                  <td className="px-4 py-3 align-top">
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleOpenDocumentFile(doc.file_path)}
+                        disabled={!doc.fileAvailable}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        Open
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRevealDocument(doc.file_path)}
+                        disabled={!doc.fileAvailable}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        Reveal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteDocumentRecord(doc)}
+                        className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }, [handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument]);
+
+  const groupedDocuments = useMemo(() => {
+    if (documentsGroup === 'none') {
+      return [{ key: 'all', label: '', items: normalizedDocuments }];
+    }
+
+    const groups = new Map();
+    const ensureGroup = (key, label) => {
+      const mapKey = key || '__missing__';
+      if (!groups.has(mapKey)) {
+        groups.set(mapKey, { key: mapKey, label: label || 'Other', items: [] });
+      }
+      return groups.get(mapKey);
+    };
+
+    normalizedDocuments.forEach(doc => {
+      if (documentsGroup === 'doc_type') {
+        const key = doc.doc_type || 'unknown';
+        const entry = ensureGroup(key, doc.typeLabel || 'Other');
+        entry.items.push(doc);
+      } else if (documentsGroup === 'client') {
+        const key = (doc.displayClient && doc.displayClient !== '—') ? doc.displayClient : 'No client';
+        const entry = ensureGroup(key, key);
+        entry.items.push(doc);
+      } else if (documentsGroup === 'event_date') {
+        const key = doc.eventDateIso || 'no-date';
+        const label = doc.eventDateIso ? doc.formattedEventDate : 'No event date';
+        const entry = ensureGroup(key, label);
+        entry.items.push(doc);
+      }
+    });
+
+    const result = Array.from(groups.values());
+    if (documentsGroup === 'event_date') {
+      result.sort((a, b) => {
+        if (a.key === 'no-date') return 1;
+        if (b.key === 'no-date') return -1;
+        return a.key.localeCompare(b.key);
+      });
+    } else {
+      result.sort((a, b) => a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }));
+    }
+
+    return result;
+  }, [documentsGroup, normalizedDocuments]);
+
+  const documentsContent = useMemo(() => {
+    if (documentsLoading) {
+      return <div className="p-6 text-center text-slate-500">Loading documents…</div>;
+    }
+
+    if (!normalizedDocuments.length) {
+      return <div className="p-6 text-center text-slate-500">No documents generated yet.</div>;
+    }
+
+    if (documentsGroup === 'none') {
+      return renderDocumentTable(normalizedDocuments);
+    }
+
+    return groupedDocuments.map(group => (
+      <div key={group.key} className="space-y-2">
+        <h3 className="text-sm font-semibold text-slate-600">{group.label || 'Other'}</h3>
+        {renderDocumentTable(group.items)}
+      </div>
+    ));
+  }, [documentsLoading, normalizedDocuments, documentsGroup, groupedDocuments, renderDocumentTable]);
+
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
     if (!api || !api.openJobsheetWindow) {
@@ -3358,6 +3562,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     <p className="text-sm text-slate-500">Generated outputs for {business.business_name}.</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {/* TODO: add search/filter inputs for documents list when revisiting. */}
                     <button
                       type="button"
                       onClick={handleOpenDocumentsFolder}
@@ -3373,76 +3578,23 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     >
                       {documentsLoading ? 'Refreshing…' : 'Refresh'}
                     </button>
+                    <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
+                      Group by
+                      <select
+                        value={documentsGroup}
+                        onChange={event => setDocumentsGroup(event.target.value)}
+                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
+                      >
+                        <option value="none">None</option>
+                        <option value="doc_type">Document type</option>
+                        <option value="client">Client</option>
+                        <option value="event_date">Event date</option>
+                      </select>
+                    </label>
                   </div>
                 </div>
                 {documentsError ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div> : null}
-                {documentsLoading ? (
-                  <div className="p-6 text-center text-slate-500">Loading documents…</div>
-                ) : documents.length === 0 ? (
-                  <div className="p-6 text-center text-slate-500">No documents generated yet.</div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full table-fixed text-sm">
-                      <thead className="bg-slate-50">
-                        <tr>
-                          <th className="w-48 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Document</th>
-                          <th className="w-64 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Client / Event</th>
-                          <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Event Date</th>
-                          <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Created</th>
-                          <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Amount</th>
-                          <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-200">
-                        {documents.map(doc => {
-                          const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'Document');
-                          const docTitle = doc.number != null ? `${typeLabel} #${doc.number}` : typeLabel;
-                          return (
-                            <tr key={doc.document_id} className="transition hover:bg-slate-50">
-                              <td className="px-4 py-3 align-top">
-                                <div className="font-semibold text-slate-700">{docTitle}</div>
-                                <div className="text-xs capitalize text-slate-500">{doc.status || 'draft'}</div>
-                              </td>
-                              <td className="px-4 py-3 align-top">
-                                <div className="font-medium text-slate-700">{doc.client_name || '—'}</div>
-                                <div className="text-xs text-slate-500 truncate">{doc.event_name || '—'}</div>
-                              </td>
-                              <td className="px-4 py-3 align-top text-sm text-slate-600">
-                                {formatDateDisplay(doc.event_date)}
-                              </td>
-                              <td className="px-4 py-3 align-top text-sm text-slate-600">
-                                {formatTimestampDisplay(doc.created_at)}
-                              </td>
-                              <td className="px-4 py-3 align-top text-right font-semibold text-slate-700">
-                                {toCurrency(doc.total_amount)}
-                              </td>
-                              <td className="px-4 py-3 align-top">
-                                <div className="flex justify-end gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenDocumentFile(doc.file_path)}
-                                    disabled={!doc.file_path}
-                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                                  >
-                                    Open
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleRevealDocument(doc.file_path)}
-                                    disabled={!doc.file_path}
-                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                                  >
-                                    Reveal
-                                  </button>
-                                </div>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                {documentsContent}
               </section>
             ) : null}
 

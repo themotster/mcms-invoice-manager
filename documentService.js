@@ -778,6 +778,7 @@ async function createDocument(documentData) {
   }
 
   const manualFilePath = documentData.file_path ? path.resolve(documentData.file_path) : null;
+  const documentDate = documentData.document_date || new Date().toISOString();
   const insertPayload = { ...documentData };
   delete insertPayload.file_path;
   const sessionIds = Array.isArray(documentData.session_ids) ? documentData.session_ids.slice() : [];
@@ -819,6 +820,15 @@ async function createDocument(documentData) {
   delete insertPayload.invoice_variant;
   delete insertPayload.file_name_suffix;
   delete insertPayload.footer;
+
+  const resolvedClientName = (clientOverride?.name || client?.name || documentData.client_name || '').trim();
+  const resolvedEventName = (eventOverride?.event_name || eventOverride?.type || event?.event_name || documentData.event_name || '').trim();
+  const resolvedEventDate = eventOverride?.event_date || event?.event_date || documentData.event_date || null;
+
+  insertPayload.client_name = resolvedClientName || null;
+  insertPayload.event_name = resolvedEventName || null;
+  insertPayload.event_date = resolvedEventDate || null;
+  insertPayload.document_date = documentDate;
 
   const calculatedTotal = lineItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   if ((insertPayload.total_amount == null || insertPayload.total_amount === '') && calculatedTotal) {
@@ -864,7 +874,7 @@ async function createDocument(documentData) {
     event: eventOverride ? { ...event, ...eventOverride } : event,
     docType: documentData.doc_type,
     number: insertResult.number,
-    documentDate: documentData.document_date || new Date().toISOString(),
+    documentDate,
     dueDate: insertPayload.due_date,
     totalAmount: insertPayload.total_amount,
     balanceDue: insertPayload.balance_due,
