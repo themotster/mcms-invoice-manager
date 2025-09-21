@@ -64,6 +64,8 @@ contextBridge.exposeInMainWorld('api', {
   chooseDirectory: async (options) => await ipcRenderer.invoke('choose-directory', options || {}),
   openPath: async (targetPath) => await ipcRenderer.invoke('open-path', targetPath),
   showItemInFolder: async (targetPath) => await ipcRenderer.invoke('show-item-in-folder', targetPath),
+  openTemplate: async (options) => await ipcRenderer.invoke('open-template', options || {}),
+  normalizeTemplate: async (options) => await ipcRenderer.invoke('normalize-template', options || {}),
   openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {}),
   notifyJobsheetChange: (payload) => ipcRenderer.send('jobsheet-change', payload || {}),
   onJobsheetChange: (callback) => {

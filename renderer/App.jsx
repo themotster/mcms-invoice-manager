@@ -2604,6 +2604,8 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [error, setError] = useState('');
   const [activeJobsheetId, setActiveJobsheetId] = useState(null);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
+  const [openingTemplate, setOpeningTemplate] = useState(false);
+  const [normalizingTemplate, setNormalizingTemplate] = useState(false);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -2764,6 +2766,54 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business, onBusinessUpdate]);
 
+  const handleOpenTemplate = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.openTemplate !== 'function') {
+      setError('Unable to open template: API unavailable');
+      return;
+    }
+
+    try {
+      setOpeningTemplate(true);
+      setError('');
+      const response = await api.openTemplate({ templatePath: business.invoice_template_path || undefined });
+      if (!response || response.ok === false) {
+        throw new Error(response?.message || 'Unable to open template');
+      }
+      setMessage('Template opened. Save changes, then normalize.');
+      setTimeout(() => setMessage(''), 2000);
+    } catch (err) {
+      console.error('Failed to open template', err);
+      setError(err?.message || 'Unable to open template');
+    } finally {
+      setOpeningTemplate(false);
+    }
+  }, [business.invoice_template_path]);
+
+  const handleNormalizeTemplate = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.normalizeTemplate !== 'function') {
+      setError('Unable to normalize template: API unavailable');
+      return;
+    }
+
+    try {
+      setNormalizingTemplate(true);
+      setError('');
+      const response = await api.normalizeTemplate({ templatePath: business.invoice_template_path || undefined });
+      if (!response || response.ok === false) {
+        throw new Error(response?.message || 'Unable to normalize template');
+      }
+      setMessage('Template normalized');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to normalize template', err);
+      setError(err?.message || 'Unable to normalize template');
+    } finally {
+      setNormalizingTemplate(false);
+    }
+  }, [business.invoice_template_path]);
+
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
     if (!api || !api.openJobsheetWindow) {
@@ -2887,13 +2937,29 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
               {business.save_path || 'Not configured'}
             </div>
           </div>
-          <button
-            onClick={handleChangeDocumentsFolder}
-            disabled={updatingSavePath}
-            className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {updatingSavePath ? 'Updating...' : 'Change folder'}
-          </button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <button
+              onClick={handleChangeDocumentsFolder}
+              disabled={updatingSavePath}
+              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {updatingSavePath ? 'Updating…' : 'Change folder'}
+            </button>
+            <button
+              onClick={handleOpenTemplate}
+              disabled={openingTemplate}
+              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {openingTemplate ? 'Opening…' : 'Edit template'}
+            </button>
+            <button
+              onClick={handleNormalizeTemplate}
+              disabled={normalizingTemplate}
+              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
+            </button>
+          </div>
         </section>
         {loading ? (
           <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading workspace…</div>

@@ -117,6 +117,32 @@ function replaceAhmenSharedStrings(xml, replacements) {
   return nextXml;
 }
 
+function replaceAhmenStringCell(xml, cellRef, value) {
+  if (!cellRef) return xml;
+  const rowNumber = cellRef.replace(/[^0-9]/g, '');
+  if (!rowNumber) return xml;
+
+  const rowPattern = new RegExp(`<row[^>]*r="${rowNumber}"[\s\S]*?<\/row>`, 'i');
+  const rowMatch = xml.match(rowPattern);
+  if (!rowMatch) return xml;
+
+  const safeValue = escapeXmlText(value || '');
+  const cellPattern = new RegExp(`<c[^>]*r="${cellRef}"[\s\S]*?<\/c>`, 'i');
+
+  let rowXml = rowMatch[0];
+  const replacement = safeValue
+    ? `<c r="${cellRef}" t="inlineStr"><is><t>${safeValue}</t></is></c>`
+    : `<c r="${cellRef}"/>`;
+
+  if (cellPattern.test(rowXml)) {
+    rowXml = rowXml.replace(cellPattern, replacement);
+  } else {
+    rowXml = rowXml.replace('</row>', `${replacement}</row>`);
+  }
+
+  return xml.replace(rowPattern, rowXml);
+}
+
 function buildNumericCell(cellRef, styleId, value) {
   const numeric = formatNumericForCell(value);
   const styleAttr = styleId ? ` s="${styleId}"` : '';
@@ -809,12 +835,78 @@ async function deleteDocument(documentId, options = {}) {
   };
 }
 
+async function normalizeTemplateFile(templatePath) {
+  const fallbackPath = path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx');
+  const targetPath = templatePath ? path.resolve(templatePath) : fallbackPath;
+
+  if (!fs.existsSync(targetPath)) {
+    throw new Error(`Template not found at ${targetPath}`);
+  }
+
+  const buffer = fs.readFileSync(targetPath);
+  const zip = await JSZip.loadAsync(buffer);
+
+  const calcChainPath = 'xl/calcChain.xml';
+  if (zip.file(calcChainPath)) {
+    zip.remove(calcChainPath);
+  }
+
+  const workbookRelsPath = 'xl/_rels/workbook.xml.rels';
+  const relsEntry = zip.file(workbookRelsPath);
+  if (relsEntry) {
+    let relsXml = await relsEntry.async('string');
+    relsXml = relsXml.replace(/<Relationship[^>]*Type="http:\/\/schemas\.openxmlformats\.org\/officeDocument\/2006\/relationships\/calcChain"[^>]*\/>\s*/gi, '');
+    zip.file(workbookRelsPath, relsXml);
+  }
+
+  const contentTypesPath = '[Content_Types].xml';
+  const contentEntry = zip.file(contentTypesPath);
+  if (contentEntry) {
+    let contentXml = await contentEntry.async('string');
+    contentXml = contentXml.replace(/<Override PartName="\/xl\/calcChain\.xml"[^>]*\/>\s*/gi, '');
+    zip.file(contentTypesPath, contentXml);
+  }
+
+  const workbookPath = 'xl/workbook.xml';
+  const workbookEntry = zip.file(workbookPath);
+  if (workbookEntry) {
+    let workbookXml = await workbookEntry.async('string');
+    const cleanup = attrs => attrs
+      .replace(/\sfullCalcOnLoad="[^"]*"/i, '')
+      .replace(/\scalcOnSave="[^"]*"/i, '');
+
+    const selfClosingPattern = /<calcPr([^>]*)\/>/i;
+    const openPattern = /<calcPr([^>]*)>/i;
+
+    if (selfClosingPattern.test(workbookXml)) {
+      workbookXml = workbookXml.replace(selfClosingPattern, (_match, attrs = '') => {
+        const nextAttrs = cleanup(attrs || '');
+        return `<calcPr${nextAttrs} fullCalcOnLoad="1" calcOnSave="1"/>`;
+      });
+    } else if (openPattern.test(workbookXml)) {
+      workbookXml = workbookXml.replace(openPattern, (_match, attrs = '') => {
+        const nextAttrs = cleanup(attrs || '');
+        return `<calcPr${nextAttrs} fullCalcOnLoad="1" calcOnSave="1">`;
+      });
+    } else {
+      workbookXml = workbookXml.replace(/<\/workbook>/i, '<calcPr fullCalcOnLoad="1" calcOnSave="1"/>\n</workbook>');
+    }
+
+    zip.file(workbookPath, workbookXml);
+  }
+
+  const output = await zip.generateAsync({ type: 'nodebuffer' });
+  fs.writeFileSync(targetPath, output);
+  return targetPath;
+}
+
 module.exports = {
   createDocument,
   buildDestinationPath,
   pickTemplatePath,
   deleteDocument,
   relocateBusinessDocuments,
+  normalizeTemplateFile,
   __private: {
     applyAhmenTemplateWithZip,
     replaceAhmenNumericCell,
