@@ -59,6 +59,9 @@ contextBridge.exposeInMainWorld('api', {
   updateAhmenPricingService: async (serviceId, singers) => await ahmenCosting.savePricingServiceRoster(serviceId, singers),
   updateAhmenSingerPool: async (singers) => await ahmenCosting.saveSingerPool(singers),
   businessSettings: async () => await db.businessSettings(),
+  updateBusinessSettings: async (businessId, updates) => await db.updateBusinessSettings(businessId, updates),
+  relocateBusinessDocuments: async (options) => await documentService.relocateBusinessDocuments(options || {}),
+  chooseDirectory: async (options) => await ipcRenderer.invoke('choose-directory', options || {}),
   openJobsheetWindow: async (options) => ipcRenderer.invoke('open-jobsheet-window', options || {}),
   notifyJobsheetChange: (payload) => ipcRenderer.send('jobsheet-change', payload || {}),
   onJobsheetChange: (callback) => {

@@ -360,6 +360,100 @@ function moveFileToTrash(filePath) {
   }
 }
 
+function findAvailablePath(targetPath) {
+  if (!targetPath) return targetPath;
+  if (!fs.existsSync(targetPath)) return targetPath;
+
+  const directory = path.dirname(targetPath);
+  const extension = path.extname(targetPath);
+  const baseName = path.basename(targetPath, extension);
+
+  let counter = 1;
+  let candidate = path.join(directory, `${baseName} (${counter})${extension}`);
+  while (fs.existsSync(candidate)) {
+    counter += 1;
+    candidate = path.join(directory, `${baseName} (${counter})${extension}`);
+  }
+  return candidate;
+}
+
+function moveFile(source, destination) {
+  try {
+    fs.renameSync(source, destination);
+  } catch (err) {
+    if (err?.code === 'EXDEV') {
+      fs.copyFileSync(source, destination);
+      fs.unlinkSync(source);
+      return;
+    }
+    throw err;
+  }
+}
+
+async function relocateBusinessDocuments({ businessId, sourcePath, targetPath }) {
+  if (!businessId) {
+    throw new Error('businessId is required to relocate documents');
+  }
+  if (!targetPath) {
+    throw new Error('targetPath is required to relocate documents');
+  }
+
+  const normalizedTarget = path.resolve(targetPath);
+  const normalizedSource = sourcePath ? path.resolve(sourcePath) : null;
+  ensureDirectoryExists(normalizedTarget);
+
+  const documents = await db.getDocuments({ businessId });
+  const summary = {
+    moved: [],
+    skipped: [],
+    errors: []
+  };
+
+  for (const doc of documents) {
+    const documentId = doc?.document_id;
+    const currentPath = doc?.file_path;
+    if (!documentId || !currentPath) {
+      summary.skipped.push({ documentId, reason: 'missingPath' });
+      continue;
+    }
+
+    const absoluteCurrent = path.resolve(currentPath);
+    if (!fs.existsSync(absoluteCurrent)) {
+      summary.skipped.push({ documentId, reason: 'missingFile', path: absoluteCurrent });
+      continue;
+    }
+
+    let relativePath = path.basename(absoluteCurrent);
+    if (normalizedSource) {
+      const candidate = path.relative(normalizedSource, absoluteCurrent);
+      if (candidate.startsWith('..')) {
+        summary.skipped.push({ documentId, reason: 'outsideSource', path: absoluteCurrent });
+        continue;
+      }
+      const hasUnsafeSegment = candidate.split(path.sep).some(segment => segment === '..');
+      if (hasUnsafeSegment) {
+        summary.skipped.push({ documentId, reason: 'unsafeRelativePath', path: absoluteCurrent });
+        continue;
+      }
+      relativePath = candidate || path.basename(absoluteCurrent);
+    }
+
+    const destinationPath = path.join(normalizedTarget, relativePath);
+    ensureDirectoryExists(path.dirname(destinationPath));
+    const finalPath = findAvailablePath(destinationPath);
+
+    try {
+      moveFile(absoluteCurrent, finalPath);
+      await db.updateDocumentStatus(documentId, { file_path: finalPath });
+      summary.moved.push({ documentId, from: absoluteCurrent, to: finalPath });
+    } catch (err) {
+      summary.errors.push({ documentId, error: err?.message || String(err) });
+    }
+  }
+
+  return summary;
+}
+
 async function createDocument(documentData) {
   if (!documentData?.doc_type) {
     throw new Error('Document type is required');
@@ -482,5 +576,6 @@ module.exports = {
   createDocument,
   buildDestinationPath,
   pickTemplatePath,
-  deleteDocument
+  deleteDocument,
+  relocateBusinessDocuments
 };

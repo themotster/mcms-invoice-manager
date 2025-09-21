@@ -31,6 +31,16 @@ const DEFAULT_BUSINESSES = [
   }
 ];
 
+const BUSINESS_SETTINGS_MUTABLE_FIELDS = new Set([
+  'save_path',
+  'invoice_template_path',
+  'quote_template_path',
+  'contract_template_path',
+  'gig_sheet_template_path',
+  'last_invoice_number',
+  'last_quote_number'
+]);
+
 const AHMEN_JOBSHEET_FIELDS = [
   'business_id',
   'status',
@@ -347,7 +357,8 @@ function seedBusinesses() {
 
     db.run(
       `UPDATE business_settings
-       SET business_name = ?, last_invoice_number = ?, last_quote_number = ?, save_path = ?,
+       SET business_name = ?, last_invoice_number = ?, last_quote_number = ?,
+           save_path = CASE WHEN save_path IS NULL OR save_path = '' THEN ? ELSE save_path END,
            invoice_template_path = COALESCE(?, invoice_template_path),
            quote_template_path = COALESCE(?, quote_template_path),
            contract_template_path = COALESCE(?, contract_template_path),
@@ -397,6 +408,59 @@ function updateDocumentTimestamp(documentId) {
     `UPDATE documents SET updated_at = datetime('now') WHERE document_id = ?`,
     [documentId]
   );
+}
+
+function updateBusinessSettingsRecord(businessId, updates = {}) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    if (!updates || typeof updates !== 'object') {
+      resolve({ changes: 0, record: null });
+      return;
+    }
+
+    const entries = Object.entries(updates).filter(([key]) => BUSINESS_SETTINGS_MUTABLE_FIELDS.has(key));
+    if (!entries.length) {
+      resolve({ changes: 0, record: null });
+      return;
+    }
+
+    const setClauses = entries.map(([key]) => `${key} = ?`).join(', ');
+    const values = entries.map(([, value]) => (value === undefined ? null : value));
+
+    db.run(
+      `UPDATE business_settings SET ${setClauses} WHERE id = ?`,
+      [...values, id],
+      function (err) {
+        if (err) {
+          reject(err);
+          return;
+        }
+
+        const changes = this.changes;
+        if (!changes) {
+          resolve({ changes: 0, record: null });
+          return;
+        }
+
+        db.get(
+          `SELECT * FROM business_settings WHERE id = ?`,
+          [id],
+          (selectErr, row) => {
+            if (selectErr) {
+              reject(selectErr);
+            } else {
+              resolve({ changes, record: row || null });
+            }
+          }
+        );
+      }
+    );
+  });
 }
 
 function getCounterColumn(docType) {
@@ -1314,6 +1378,8 @@ module.exports = {
       );
     });
   },
+
+  updateBusinessSettings: (businessId, updates) => updateBusinessSettingsRecord(businessId, updates),
 
   getClientById: (clientId) => {
     return new Promise((resolve, reject) => {

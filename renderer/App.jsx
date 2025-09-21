@@ -2546,7 +2546,7 @@ function JobsheetEditor({
   );
 }
 
-function BusinessWorkspace({ business, onSwitch }) {
+function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [jobsheets, setJobsheets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [listLoading, setListLoading] = useState(true);
@@ -2556,6 +2556,7 @@ function BusinessWorkspace({ business, onSwitch }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [activeJobsheetId, setActiveJobsheetId] = useState(null);
+  const [updatingSavePath, setUpdatingSavePath] = useState(false);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -2642,6 +2643,79 @@ function BusinessWorkspace({ business, onSwitch }) {
     });
     return () => unsubscribe?.();
   }, [business.id, refreshJobsheets, mergeJobsheetSnapshot, setActiveJobsheetId]);
+
+  const handleChangeDocumentsFolder = useCallback(async () => {
+    const api = window.api;
+    if (!api || !api.updateBusinessSettings) {
+      setError('Unable to update documents folder: API unavailable');
+      return;
+    }
+
+    try {
+      setError('');
+      const previousPath = business.save_path || '';
+      let selectedPath = null;
+      if (typeof api.chooseDirectory === 'function') {
+        selectedPath = await api.chooseDirectory({
+          title: `Choose documents folder for ${business.business_name}`,
+          defaultPath: business.save_path || undefined
+        });
+      } else {
+        selectedPath = window.prompt('Enter documents folder path', business.save_path || '');
+      }
+
+      if (!selectedPath) return;
+      if (typeof selectedPath === 'string') {
+        selectedPath = selectedPath.trim();
+      }
+      if (!selectedPath) return;
+
+      setUpdatingSavePath(true);
+      const result = await api.updateBusinessSettings(business.id, { save_path: selectedPath });
+      const updated = result?.record || { ...business, save_path: selectedPath };
+
+      let relocationSummary = null;
+      let relocationFailed = false;
+      if ((previousPath || '') !== selectedPath && typeof api.relocateBusinessDocuments === 'function') {
+        try {
+          relocationSummary = await api.relocateBusinessDocuments({
+            businessId: business.id,
+            sourcePath: previousPath || undefined,
+            targetPath: selectedPath
+          });
+        } catch (relocationError) {
+          relocationFailed = true;
+          console.error('Failed to relocate documents', relocationError);
+          setError(relocationError?.message || 'Unable to move existing documents');
+        }
+      }
+
+      onBusinessUpdate?.(updated);
+
+      if (relocationSummary) {
+        const movedCount = relocationSummary.moved?.length || 0;
+        const skippedCount = relocationSummary.skipped?.length || 0;
+        const errorCount = relocationSummary.errors?.length || 0;
+        const summaryParts = [`moved ${movedCount}`];
+        if (skippedCount) summaryParts.push(`skipped ${skippedCount}`);
+        if (errorCount) summaryParts.push(`errors ${errorCount}`);
+        setMessage(`Documents folder updated (${summaryParts.join(', ')})`);
+        if (errorCount) {
+          setError(`Unable to move ${errorCount} document${errorCount === 1 ? '' : 's'}. Check the folder and try again.`);
+        }
+      } else if (relocationFailed) {
+        setMessage('Documents folder updated. Existing files were not moved.');
+      } else {
+        setMessage('Documents folder updated');
+      }
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to update documents folder', err);
+      setError(err?.message || 'Unable to update documents folder');
+    } finally {
+      setUpdatingSavePath(false);
+    }
+  }, [business, onBusinessUpdate]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -2759,6 +2833,21 @@ function BusinessWorkspace({ business, onSwitch }) {
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-4">
         {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
         {message ? <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{message}</div> : null}
+        <section className="rounded-lg border border-slate-200 bg-white px-6 py-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="text-sm font-semibold text-slate-700">Documents folder</div>
+            <div className="text-sm text-slate-500 break-all" title={business.save_path || 'Not configured'}>
+              {business.save_path || 'Not configured'}
+            </div>
+          </div>
+          <button
+            onClick={handleChangeDocumentsFolder}
+            disabled={updatingSavePath}
+            className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {updatingSavePath ? 'Updating...' : 'Change folder'}
+          </button>
+        </section>
         {loading ? (
           <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading workspace…</div>
         ) : (
@@ -3500,6 +3589,12 @@ function App() {
     setSelectedBusiness(business);
   };
 
+  const handleBusinessUpdated = useCallback((updatedBusiness) => {
+    if (!updatedBusiness) return;
+    setBusinesses(prev => prev.map(biz => (biz.id === updatedBusiness.id ? { ...biz, ...updatedBusiness } : biz)));
+    setSelectedBusiness(updatedBusiness);
+  }, [setBusinesses, setSelectedBusiness]);
+
   if (!selectedBusiness) {
     return (
       <BusinessChooser
@@ -3515,6 +3610,7 @@ function App() {
     <BusinessWorkspace
       business={selectedBusiness}
       onSwitch={() => setSelectedBusiness(null)}
+      onBusinessUpdate={handleBusinessUpdated}
     />
   );
 }

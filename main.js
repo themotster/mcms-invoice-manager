@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -241,6 +241,23 @@ ipcMain.handle('open-jobsheet-window', (event, args = {}) => {
   }
 
   jobsheetWindow = createJobsheetWindow(parent || null, args || {});
+});
+
+ipcMain.handle('choose-directory', async (event, args = {}) => {
+  const browser = BrowserWindow.fromWebContents(event.sender);
+  const dialogOptions = {
+    title: args.title || 'Select folder',
+    defaultPath: args.defaultPath || undefined,
+    properties: ['openDirectory', 'createDirectory']
+  };
+
+  const result = browser && !browser.isDestroyed()
+    ? await dialog.showOpenDialog(browser, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions);
+  if (result.canceled || !result.filePaths || !result.filePaths.length) {
+    return null;
+  }
+  return result.filePaths[0] || null;
 });
 
 ipcMain.on('jobsheet-change', (event, payload = {}) => {
