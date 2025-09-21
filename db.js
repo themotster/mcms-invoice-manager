@@ -4,6 +4,7 @@ const path = require('path');
 
 const settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json')));
 const db = new sqlite3.Database(settings.db_path);
+const mergeFieldDefaults = require('./config/mergeFields.json');
 
 const DEFAULT_BUSINESS_ID = 1;
 const DEFAULT_BUSINESSES = [
@@ -122,6 +123,10 @@ const AHMEN_VENUE_FIELDS = [
   'is_private'
 ];
 
+const MERGE_FIELD_TABLE = 'merge_fields';
+const MERGE_FIELD_BINDINGS_TABLE = 'merge_field_bindings';
+const MERGE_FIELD_BINDING_UNIQUE_COLUMNS = ['field_key', 'template', 'sheet', 'cell'];
+
 function logDuplicateColumn(err) {
   if (!err) return;
   const duplicateMsg = 'duplicate column name';
@@ -144,6 +149,33 @@ function initializeDatabase() {
       contract_template_path TEXT,
       gig_sheet_template_path TEXT
     )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS ${MERGE_FIELD_TABLE} (
+      field_key TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      placeholder TEXT,
+      category TEXT,
+      description TEXT,
+      show_in_jobsheet INTEGER DEFAULT 1,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS ${MERGE_FIELD_BINDINGS_TABLE} (
+      binding_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      field_key TEXT NOT NULL,
+      template TEXT NOT NULL,
+      sheet TEXT,
+      cell TEXT,
+      data_type TEXT DEFAULT 'string',
+      style TEXT,
+      format TEXT,
+      FOREIGN KEY(field_key) REFERENCES ${MERGE_FIELD_TABLE}(field_key)
+    )`);
+
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_merge_field_bindings_unique
+      ON ${MERGE_FIELD_BINDINGS_TABLE} (${MERGE_FIELD_BINDING_UNIQUE_COLUMNS.join(', ')})`);
 
     db.run(`CREATE TABLE IF NOT EXISTS businesses (
       business_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -262,6 +294,7 @@ function initializeDatabase() {
       venue_address3 TEXT,
       venue_town TEXT,
       venue_postcode TEXT,
+      caterer_name TEXT,
       venue_same_as_client INTEGER DEFAULT 0,
       ahmen_fee REAL,
       specialist_fees REAL,
@@ -301,6 +334,7 @@ function initializeDatabase() {
 
     db.run('ALTER TABLE events ADD COLUMN business_id INTEGER', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
 
     db.run('ALTER TABLE business_settings ADD COLUMN invoice_template_path TEXT', logDuplicateColumn);
     db.run('ALTER TABLE business_settings ADD COLUMN quote_template_path TEXT', logDuplicateColumn);
@@ -327,6 +361,7 @@ function initializeDatabase() {
 
     seedBusinesses();
     syncLegacyBusinessesTable();
+    seedMergeFieldDefaults();
   });
 }
 
@@ -385,6 +420,58 @@ function seedBusinesses() {
   }
 }
 
+function seedMergeFieldDefaults() {
+  if (!Array.isArray(mergeFieldDefaults) || !mergeFieldDefaults.length) return;
+
+  db.serialize(() => {
+    const insertField = db.prepare(
+      `INSERT OR IGNORE INTO ${MERGE_FIELD_TABLE} (
+        field_key, label, placeholder, category, description, show_in_jobsheet, active
+      ) VALUES (?, ?, ?, ?, ?, ?, 1)`
+    );
+
+    const insertBinding = db.prepare(
+      `INSERT OR IGNORE INTO ${MERGE_FIELD_BINDINGS_TABLE} (
+        field_key, template, sheet, cell, data_type, style, format
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    mergeFieldDefaults.forEach(field => {
+      insertField.run(
+        field.field_key,
+        field.label,
+        field.placeholder || null,
+        field.category || null,
+        field.description || null,
+        field.show_in_jobsheet ? 1 : 0,
+        err => {
+          if (err) console.error('Failed to seed merge field', field.field_key, err);
+        }
+      );
+
+      if (Array.isArray(field.bindings)) {
+        field.bindings.forEach(binding => {
+          insertBinding.run(
+            field.field_key,
+            binding.template,
+            binding.sheet || null,
+            binding.cell || null,
+            binding.data_type || 'string',
+            binding.style || null,
+            binding.format || null,
+            err => {
+              if (err) console.error('Failed to seed merge field binding', field.field_key, err);
+            }
+          );
+        });
+      }
+    });
+
+    insertField.finalize();
+    insertBinding.finalize();
+  });
+}
+
 function syncLegacyBusinessesTable() {
   DEFAULT_BUSINESSES.forEach(business => {
     db.run(
@@ -395,6 +482,83 @@ function syncLegacyBusinessesTable() {
     db.run(
       `UPDATE businesses SET name = ? WHERE business_id = ?`,
       [business.business_name, business.id]
+    );
+  });
+}
+
+function getMergeFields() {
+  return new Promise((resolve, reject) => {
+    db.all(
+      `SELECT
+         f.field_key,
+         f.label,
+         f.placeholder,
+         f.category,
+         f.description,
+         f.show_in_jobsheet,
+         f.active,
+         f.created_at,
+         f.updated_at,
+         b.template,
+         b.sheet,
+         b.cell,
+         b.data_type,
+         b.style,
+         b.format
+       FROM ${MERGE_FIELD_TABLE} f
+       LEFT JOIN ${MERGE_FIELD_BINDINGS_TABLE} b ON b.field_key = f.field_key
+       ORDER BY f.field_key`,
+      (err, rows) => {
+        if (err) return reject(err);
+        const map = new Map();
+        const result = [];
+        (rows || []).forEach(row => {
+          let entry = map.get(row.field_key);
+          if (!entry) {
+            entry = {
+              field_key: row.field_key,
+              label: row.label,
+              placeholder: row.placeholder,
+              category: row.category,
+              description: row.description,
+              show_in_jobsheet: row.show_in_jobsheet ? true : false,
+              active: row.active ? true : false,
+              created_at: row.created_at,
+              updated_at: row.updated_at,
+              bindings: []
+            };
+            map.set(row.field_key, entry);
+            result.push(entry);
+          }
+          if (row.template) {
+            entry.bindings.push({
+              template: row.template,
+              sheet: row.sheet,
+              cell: row.cell,
+              data_type: row.data_type,
+              style: row.style,
+              format: row.format
+            });
+          }
+        });
+        resolve(result);
+      }
+    );
+  });
+}
+
+function getMergeFieldBindingsByTemplate(template) {
+  return new Promise((resolve, reject) => {
+    db.all(
+      `SELECT b.field_key, b.template, b.sheet, b.cell, b.data_type, b.style, b.format, f.placeholder
+       FROM ${MERGE_FIELD_BINDINGS_TABLE} b
+       JOIN ${MERGE_FIELD_TABLE} f ON f.field_key = b.field_key
+       WHERE b.template = ? AND f.active = 1`,
+      [template],
+      (err, rows) => {
+        if (err) return reject(err);
+        resolve(rows || []);
+      }
     );
   });
 }
@@ -1624,5 +1788,7 @@ module.exports = {
   deleteAhmenJobsheet,
   getAhmenVenues,
   saveAhmenVenue,
-  deleteAhmenVenue
+  deleteAhmenVenue,
+  getMergeFields,
+  getMergeFieldBindingsByTemplate
 };

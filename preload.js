@@ -55,6 +55,7 @@ contextBridge.exposeInMainWorld('api', {
   getAhmenVenues: async (options) => await db.getAhmenVenues(options),
   saveAhmenVenue: async (data) => await db.saveAhmenVenue(data),
   deleteAhmenVenue: async (venueId) => await db.deleteAhmenVenue(venueId),
+  getMergeFields: async () => await db.getMergeFields(),
   getAhmenPricing: async () => await ahmenCosting.loadPricingConfig(),
   updateAhmenPricingService: async (serviceId, singers) => await ahmenCosting.savePricingServiceRoster(serviceId, singers),
   updateAhmenSingerPool: async (singers) => await ahmenCosting.saveSingerPool(singers),

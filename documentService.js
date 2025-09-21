@@ -4,6 +4,8 @@ const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
 const db = require('./db');
 
+const AHMEN_TEMPLATE_KEY = 'ahmen_excel';
+
 function ensureDirectoryExists(dirPath) {
   if (!dirPath) return;
   if (!fs.existsSync(dirPath)) {
@@ -168,6 +170,99 @@ function replaceAhmenNumericCell(xml, cellRef, styleId, value) {
   return xml;
 }
 
+function buildSheetPathMap(workbookXml, workbookRelsXml) {
+  const sheetMap = {};
+  if (!workbookXml || !workbookRelsXml) return sheetMap;
+
+  const relMap = {};
+  const relRegex = /<Relationship[^>]*Id="([^"]+)"[^>]*Target="([^"]+)"[^>]*>/gi;
+  let match = relRegex.exec(workbookRelsXml);
+  while (match) {
+    relMap[match[1]] = match[2];
+    match = relRegex.exec(workbookRelsXml);
+  }
+
+  const sheetRegex = /<sheet[^>]*name="([^"]+)"[^>]*r:id="([^"]+)"[^>]*>/gi;
+  match = sheetRegex.exec(workbookXml);
+  while (match) {
+    const name = match[1];
+    const rid = match[2];
+    const target = relMap[rid];
+    if (name && target) {
+      sheetMap[name] = target;
+    }
+    match = sheetRegex.exec(workbookXml);
+  }
+
+  return sheetMap;
+}
+
+function normalizeNumericOutput(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  return numeric;
+}
+
+function formatBindingStringValue(rawValue, bindingFormat) {
+  if (rawValue === undefined || rawValue === null) return '';
+  if (!bindingFormat) return String(rawValue ?? '');
+
+  switch (bindingFormat) {
+    case 'date_human': {
+      const input = Array.isArray(rawValue) ? rawValue[0] : rawValue;
+      if (!input) return '';
+      return formatDateParts(input).human;
+    }
+    default:
+      return String(rawValue ?? '');
+  }
+}
+
+function buildMergeFieldValueMap(context) {
+  const map = {};
+  const business = context.business || {};
+  const client = context.client || {};
+  const event = context.event || {};
+
+  map.business_name = business.business_name || '';
+
+  map.client_name = client.name || '';
+  map.client_email = client.email || '';
+  map.client_phone = client.phone || '';
+  map.client_address1 = client.address1 || client.address || '';
+  map.client_address2 = client.address2 || '';
+  map.client_address3 = client.address3 || '';
+  map.client_town = client.town || '';
+  map.client_postcode = client.postcode || '';
+
+  map.event_type = event.event_name || event.type || '';
+  map.event_date = event.event_date || context.documentDate || '';
+  map.event_start = event.startTime || event.event_start || '';
+  map.event_end = event.endTime || event.event_end || '';
+
+  map.venue_name = event.venue_name || '';
+  map.venue_address1 = event.venue_address1 || '';
+  map.venue_address2 = event.venue_address2 || '';
+  map.venue_address3 = event.venue_address3 || '';
+  map.venue_town = event.venue_town || event.town || '';
+  map.venue_postcode = event.venue_postcode || event.postcode || '';
+  map.caterer_name = event.caterer_name || event.catererName || '';
+
+  map.total_amount = context.totalAmount;
+  map.extra_fees = context.extraFees;
+  map.production_fees = context.productionFees;
+  map.deposit_amount = context.depositAmount ?? context.deposit;
+  map.balance_amount = context.balanceAmount;
+
+  map.balance_due_date = context.balanceDate || context.dueDate || '';
+  map.balance_reminder_date = context.balanceRemind || '';
+
+  map.service_types = context.serviceType || '';
+  map.specialist_singers = context.specialistSingers || '';
+
+  return map;
+}
 
 async function applyAhmenTemplateWithZip({ templatePath, destinationPath, context }) {
   if (!templatePath || !fs.existsSync(templatePath)) {
@@ -177,75 +272,74 @@ async function applyAhmenTemplateWithZip({ templatePath, destinationPath, contex
   const templateBuffer = fs.readFileSync(templatePath);
   const zip = await JSZip.loadAsync(templateBuffer);
   const sharedStringsPath = 'xl/sharedStrings.xml';
-  const sheetPath = 'xl/worksheets/sheet1.xml';
   const workbookPath = 'xl/workbook.xml';
+  const workbookRelsPath = 'xl/_rels/workbook.xml.rels';
 
   const sharedStringsEntry = zip.file(sharedStringsPath);
-  const sheetEntry = zip.file(sheetPath);
   const workbookEntry = zip.file(workbookPath);
-  if (!sharedStringsEntry || !sheetEntry) {
-    throw new Error('AhMen template is missing required worksheet data');
+  const workbookRelsEntry = zip.file(workbookRelsPath);
+  if (!sharedStringsEntry || !workbookEntry || !workbookRelsEntry) {
+    throw new Error('AhMen template is missing required workbook data');
   }
 
   let sharedStringsXml = await sharedStringsEntry.async('string');
-  let sheetXml = await sheetEntry.async('string');
-  let workbookXml = workbookEntry ? await workbookEntry.async('string') : null;
+  let workbookXml = await workbookEntry.async('string');
+  const workbookRelsXml = await workbookRelsEntry.async('string');
 
-  const eventDateHuman = context.event?.event_date ? formatDateParts(context.event.event_date).human : '';
-  const balanceDateHuman = context.balanceDate ? formatDateParts(context.balanceDate).human : '';
+  const sheetPathMap = buildSheetPathMap(workbookXml, workbookRelsXml);
+  const sheetCache = new Map();
 
-  const totalAmountText = formatNumericForCell(context.totalAmount) ?? '';
-  const extraFeesText = formatNumericForCell(context.extraFees) ?? '';
-  const productionFeesText = formatNumericForCell(context.productionFees) ?? '';
-  const depositText = formatNumericForCell(context.deposit) ?? '';
-  const balanceAmountText = formatNumericForCell(context.balanceAmount) ?? '';
-
-  const sharedReplacements = {
-    CLIENT_NAME: context.client?.name || '',
-    CLIENT_EMAIL: context.client?.email || '',
-    CLIENT_PHONE: context.client?.phone || '',
-    CLIENT_ADDRESS1: context.client?.address1 || '',
-    CLIENT_ADDRESS2: context.client?.address2 || '',
-    CLIENT_ADDRESS3: context.client?.address3 || '',
-    CLIENT_TOWN: context.client?.town || '',
-    CLIENT_POSTCODE: context.client?.postcode || '',
-    EVENT_TYPE: context.event?.type || context.event?.event_name || '',
-    EVENT_DATE: eventDateHuman,
-    EVENT_START: context.event?.startTime || '',
-    EVENT_END: context.event?.endTime || '',
-    VENUE_NAME: context.event?.venue_name || '',
-    VENUE_ADDRESS1: context.event?.venue_address1 || '',
-    VENUE_ADDRESS2: context.event?.venue_address2 || '',
-    VENUE_ADDRESS3: context.event?.venue_address3 || '',
-    VENUE_TOWN: context.event?.venue_town || context.event?.town || '',
-    VENUE_POSTCODE: context.event?.venue_postcode || context.event?.postcode || '',
-    TOTAL_FEE: totalAmountText,
-    EXTRA_FEES: extraFeesText,
-    PRODUCTION_FEES: productionFeesText,
-    DEPOSIT_AMOUNT: depositText,
-    BALANCE_AMOUNT: balanceAmountText,
-    BALANCE_DATE: balanceDateHuman || '',
-    BALANCE_REMIND: context.balanceRemind || '',
-    SERVICE_TYPE: context.serviceType || '',
-    SPECIALIST_SINGERS: context.specialistSingers || ''
+  const loadSheetRecord = async (sheetName) => {
+    if (sheetCache.has(sheetName)) return sheetCache.get(sheetName);
+    const relativePath = sheetPathMap[sheetName];
+    if (!relativePath) return null;
+    const entry = zip.file(`xl/${relativePath}`);
+    if (!entry) return null;
+    const xml = await entry.async('string');
+    const record = { path: relativePath, xml };
+    sheetCache.set(sheetName, record);
+    return record;
   };
 
-  sharedStringsXml = replaceAhmenSharedStrings(sharedStringsXml, sharedReplacements);
+  const bindings = await db.getMergeFieldBindingsByTemplate(AHMEN_TEMPLATE_KEY);
+  const fieldValues = buildMergeFieldValueMap(context);
+  const sharedReplacements = {};
 
-  const numericCells = [
-    { ref: 'B27', style: '12', value: context.totalAmount },
-    { ref: 'B28', style: '12', value: context.extraFees },
-    { ref: 'B29', style: '12', value: context.productionFees },
-    { ref: 'B30', style: '12', value: context.deposit },
-    { ref: 'B31', style: '12', value: context.balanceAmount }
-  ];
+  for (const binding of bindings) {
+    const rawValue = fieldValues[binding.field_key];
 
-  numericCells.forEach(cell => {
-    sheetXml = replaceAhmenNumericCell(sheetXml, cell.ref, cell.style, cell.value);
-  });
+    if (binding.placeholder) {
+      const token = `{${binding.placeholder}}`;
+      if (!(token in sharedReplacements)) {
+        const formatted = binding.data_type === 'number'
+          ? (normalizeNumericOutput(rawValue) ?? '')
+          : formatBindingStringValue(rawValue, binding.format);
+        sharedReplacements[token] = formatted;
+      }
+    }
+
+    if (!binding.sheet || !binding.cell) continue;
+    const sheetRecord = await loadSheetRecord(binding.sheet);
+    if (!sheetRecord) continue;
+
+    if (binding.data_type === 'number') {
+      const numericValue = normalizeNumericOutput(rawValue);
+      sheetRecord.xml = replaceAhmenNumericCell(sheetRecord.xml, binding.cell, binding.style || '12', numericValue);
+    } else {
+      const stringValue = formatBindingStringValue(rawValue, binding.format);
+      sheetRecord.xml = replaceAhmenStringCell(sheetRecord.xml, binding.cell, stringValue);
+    }
+  }
+
+  if (Object.keys(sharedReplacements).length) {
+    sharedStringsXml = replaceAhmenSharedStrings(sharedStringsXml, sharedReplacements);
+  }
 
   zip.file(sharedStringsPath, sharedStringsXml);
-  zip.file(sheetPath, sheetXml);
+
+  sheetCache.forEach(record => {
+    zip.file(`xl/${record.path}`, record.xml);
+  });
 
   if (workbookXml) {
     workbookXml = ensureCalcPrAttributes(workbookXml);
@@ -910,6 +1004,7 @@ module.exports = {
   __private: {
     applyAhmenTemplateWithZip,
     replaceAhmenNumericCell,
+    replaceAhmenStringCell,
     buildNumericCell,
     formatNumericForCell
   }

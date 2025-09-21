@@ -1,0 +1,283 @@
+[
+  {
+    "field_key": "client_name",
+    "label": "Client Name",
+    "placeholder": "CLIENT_NAME",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "description": "Primary contact name for the client",
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B3", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_email",
+    "label": "Client Email",
+    "placeholder": "CLIENT_EMAIL",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B4", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_phone",
+    "label": "Client Phone",
+    "placeholder": "CLIENT_PHONE",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B5", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_address1",
+    "label": "Client Address Line 1",
+    "placeholder": "CLIENT_ADDRESS1",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B6", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_address2",
+    "label": "Client Address Line 2",
+    "placeholder": "CLIENT_ADDRESS2",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B7", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_address3",
+    "label": "Client Address Line 3",
+    "placeholder": "CLIENT_ADDRESS3",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B8", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_town",
+    "label": "Client Town/City",
+    "placeholder": "CLIENT_TOWN",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B9", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "client_postcode",
+    "label": "Client Postcode",
+    "placeholder": "CLIENT_POSTCODE",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B10", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "event_type",
+    "label": "Event Type",
+    "placeholder": "EVENT_TYPE",
+    "category": "event",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B13", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "event_date",
+    "label": "Event Date",
+    "placeholder": "EVENT_DATE",
+    "category": "event",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B14", "data_type": "string", "format": "date_human" }
+    ]
+  },
+  {
+    "field_key": "event_start",
+    "label": "Event Start Time",
+    "placeholder": "EVENT_START",
+    "category": "event",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B15", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "event_end",
+    "label": "Event End Time",
+    "placeholder": "EVENT_END",
+    "category": "event",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B16", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "venue_name",
+    "label": "Venue Name",
+    "placeholder": "VENUE_NAME",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B19", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "venue_address1",
+    "label": "Venue Address Line 1",
+    "placeholder": "VENUE_ADDRESS1",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B20", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "venue_address2",
+    "label": "Venue Address Line 2",
+    "placeholder": "VENUE_ADDRESS2",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B21", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "venue_address3",
+    "label": "Venue Address Line 3",
+    "placeholder": "VENUE_ADDRESS3",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B22", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "venue_town",
+    "label": "Venue Town/City",
+    "placeholder": "VENUE_TOWN",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B23", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "venue_postcode",
+    "label": "Venue Postcode",
+    "placeholder": "VENUE_POSTCODE",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B24", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "total_amount",
+    "label": "Total Amount",
+    "placeholder": "TOTAL",
+    "category": "financial",
+    "show_in_jobsheet": false,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B27", "data_type": "number", "style": "12" }
+    ]
+  },
+  {
+    "field_key": "extra_fees",
+    "label": "Extra Fees",
+    "placeholder": "EXTRA_FEES",
+    "category": "financial",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B28", "data_type": "number", "style": "12" }
+    ]
+  },
+  {
+    "field_key": "production_fees",
+    "label": "Production Fees",
+    "placeholder": "PRODUCTION_FEES",
+    "category": "financial",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B29", "data_type": "number", "style": "12" }
+    ]
+  },
+  {
+    "field_key": "deposit_amount",
+    "label": "Deposit Amount",
+    "placeholder": "DEPOSIT_AMOUNT",
+    "category": "financial",
+    "show_in_jobsheet": false,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B30", "data_type": "number", "style": "12" }
+    ]
+  },
+  {
+    "field_key": "balance_amount",
+    "label": "Balance Amount",
+    "placeholder": "BALANCE_AMOUNT",
+    "category": "financial",
+    "show_in_jobsheet": false,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B31", "data_type": "number", "style": "12" }
+    ]
+  },
+  {
+    "field_key": "balance_due_date",
+    "label": "Balance Due Date",
+    "placeholder": "BALANCE_DATE",
+    "category": "financial",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B32", "data_type": "string", "format": "date_human" }
+    ]
+  },
+  {
+    "field_key": "balance_reminder_date",
+    "label": "Balance Reminder Date",
+    "placeholder": "BALANCE_REMIND",
+    "category": "financial",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B33", "data_type": "string", "format": "date_human" }
+    ]
+  },
+  {
+    "field_key": "service_types",
+    "label": "Service Types",
+    "placeholder": "SERVICE_TYPE",
+    "category": "services",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B36", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "specialist_singers",
+    "label": "Specialist Singers",
+    "placeholder": "SPECIALIST_SINGERS",
+    "category": "services",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B37", "data_type": "string" }
+    ]
+  },
+  {
+    "field_key": "caterer_name",
+    "label": "Caterer Name",
+    "placeholder": "CATERER_NAME",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B40", "data_type": "string" }
+    ]
+  }
+]
