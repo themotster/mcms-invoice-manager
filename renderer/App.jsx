@@ -45,6 +45,13 @@ const STATUS_ROW_CLASSES = {
   completed: 'bg-gray-200'
 };
 
+const ACTIVE_STATUS_ROW_CLASSES = {
+  enquiry: 'bg-yellow-400',
+  quoted: 'bg-blue-400',
+  confirmed: 'bg-green-400',
+  completed: 'bg-gray-500'
+};
+
 const STATUS_ORDER = STATUS_OPTIONS.reduce((acc, option, index) => {
   acc[option.value] = index;
   return acc;
@@ -90,6 +97,12 @@ const JOBSHEET_COLUMNS = [
 ];
 
 const JOBSHEET_GRID_TEMPLATE = 'minmax(0,1.4fr) minmax(0,1fr) minmax(0,1.15fr) minmax(0,1.4fr) minmax(0,0.9fr) minmax(0,1fr) auto';
+
+function getAlignmentClasses(alignment) {
+  if (alignment === 'right') return 'justify-end text-right';
+  if (alignment === 'center') return 'justify-center text-center';
+  return 'justify-start text-left';
+}
 
 const DEFAULT_JOBSHEET = (businessId) => ({
   business_id: businessId,
@@ -480,6 +493,119 @@ function JobsheetList({
     );
   };
 
+  const renderHeaderRow = () => (
+    <div
+      className="grid items-center gap-3 rounded-lg bg-slate-50 px-3 py-2"
+      style={{ gridTemplateColumns: JOBSHEET_GRID_TEMPLATE }}
+    >
+      {JOBSHEET_COLUMNS.map(column => {
+        const baseClass = `${getAlignmentClasses(column.align)} flex w-full items-center`;
+        const labelClass = `${baseClass} text-xs font-semibold uppercase tracking-wide text-slate-600`;
+        if (!column.sortable) {
+          return (
+            <div key={column.key} className={labelClass}>
+              {column.label}
+            </div>
+          );
+        }
+        return (
+          <button
+            key={column.key}
+            type="button"
+            onClick={() => onSort(column.key)}
+            className={`${labelClass} gap-1 bg-transparent p-0 border-0 hover:text-indigo-600 focus:outline-none focus:ring-0`}
+          >
+            {column.label}
+            {renderSortIndicator(column.key)}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const renderDataRow = (sheet) => {
+    const statusKey = normalizeStatus(sheet.status) || 'enquiry';
+    const statusStyles = STATUS_STYLES[statusKey] || 'bg-slate-200 text-slate-700 border border-slate-300';
+    const statusDisabled = statusUpdatingId === sheet.jobsheet_id;
+    const baseRowClass = STATUS_ROW_CLASSES[statusKey] || 'bg-white';
+    const activeRowClass = ACTIVE_STATUS_ROW_CLASSES[statusKey] || baseRowClass;
+    const numericRowId = sheet.jobsheet_id != null ? Number(sheet.jobsheet_id) : null;
+    const isActive = numericRowId != null && activeJobsheetId != null && Number(activeJobsheetId) === numericRowId;
+
+    const rowBackground = isActive ? activeRowClass : baseRowClass;
+    const baseCellClass = 'px-4 py-3 text-sm';
+    const verticalBorder = 'border-y border-transparent';
+    const firstCellExtras = isActive
+      ? "relative before:absolute before:inset-y-2 before:left-1 before:w-1 before:rounded-full before:bg-indigo-600 before:content-[''] before:block rounded-l-xl shadow-[0_0_0_2px_rgba(79,70,229,0.25)]"
+      : 'rounded-l-xl';
+    const lastCellExtras = isActive
+      ? 'rounded-r-xl shadow-[0_0_0_2px_rgba(79,70,229,0.25)]'
+      : 'rounded-r-xl';
+
+    return (
+      <tr
+        key={sheet.jobsheet_id || sheet.client_name}
+        onClick={() => onOpen(sheet.jobsheet_id)}
+        className="cursor-pointer"
+      >
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} ${firstCellExtras}`}>
+          <div className="flex items-center gap-3">
+            {isActive ? <span className="h-8 w-1 rounded-full bg-indigo-600" /> : null}
+            <span className="font-medium text-slate-800 whitespace-nowrap">{sheet.client_name || 'Untitled booking'}</span>
+          </div>
+        </td>
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder}`}>
+          {sheet.event_type || '—'}
+        </td>
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} whitespace-nowrap`}>
+          {formatDateDisplay(sheet.event_date)}
+        </td>
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} truncate`}>
+          {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
+        </td>
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder}`}>
+          <div className="flex justify-center">
+            <select
+              value={statusKey}
+              disabled={statusDisabled}
+              className={`rounded-full px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 ${statusStyles} ${statusDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+              onClick={event => event.stopPropagation()}
+              onMouseDown={event => event.stopPropagation()}
+              onChange={event => {
+                event.stopPropagation();
+                const nextStatus = event.target.value;
+                if (!nextStatus || nextStatus === statusKey) return;
+                onStatusChange?.(sheet.jobsheet_id, nextStatus);
+              }}
+            >
+              {STATUS_OPTIONS.map(option => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+        </td>
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} text-right text-slate-600`}>
+          {toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)))}
+        </td>
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} ${lastCellExtras}`}>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              disabled={deletingId === sheet.jobsheet_id}
+              onClick={(event) => {
+                event.stopPropagation();
+                onDelete(sheet.jobsheet_id);
+              }}
+              className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
+            >
+              Delete
+            </button>
+          </div>
+        </td>
+      </tr>
+    );
+  };
+
   return (
     <div className="flex flex-col h-full">
       <div className="flex items-center justify-between mb-4">
@@ -499,144 +625,42 @@ function JobsheetList({
         ) : (
           <div className="overflow-y-auto">
             <table className="min-w-full text-sm border-separate border-spacing-y-2">
-              <tbody className="divide-y divide-slate-100">
-                <tr key="jobsheet-header">
-                  <td colSpan={JOBSHEET_COLUMNS.length} className="px-3 py-2">
-                    <div
-                      className="grid items-center gap-3 rounded-lg bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600"
-                      style={{ gridTemplateColumns: JOBSHEET_GRID_TEMPLATE }}
-                    >
-                      {JOBSHEET_COLUMNS.map(column => {
-                        const justifyClass = column.align === 'right'
-                          ? 'justify-end text-right'
-                          : column.align === 'center'
-                            ? 'justify-center text-center'
-                            : 'justify-start text-left';
-                        if (!column.sortable) {
-                          return (
-                            <div
-                              key={column.key}
-                              className={`flex w-full items-center ${justifyClass}`}
-                            >
-                              {column.label}
-                            </div>
-                          );
-                        }
-                        return (
-                          <button
-                            key={column.key}
-                            type="button"
-                            onClick={() => onSort(column.key)}
-                            className={`flex w-full items-center gap-1 text-slate-600 hover:text-indigo-600 ${justifyClass}`}
-                          >
-                            {column.label}
-                            {renderSortIndicator(column.key)}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </td>
-                </tr>
-                {sortedJobsheets.map(sheet => {
-                  const statusKey = normalizeStatus(sheet.status) || 'enquiry';
-                  const statusStyles = STATUS_STYLES[statusKey] || 'bg-slate-200 text-slate-700 border border-slate-300';
-                  const statusDisabled = statusUpdatingId === sheet.jobsheet_id;
-                  const statusRowClass = STATUS_ROW_CLASSES[statusKey] || 'bg-white';
-                  const numericRowId = sheet.jobsheet_id != null ? Number(sheet.jobsheet_id) : null;
-                  const isActive = numericRowId != null && activeJobsheetId != null && Number(activeJobsheetId) === numericRowId;
-                  const highlightClasses = isActive
-                    ? 'border-2 border-red-500 shadow-[0_0_0_3px_rgba(239,68,68,0.15)]'
-                    : 'border border-transparent shadow-sm';
-                  return (
-                    <tr
-                      key={sheet.jobsheet_id || sheet.client_name}
-                      onClick={() => onOpen(sheet.jobsheet_id)}
-                      className="cursor-pointer"
-                    >
-                      <td colSpan={JOBSHEET_COLUMNS.length} className="px-3 py-1">
-                        <div
-                          className={`${statusRowClass} ${highlightClasses} grid items-center gap-3 rounded-lg px-3 py-2 transition`}
-                          style={{ gridTemplateColumns: JOBSHEET_GRID_TEMPLATE }}
+              <thead>
+                <tr className="bg-slate-50">
+                  {JOBSHEET_COLUMNS.map(column => {
+                    const alignClass = column.align === 'right'
+                      ? 'text-right'
+                      : column.align === 'center'
+                        ? 'text-center'
+                        : 'text-left';
+                    if (!column.sortable) {
+                      return (
+                        <th
+                          key={column.key}
+                          scope="col"
+                          className={`px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 ${alignClass}`}
                         >
-                          {JOBSHEET_COLUMNS.map(column => {
-                            switch (column.key) {
-                              case 'client_name':
-                                return (
-                                  <div key={column.key} className="text-sm font-medium text-slate-800 whitespace-nowrap">
-                                    {sheet.client_name || 'Untitled booking'}
-                                  </div>
-                                );
-                              case 'event_type':
-                                return (
-                                  <div key={column.key} className="text-sm text-slate-600">
-                                    {sheet.event_type || '—'}
-                                  </div>
-                                );
-                              case 'event_date':
-                                return (
-                                  <div key={column.key} className="text-sm text-slate-600 whitespace-nowrap">
-                                    {formatDateDisplay(sheet.event_date)}
-                                  </div>
-                                );
-                              case 'venue_name':
-                                return (
-                                  <div key={column.key} className="text-sm text-slate-600 truncate">
-                                    {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
-                                  </div>
-                                );
-                              case 'status':
-                                return (
-                                  <div key={column.key} className="flex justify-center">
-                                    <select
-                                      value={statusKey}
-                                      disabled={statusDisabled}
-                                      className={`rounded-full px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 ${statusStyles} ${statusDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
-                                      onClick={event => event.stopPropagation()}
-                                      onMouseDown={event => event.stopPropagation()}
-                                      onChange={event => {
-                                        event.stopPropagation();
-                                        const nextStatus = event.target.value;
-                                        if (!nextStatus || nextStatus === statusKey) return;
-                                        onStatusChange?.(sheet.jobsheet_id, nextStatus);
-                                      }}
-                                    >
-                                      {STATUS_OPTIONS.map(option => (
-                                        <option key={option.value} value={option.value}>{option.label}</option>
-                                      ))}
-                                    </select>
-                                  </div>
-                                );
-                              case 'ahmen_fee':
-                                return (
-                                  <div key={column.key} className="text-right text-sm text-slate-600">
-                                    {toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)))}
-                                  </div>
-                                );
-                              case 'actions':
-                                return (
-                                  <div key={column.key} className="flex justify-end">
-                                    <button
-                                      type="button"
-                                      disabled={deletingId === sheet.jobsheet_id}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        onDelete(sheet.jobsheet_id);
-                                      }}
-                                      className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60"
-                                    >
-                                      Delete
-                                    </button>
-                                  </div>
-                                );
-                              default:
-                                return null;
-                            }
-                          })}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                          {column.label}
+                        </th>
+                      );
+                    }
+                    return (
+                      <th key={column.key} scope="col" className={`px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 ${alignClass}`}>
+                        <button
+                          type="button"
+                          onClick={() => onSort(column.key)}
+                          className="inline-flex items-center gap-1 bg-transparent p-0 text-slate-600 hover:text-indigo-600 focus:outline-none focus:ring-0"
+                        >
+                          {column.label}
+                          {renderSortIndicator(column.key)}
+                        </button>
+                      </th>
+                    );
+                  })}
+                </tr>
+              </thead>
+              <tbody>
+                {sortedJobsheets.map(sheet => renderDataRow(sheet))}
               </tbody>
             </table>
           </div>
@@ -645,6 +669,7 @@ function JobsheetList({
     </div>
   );
 }
+
 
 function normalizeSingerEntries(entries) {
   const list = Array.isArray(entries) ? entries : [];

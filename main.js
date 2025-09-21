@@ -165,6 +165,14 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
       parent.focus();
     }
     if (jobsheetWindow === child) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('jobsheet-change', {
+          type: 'jobsheet-editor-focus',
+          businessId,
+          jobsheetId,
+          active: false
+        });
+      }
       jobsheetWindow = null;
     }
   });
