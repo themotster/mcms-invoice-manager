@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import MergeFieldsManager from './components/MergeFieldsManager';
 import { createRoot } from 'react-dom/client';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
 import {
@@ -2606,6 +2607,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
   const [openingTemplate, setOpeningTemplate] = useState(false);
   const [normalizingTemplate, setNormalizingTemplate] = useState(false);
+  const [showMergeFieldManager, setShowMergeFieldManager] = useState(false);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -2959,6 +2961,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
             >
               {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
             </button>
+            <button
+              onClick={() => setShowMergeFieldManager(true)}
+              className="inline-flex items-center self-start rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+            >
+              Manage placeholders
+            </button>
           </div>
         </section>
         {loading ? (
@@ -2978,11 +2986,17 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
               onSort={handleSort}
               activeJobsheetId={activeJobsheetId}
             />
-            <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
-              Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
-            </div>
-          </>
-        )}
+           <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
+             Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
+           </div>
+         </>
+       )}
+
+        {showMergeFieldManager ? (
+          <MergeFieldsManager
+            onClose={() => setShowMergeFieldManager(false)}
+          />
+        ) : null}
       </main>
     </div>
   );
