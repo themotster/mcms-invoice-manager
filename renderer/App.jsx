@@ -2873,7 +2873,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
   const [openingTemplate, setOpeningTemplate] = useState(false);
   const [normalizingTemplate, setNormalizingTemplate] = useState(false);
-  const [showMergeFieldManager, setShowMergeFieldManager] = useState(false);
+  const [settingsPanel, setSettingsPanel] = useState('overview');
   const [workspaceSection, setWorkspaceSection] = useState(() => {
     if (typeof window === 'undefined') return 'jobsheets';
     try {
@@ -2959,6 +2959,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       console.warn('Unable to persist workspace section', err);
     }
   }, [workspaceSection]);
+
+  useEffect(() => {
+    if (workspaceSection !== 'settings' && settingsPanel !== 'overview') {
+      setSettingsPanel('overview');
+    }
+  }, [workspaceSection, settingsPanel]);
 
   useEffect(() => {
     setError('');
@@ -3081,6 +3087,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
   const handleOpenTemplate = useCallback(async () => {
     setWorkspaceSection('settings');
+    setSettingsPanel('overview');
     const api = window.api;
     if (!api || typeof api.openTemplate !== 'function') {
       setError('Unable to open template: API unavailable');
@@ -3102,10 +3109,11 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     } finally {
       setOpeningTemplate(false);
     }
-  }, [business.invoice_template_path, setWorkspaceSection]);
+  }, [business.invoice_template_path, setWorkspaceSection, setSettingsPanel]);
 
   const handleNormalizeTemplate = useCallback(async () => {
     setWorkspaceSection('settings');
+    setSettingsPanel('overview');
     const api = window.api;
     if (!api || typeof api.normalizeTemplate !== 'function') {
       setError('Unable to normalize template: API unavailable');
@@ -3127,7 +3135,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     } finally {
       setNormalizingTemplate(false);
     }
-  }, [business.invoice_template_path, setWorkspaceSection]);
+  }, [business.invoice_template_path, setWorkspaceSection, setSettingsPanel]);
 
   const handleOpenDocumentsFolder = useCallback(async () => {
     setDocumentsError('');
@@ -3440,86 +3448,106 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
             {workspaceSection === 'settings' ? (
               <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
-                <div>
-                  <h2 className="text-lg font-semibold text-slate-700">Documents settings</h2>
-                  <p className="text-sm text-slate-500">Configure output folders, templates, and placeholder registry.</p>
-                </div>
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                {settingsPanel === 'overview' ? (
+                  <>
                     <div>
-                      <h3 className="text-sm font-semibold text-slate-700">Documents folder</h3>
-                      <p className="text-xs text-slate-500 break-all" title={business.save_path || 'Not configured'}>
-                        {business.save_path || 'Not configured'}
-                      </p>
+                      <h2 className="text-lg font-semibold text-slate-700">Documents settings</h2>
+                      <p className="text-sm text-slate-500">Configure output folders, templates, and placeholder registry.</p>
                     </div>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-700">Documents folder</h3>
+                          <p className="text-xs text-slate-500 break-all" title={business.save_path || 'Not configured'}>
+                            {business.save_path || 'Not configured'}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={handleChangeDocumentsFolder}
+                            disabled={updatingSavePath}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {updatingSavePath ? 'Updating…' : 'Change folder'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleOpenDocumentsFolder}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            Open folder
+                          </button>
+                        </div>
+                      </div>
+                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-700">Template tools</h3>
+                          <p className="text-xs text-slate-500">Open or normalize the current workbook template.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={handleOpenTemplate}
+                            disabled={openingTemplate}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {openingTemplate ? 'Opening…' : 'Edit template'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleNormalizeTemplate}
+                            disabled={normalizingTemplate}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
+                        <div>
+                          <h3 className="text-sm font-semibold text-slate-700">Placeholder registry</h3>
+                          <p className="text-xs text-slate-500">Add or edit merge fields used across templates.</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setWorkspaceSection('settings');
+                              setSettingsPanel('placeholders');
+                            }}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            Manage placeholders
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : null}
+
+                {settingsPanel === 'placeholders' ? (
+                  <div className="space-y-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h2 className="text-lg font-semibold text-slate-700">Placeholder registry</h2>
+                        <p className="text-sm text-slate-500">Add or edit merge fields used across templates.</p>
+                      </div>
                       <button
                         type="button"
-                        onClick={handleChangeDocumentsFolder}
-                        disabled={updatingSavePath}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {updatingSavePath ? 'Updating…' : 'Change folder'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleOpenDocumentsFolder}
+                        onClick={() => setSettingsPanel('overview')}
                         className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
                       >
-                        Open folder
+                        Back to settings
                       </button>
                     </div>
+                    <MergeFieldsManager inline onClose={() => setSettingsPanel('overview')} />
                   </div>
-                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-700">Template tools</h3>
-                      <p className="text-xs text-slate-500">Open or normalize the current workbook template.</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={handleOpenTemplate}
-                        disabled={openingTemplate}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {openingTemplate ? 'Opening…' : 'Edit template'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleNormalizeTemplate}
-                        disabled={normalizingTemplate}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
-                    <div>
-                      <h3 className="text-sm font-semibold text-slate-700">Placeholder registry</h3>
-                      <p className="text-xs text-slate-500">Add or edit merge fields used across templates.</p>
-                    </div>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setShowMergeFieldManager(true)}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                      >
-                        Manage placeholders
-                      </button>
-                    </div>
-                  </div>
-                </div>
+                ) : null}
               </section>
             ) : null}
           </div>
         </div>
-
-        {showMergeFieldManager ? (
-          <MergeFieldsManager
-            onClose={() => setShowMergeFieldManager(false)}
-          />
-        ) : null}
       </main>
     </div>
   );
