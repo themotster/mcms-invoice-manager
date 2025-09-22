@@ -398,12 +398,11 @@ function formatCompactDate(value) {
   if (!value) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.valueOf())) return '—';
-  const formatted = date.toLocaleDateString('en-GB', {
+  return date.toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'short',
     year: '2-digit'
   });
-  return formatted.replace(/\s/g, '');
 }
 
 function IndeterminateCheckbox({ checked, indeterminate, className = '', ...props }) {
@@ -3369,10 +3368,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
     return (
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="min-w-full table-auto text-sm">
-          <thead className="bg-slate-50">
+        <table className="w-full table-auto text-sm">
+          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
             <tr>
-              <th className="w-10 px-3 py-2 align-middle text-left">
+              <th className="w-12 px-3 py-3 text-left">
                 <IndeterminateCheckbox
                   checked={allSelected}
                   indeterminate={!allSelected && someSelected}
@@ -3381,9 +3380,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                 />
               </th>
               {DOCUMENT_COLUMNS.map(column => (
-                <th key={column.key} className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
-                  {column.label}
-                </th>
+                <th key={column.key} className="px-3 py-3 text-left">{column.label}</th>
               ))}
             </tr>
           </thead>
@@ -3420,15 +3417,15 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                       <div className="text-xs text-slate-500 truncate" title={doc.displayEvent}>{doc.displayEvent}</div>
                     ) : null}
                   </td>
-                <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
-                  <span title={doc.eventDateIso || undefined}>{doc.formattedEventDate}</span>
-                  {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
-                    <div className="text-xs text-slate-400">Doc: {doc.formattedDocumentDate}</div>
-                  ) : null}
-                </td>
-                <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
-                  <span title={doc.createdAtFull || undefined}>{doc.createdAtDisplay}</span>
-                </td>
+                  <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
+                    <span title={doc.eventDateIso || undefined}>{doc.formattedEventDate}</span>
+                    {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
+                      <div className="text-xs text-slate-400">Doc: {doc.formattedDocumentDate}</div>
+                    ) : null}
+                  </td>
+                  <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
+                    <span title={doc.createdAtFull || undefined}>{doc.createdAtDisplay}</span>
+                  </td>
                   <td className="align-top px-3 py-3 text-right font-semibold text-slate-700 whitespace-nowrap">{toCurrency(doc.total_amount)}</td>
                   <td className="align-top px-3 py-3">
                     <div className="flex flex-wrap justify-end gap-2">
