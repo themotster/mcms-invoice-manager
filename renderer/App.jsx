@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import MergeFieldsManager from './components/MergeFieldsManager';
 import { createRoot } from 'react-dom/client';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
@@ -41,21 +41,43 @@ const DOCUMENT_CONFIG = {
 
 const DEFAULT_DOCUMENT_KEY = 'workbook';
 
-const DOCUMENT_COLUMNS = [
-  { key: 'document', label: 'Document', headerClass: 'px-3 py-3 text-left' },
-  { key: 'client', label: 'Client / Event', headerClass: 'px-3 py-3 text-left' },
-  { key: 'event_date', label: 'Event Date', headerClass: 'px-3 py-3 text-left' },
-  { key: 'created', label: 'Created', headerClass: 'px-3 py-3 text-left' },
-  { key: 'amount', label: 'Amount', headerClass: 'px-3 py-3 text-center' },
-  { key: 'actions', label: 'Actions', headerClass: 'px-3 py-3 text-center' }
-];
-
 const DOCUMENT_TYPE_LABELS = {
   invoice: 'Invoice',
   quote: 'Quote',
   contract: 'Contract',
   workbook: 'Excel Workbook'
 };
+
+const DOCUMENT_GROUP_OPTIONS = [
+  { value: 'none', label: 'All Documents' },
+  { value: 'doc_type', label: 'Document Type' },
+  { value: 'client', label: 'Client' },
+  { value: 'event_date', label: 'Event Date' }
+];
+
+const DOCUMENT_COLUMNS = [
+  { key: 'document', label: 'Document', align: 'left', always: true },
+  { key: 'client', label: 'Client / Event', align: 'left' },
+  { key: 'event_date', label: 'Event Date', align: 'left' },
+  { key: 'created', label: 'Created', align: 'left' },
+  { key: 'amount', label: 'Amount', align: 'right' },
+  { key: 'actions', label: 'Actions', align: 'right', always: true }
+];
+
+function getDocumentIcon(docType) {
+  switch ((docType || '').toLowerCase()) {
+    case 'invoice':
+      return '🧾';
+    case 'quote':
+      return '💼';
+    case 'contract':
+      return '🖋️';
+    case 'workbook':
+      return '📊';
+    default:
+      return '📄';
+  }
+}
 
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses' },
@@ -64,6 +86,13 @@ const WORKSPACE_SECTIONS = [
 ];
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
+const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
+const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => {
+  if (!column.always) {
+    acc[column.key] = true;
+  }
+  return acc;
+}, {});
 
 const STATUS_STYLES = {
   enquiry: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -637,6 +666,58 @@ function matchesDocumentToJobsheet(doc, jobsheetState) {
   }
 
   return false;
+}
+
+function IconButton({ label, onClick, disabled, className = '', children }) {
+  const handleClick = useCallback((event) => {
+    event.stopPropagation();
+    onClick?.(event);
+  }, [onClick]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={disabled}
+      className={`inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+      aria-label={label}
+      title={label}
+    >
+      {children}
+    </button>
+  );
+}
+
+function OpenIcon({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 16.5v1.25A1.25 1.25 0 0 0 9.25 19h8A1.75 1.75 0 0 0 19 17.25v-8A1.25 1.25 0 0 0 17.75 8H16.5" />
+      <path d="M7 17H6.25A1.25 1.25 0 0 1 5 15.75v-8A1.75 1.75 0 0 1 6.75 6h8A1.25 1.25 0 0 1 16 7.25V8" />
+      <path d="M10 14.25 17.25 7" />
+      <path d="M13 6h4.75V10.75" />
+    </svg>
+  );
+}
+
+function RevealIcon({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.25 12s2.75-6.75 9.75-6.75 9.75 6.75 9.75 6.75-2.75 6.75-9.75 6.75S2.25 12 2.25 12Z" />
+      <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+    </svg>
+  );
+}
+
+function DeleteIcon({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 7h12" />
+      <path d="M9.5 7V5.75A1.75 1.75 0 0 1 11.25 4h1.5A1.75 1.75 0 0 1 14.5 5.75V7" />
+      <path d="M17 7v10.25A1.75 1.75 0 0 1 15.25 19h-6.5A1.75 1.75 0 0 1 7 17.25V7" />
+      <path d="M10 11v5" />
+      <path d="M14 11v5" />
+    </svg>
+  );
 }
 
 function addDays(dateStr, offset) {
@@ -2625,17 +2706,14 @@ function DocumentsPanel({
     (documents || []).map(doc => {
       const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
       const numberLabel = doc.number != null ? ` #${doc.number}` : '';
-      const eventDateRaw = doc.display_event_date || doc.event_date || doc.joined_event_date || '';
       const createdDisplay = formatCompactDate(doc.created_at);
       const createdFull = formatTimestampDisplay(doc.created_at);
-      const eventDateDisplay = formatCompactDate(eventDateRaw);
       const amountDisplay = doc.total_amount != null ? toCurrency(doc.total_amount) : '—';
       const documentDateDisplay = formatCompactDate(doc.document_date);
       return {
         ...doc,
         typeLabel,
         documentTitle: `${typeLabel}${numberLabel}`,
-        eventDateDisplay,
         createdDisplay,
         createdFull,
         documentDateDisplay,
@@ -2673,9 +2751,6 @@ function DocumentsPanel({
           <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
             <tr>
               <th className="px-3 py-3 text-left">Document</th>
-              <th className="px-3 py-3 text-left">Created</th>
-              <th className="px-3 py-3 text-left">Event</th>
-              <th className="px-3 py-3 text-right">Amount</th>
               <th className="px-3 py-3 text-right">Actions</th>
             </tr>
           </thead>
@@ -2683,48 +2758,42 @@ function DocumentsPanel({
             {normalizedDocuments.map(doc => (
               <tr key={doc.document_id || `${doc.doc_type}-${doc.created_at || Math.random()}`} className="align-top">
                 <td className="px-3 py-3 text-sm text-slate-700">
-                  <div className="font-semibold">{doc.documentTitle}</div>
-                  {doc.documentDateDisplay && doc.documentDateDisplay !== '—' ? (
-                    <div className="text-xs text-slate-500">Document date {doc.documentDateDisplay}</div>
-                  ) : null}
-                  {doc.fileAvailable ? null : (
-                    <div className="text-xs text-red-500">File not found</div>
-                  )}
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 text-lg" role="img" aria-label={doc.typeLabel}>{getDocumentIcon(doc.doc_type)}</span>
+                    <div>
+                      <div className="font-semibold">{doc.documentTitle}</div>
+                      {doc.documentDateDisplay && doc.documentDateDisplay !== '—' ? (
+                        <div className="text-xs text-slate-500">Document date {doc.documentDateDisplay}</div>
+                      ) : null}
+                      {doc.fileAvailable ? null : (
+                        <div className="text-xs text-red-500">File not found</div>
+                      )}
+                    </div>
+                  </div>
                 </td>
-                <td className="px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
-                  <span title={doc.createdFull || undefined}>{doc.createdDisplay}</span>
-                </td>
-                <td className="px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
-                  {doc.eventDateDisplay && doc.eventDateDisplay !== '—'
-                    ? doc.eventDateDisplay
-                    : 'Date tbc'}
-                </td>
-                <td className="px-3 py-3 text-right text-sm font-semibold text-slate-700 whitespace-nowrap">{doc.amountDisplay}</td>
                 <td className="px-3 py-3">
-                  <div className="flex flex-wrap justify-end gap-2">
-                    <button
-                      type="button"
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    <IconButton
+                      label="Open document"
                       onClick={() => onOpenDocumentFile?.(doc.file_path)}
                       disabled={!doc.fileAvailable}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Open
-                    </button>
-                    <button
-                      type="button"
+                      <OpenIcon />
+                    </IconButton>
+                    <IconButton
+                      label="Reveal document in Finder"
                       onClick={() => onRevealDocument?.(doc.file_path)}
                       disabled={!doc.fileAvailable}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                     >
-                      Reveal
-                    </button>
-                    <button
-                      type="button"
+                      <RevealIcon />
+                    </IconButton>
+                    <IconButton
+                      label="Delete document"
                       onClick={() => onDeleteDocument?.(doc)}
-                      className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                      className="border-red-200 text-red-600 hover:bg-red-50"
                     >
-                      Delete
-                    </button>
+                      <DeleteIcon />
+                    </IconButton>
                   </div>
                 </td>
               </tr>
@@ -3390,6 +3459,29 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [documentsLoading, setDocumentsLoading] = useState(true);
   const [documentsError, setDocumentsError] = useState('');
   const [documentsGroup, setDocumentsGroup] = useState('none');
+  const [documentsSearch, setDocumentsSearch] = useState('');
+  const [documentColumnsState, setDocumentColumnsState] = useState(() => {
+    if (typeof window === 'undefined') return { ...DEFAULT_DOCUMENT_COLUMNS_STATE };
+    try {
+      const stored = window.localStorage.getItem(DOCUMENT_COLUMNS_STORAGE_KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            ...DEFAULT_DOCUMENT_COLUMNS_STATE,
+            ...parsed
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('Unable to read document columns preference', err);
+    }
+    return { ...DEFAULT_DOCUMENT_COLUMNS_STATE };
+  });
+  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const columnsMenuRef = useRef(null);
+  const columnsMenuContentRef = useRef(null);
+  const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
   const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
 
   const normalizeJobsheet = useCallback(item => ({
@@ -3477,6 +3569,44 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   useEffect(() => {
     refreshDocuments();
   }, [refreshDocuments]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(DOCUMENT_COLUMNS_STORAGE_KEY, JSON.stringify(documentColumnsState));
+    } catch (err) {
+      console.warn('Unable to persist document columns preference', err);
+    }
+  }, [documentColumnsState]);
+
+  useEffect(() => {
+    if (!columnsMenuOpen) return undefined;
+    const handleClick = (event) => {
+      if (columnsMenuRef.current && !columnsMenuRef.current.contains(event.target)) {
+        setColumnsMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [columnsMenuOpen]);
+
+  useLayoutEffect(() => {
+    if (!columnsMenuOpen) return;
+    const buttonEl = columnsMenuRef.current;
+    const menuEl = columnsMenuContentRef.current;
+    if (!buttonEl || !menuEl) return;
+
+    const buttonRect = buttonEl.getBoundingClientRect();
+    const menuHeight = menuEl.offsetHeight;
+    const spaceBelow = window.innerHeight - buttonRect.bottom;
+    const spaceAbove = buttonRect.top;
+
+    if (spaceBelow < menuHeight + 12 && spaceAbove > spaceBelow) {
+      setColumnsMenuAbove(true);
+    } else {
+      setColumnsMenuAbove(false);
+    }
+  }, [columnsMenuOpen, documentColumnsState, activeDocumentColumns]);
 
   useEffect(() => {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
@@ -3868,120 +3998,46 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     });
   }, []);
 
+  const handleToggleColumn = useCallback((columnKey) => {
+    setDocumentColumnsState(prev => {
+      if (DOCUMENT_COLUMNS.find(column => column.key === columnKey)?.always) {
+        return prev;
+      }
+      const current = prev?.[columnKey] !== false;
+      return {
+        ...prev,
+        [columnKey]: !current
+      };
+    });
+  }, []);
+
   const selectedCount = selectedDocuments.size;
+  const documentsSearchValue = documentsSearch.trim().toLowerCase();
 
-  const renderDocumentTable = useCallback((items) => {
-    if (!items.length) return null;
-
-    const docIds = items.map(doc => doc.document_id);
-    const allSelected = docIds.length > 0 && docIds.every(id => selectedDocuments.has(id));
-    const someSelected = docIds.some(id => selectedDocuments.has(id));
-
-    return (
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="w-full table-auto text-sm">
-          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
-            <tr>
-              <th className="w-12 px-3 py-3 text-left">
-                <IndeterminateCheckbox
-                  checked={allSelected}
-                  indeterminate={!allSelected && someSelected}
-                  onChange={event => handleSelectGroupDocs(docIds, event.target.checked)}
-                  aria-label="Select group"
-                />
-              </th>
-              {DOCUMENT_COLUMNS.map(column => (
-                <th
-                  key={column.key}
-                  className={column.headerClass || 'px-3 py-3 text-left'}
-                >
-                  {column.label}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200">
-            {items.map((doc, index) => {
-              const rowSelected = selectedDocuments.has(doc.document_id);
-              const rowClass = rowSelected
-                ? 'bg-indigo-50/80'
-                : index % 2 === 0
-                  ? 'bg-white'
-                  : 'bg-slate-50';
-              const docTitle = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
-              return (
-                <tr key={doc.document_id} className={`transition ${rowClass}`}>
-                  <td className="align-top px-3 py-3">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={rowSelected}
-                      onChange={event => toggleDocumentSelection(doc.document_id, event.target.checked)}
-                      aria-label="Select document"
-                    />
-                  </td>
-                  <td className="align-top px-3 py-3">
-                    <div className="font-semibold text-slate-700">{docTitle}</div>
-                    <div className="text-xs uppercase tracking-wide text-slate-400">{doc.statusLabel}</div>
-                    {!doc.fileAvailable ? (
-                      <div className="mt-1 text-xs text-amber-600">File not found</div>
-                    ) : null}
-                  </td>
-                  <td className="align-top px-3 py-3">
-                    <div className="font-medium text-slate-700 truncate" title={doc.displayClient}>{doc.displayClient}</div>
-                    {doc.displayEvent ? (
-                      <div className="text-xs text-slate-500 truncate" title={doc.displayEvent}>{doc.displayEvent}</div>
-                    ) : null}
-                  </td>
-                  <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
-                    <span title={doc.eventDateIso || undefined}>{doc.formattedEventDate}</span>
-                    {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
-                      <div className="text-xs text-slate-400">Doc: {doc.formattedDocumentDate}</div>
-                    ) : null}
-                  </td>
-                  <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
-                    <span title={doc.createdAtFull || undefined}>{doc.createdAtDisplay}</span>
-                  </td>
-                  <td className="align-top px-3 py-3 text-right font-semibold text-slate-700 whitespace-nowrap">{toCurrency(doc.total_amount)}</td>
-                  <td className="align-top px-3 py-3">
-                    <div className="flex flex-wrap justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenDocumentFile(doc.file_path)}
-                        disabled={!doc.fileAvailable}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        Open
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRevealDocument(doc.file_path)}
-                        disabled={!doc.fileAvailable}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        Reveal
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteDocumentRecord(doc)}
-                        className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
-  }, [handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection]);
+  const filteredDocuments = useMemo(() => {
+    if (!documentsSearchValue) return normalizedDocuments;
+    return normalizedDocuments.filter(doc => {
+      const haystack = [
+        doc.typeLabel,
+        doc.displayClient,
+        doc.displayEvent,
+        doc.statusLabel,
+        doc.formattedEventDate,
+        doc.formattedDocumentDate,
+        doc.createdAtDisplay,
+        doc.createdAtFull,
+        doc.doc_type,
+        doc.file_path,
+        doc.number ? `#${doc.number}` : '',
+        doc.document_id != null ? String(doc.document_id) : ''
+      ].join(' ').toLowerCase();
+      return haystack.includes(documentsSearchValue);
+    });
+  }, [normalizedDocuments, documentsSearchValue]);
 
   const groupedDocuments = useMemo(() => {
     if (documentsGroup === 'none') {
-      return [{ key: 'all', label: '', items: normalizedDocuments }];
+      return [];
     }
 
     const groups = new Map();
@@ -3993,7 +4049,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       return groups.get(mapKey);
     };
 
-    normalizedDocuments.forEach(doc => {
+    filteredDocuments.forEach(doc => {
       if (documentsGroup === 'doc_type') {
         const key = doc.doc_type || 'unknown';
         const entry = ensureGroup(key, doc.typeLabel || 'Other');
@@ -4022,28 +4078,196 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
 
     return result;
-  }, [documentsGroup, normalizedDocuments]);
+  }, [documentsGroup, filteredDocuments]);
+
+  const activeDocumentColumns = useMemo(() => (
+    DOCUMENT_COLUMNS.filter(column => column.always || documentColumnsState[column.key] !== false)
+  ), [documentColumnsState]);
+
+  const canDeleteSelected = selectedCount > 0 && !documentsLoading;
+
+  const documentsGroupLabel = DOCUMENT_GROUP_OPTIONS.find(option => option.value === documentsGroup)?.label || 'All Documents';
+  const headerSubtitle = documentsGroup === 'none'
+    ? `${filteredDocuments.length} item${filteredDocuments.length === 1 ? '' : 's'}`
+    : `${filteredDocuments.length} items · ${documentsGroupLabel}`;
+
+  const emptyStateMessage = documentsSearchValue
+    ? 'No documents match your search.'
+    : documentsGroup === 'none'
+      ? 'No documents generated yet.'
+      : 'No documents available in this group yet.';
+
+  const renderDocumentTable = useCallback((items) => {
+    if (!items.length) return null;
+
+    const docIds = items
+      .map(doc => doc.document_id)
+      .filter(id => id != null);
+    const allSelected = docIds.length > 0 && docIds.every(id => selectedDocuments.has(id));
+    const someSelected = docIds.some(id => selectedDocuments.has(id));
+
+    return (
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+        <table className="w-full table-auto text-sm">
+          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
+            <tr>
+              <th className="w-12 px-3 py-3 text-left">
+                <IndeterminateCheckbox
+                  checked={allSelected}
+                  indeterminate={!allSelected && someSelected}
+                  onChange={event => handleSelectGroupDocs(docIds, event.target.checked)}
+                  aria-label="Select group"
+                />
+              </th>
+              {activeDocumentColumns.map(column => {
+                const alignClass = column.align === 'right'
+                  ? 'text-right'
+                  : column.align === 'center'
+                    ? 'text-center'
+                    : 'text-left';
+                return (
+                  <th
+                    key={column.key}
+                    className={`px-3 py-3 ${alignClass}`}
+                  >
+                    {column.label}
+                  </th>
+                );
+              })}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-200">
+            {items.map((doc, index) => {
+              const rowSelected = selectedDocuments.has(doc.document_id);
+              const rowClass = rowSelected
+                ? 'bg-indigo-50/80'
+                : index % 2 === 0
+                  ? 'bg-white'
+                  : 'bg-slate-50';
+              const docTitle = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
+              return (
+                <tr key={doc.document_id} className={`transition ${rowClass}`}>
+                  <td className="align-top px-3 py-3">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={rowSelected}
+                      onChange={event => toggleDocumentSelection(doc.document_id, event.target.checked)}
+                      aria-label="Select document"
+                    />
+                  </td>
+                  {activeDocumentColumns.map(column => {
+                    const alignClass = column.align === 'right'
+                      ? 'text-right'
+                      : column.align === 'center'
+                        ? 'text-center'
+                        : 'text-left';
+                    let cell = null;
+                    if (column.key === 'document') {
+                      cell = (
+                        <div className="flex items-start gap-3">
+                          <span className="mt-0.5 text-lg" role="img" aria-label={doc.typeLabel}>{getDocumentIcon(doc.doc_type)}</span>
+                          <div className="min-w-0">
+                            <div className="font-semibold text-slate-700" title={docTitle}>{docTitle}</div>
+                            <div className="text-xs uppercase tracking-wide text-slate-400">{doc.statusLabel}</div>
+                            {!doc.fileAvailable ? (
+                              <div className="text-xs font-medium text-amber-600">File not found</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    } else if (column.key === 'client') {
+                      cell = (
+                        <div className="text-slate-600">
+                          <div className="font-medium" title={doc.displayClient}>{doc.displayClient}</div>
+                          {doc.displayEvent ? (
+                            <div className="text-xs text-slate-500" title={doc.displayEvent}>{doc.displayEvent}</div>
+                          ) : null}
+                        </div>
+                      );
+                    } else if (column.key === 'event_date') {
+                      cell = (
+                        <div className="text-slate-600">
+                          <span title={doc.eventDateIso || undefined}>{doc.formattedEventDate}</span>
+                          {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
+                            <div className="text-xs text-slate-500">Doc: {doc.formattedDocumentDate}</div>
+                          ) : null}
+                        </div>
+                      );
+                    } else if (column.key === 'created') {
+                      cell = (
+                        <div className="text-slate-600">
+                          <span title={doc.createdAtFull || undefined}>{doc.createdAtDisplay}</span>
+                        </div>
+                      );
+                    } else if (column.key === 'amount') {
+                      cell = (
+                        <div className="font-semibold text-slate-700">
+                          {toCurrency(doc.total_amount)}
+                        </div>
+                      );
+                    } else if (column.key === 'actions') {
+                      cell = (
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <IconButton
+                            label="Open document"
+                            onClick={() => handleOpenDocumentFile(doc.file_path)}
+                            disabled={!doc.fileAvailable}
+                          >
+                            <OpenIcon />
+                          </IconButton>
+                          <IconButton
+                            label="Reveal document in Finder"
+                            onClick={() => handleRevealDocument(doc.file_path)}
+                            disabled={!doc.fileAvailable}
+                          >
+                            <RevealIcon />
+                          </IconButton>
+                          <IconButton
+                            label="Delete document"
+                            onClick={() => handleDeleteDocumentRecord(doc)}
+                            className="border-red-200 text-red-600 hover:bg-red-50"
+                          >
+                            <DeleteIcon />
+                          </IconButton>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <td
+                        key={column.key}
+                        className={`align-top px-3 py-3 text-sm text-slate-600 ${alignClass}`}
+                      >
+                        {cell}
+                      </td>
+                    );
+                  })}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    );
+  }, [activeDocumentColumns, handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection]);
 
   const documentsContent = useMemo(() => {
-    if (documentsLoading) {
-      return <div className="p-6 text-center text-slate-500">Loading documents…</div>;
-    }
-
-    if (!normalizedDocuments.length) {
-      return <div className="p-6 text-center text-slate-500">No documents generated yet.</div>;
+    if (!filteredDocuments.length) {
+      return <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">{emptyStateMessage}</div>;
     }
 
     if (documentsGroup === 'none') {
-      return renderDocumentTable(normalizedDocuments);
+      return renderDocumentTable(filteredDocuments);
     }
 
     return groupedDocuments.map(group => (
-      <div key={group.key} className="space-y-2">
+      <div key={group.key || 'group'} className="space-y-2">
         <h3 className="text-sm font-semibold text-slate-600">{group.label || 'Other'}</h3>
         {renderDocumentTable(group.items)}
       </div>
     ));
-  }, [documentsLoading, normalizedDocuments, documentsGroup, groupedDocuments, renderDocumentTable]);
+  }, [documentsGroup, filteredDocuments, groupedDocuments, renderDocumentTable, emptyStateMessage]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -4233,56 +4457,105 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
             {workspaceSection === 'documents' ? (
               <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
                 <div className="max-h-[65vh] overflow-auto">
-                  <div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-                      <p className="text-sm text-slate-500">Generated outputs for {business.business_name}.</p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleOpenDocumentsFolder}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                      >
-                        Open folder
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleRefreshDocuments}
-                        disabled={documentsLoading}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                      >
-                        {documentsLoading ? 'Refreshing…' : 'Refresh'}
-                      </button>
-                      <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
-                        Group by
-                        <select
-                          value={documentsGroup}
-                          onChange={event => setDocumentsGroup(event.target.value)}
-                          className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
-                        >
-                          <option value="none">None</option>
-                          <option value="doc_type">Document type</option>
-                          <option value="client">Client</option>
-                          <option value="event_date">Event date</option>
-                        </select>
-                      </label>
-                      {selectedCount > 0 ? (
+                  <div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div className="space-y-1">
+                        <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
+                        <p className="text-sm text-slate-500">{headerSubtitle}</p>
+                      </div>
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                        <div className="relative flex-1 sm:flex-none sm:w-56">
+                          <input
+                            type="search"
+                            value={documentsSearch}
+                            onChange={event => setDocumentsSearch(event.target.value)}
+                            placeholder="Search documents"
+                            className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
+                          <span>Group by</span>
+                          <select
+                            value={documentsGroup}
+                            onChange={event => setDocumentsGroup(event.target.value)}
+                            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          >
+                            {DOCUMENT_GROUP_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className="relative" ref={columnsMenuRef}>
+                          <button
+                            type="button"
+                            onClick={() => setColumnsMenuOpen(prev => !prev)}
+                            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 shadow-sm hover:bg-slate-50"
+                          >
+                            Columns
+                          </button>
+                          {columnsMenuOpen ? (
+                            <div
+                              ref={columnsMenuContentRef}
+                              className={`absolute right-0 z-30 w-48 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white py-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+                            >
+                              <p className="px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Visible columns</p>
+                              {DOCUMENT_COLUMNS.filter(column => !column.always).map(column => {
+                                const visible = documentColumnsState[column.key] !== false;
+                                return (
+                                  <label
+                                    key={column.key}
+                                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                      checked={visible}
+                                      onChange={() => handleToggleColumn(column.key)}
+                                    />
+                                    <span>{column.label}</span>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
                         <button
                           type="button"
-                          onClick={handleDeleteSelected}
-                          className="inline-flex items-center rounded border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50"
+                          onClick={handleRefreshDocuments}
+                          disabled={documentsLoading}
+                          className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
                         >
-                          Delete selected ({selectedCount})
+                          {documentsLoading ? 'Refreshing…' : 'Refresh'}
                         </button>
-                      ) : null}
+                        <button
+                          type="button"
+                          onClick={handleOpenDocumentsFolder}
+                          className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          Open folder
+                        </button>
+                        {selectedCount > 0 ? (
+                          <button
+                            type="button"
+                            onClick={handleDeleteSelected}
+                            disabled={!canDeleteSelected}
+                            className="inline-flex items-center rounded border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Delete selected ({selectedCount})
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
-                  <div className="space-y-4 px-4 py-4">
+                  <div className="px-4 py-4 space-y-4">
                     {documentsError ? (
                       <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div>
                     ) : null}
-                    {documentsContent}
+                    {documentsLoading ? (
+                      <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">Loading documents…</div>
+                    ) : (
+                      documentsContent
+                    )}
                   </div>
                 </div>
               </section>
