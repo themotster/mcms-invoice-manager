@@ -41,6 +41,15 @@ const DOCUMENT_CONFIG = {
 
 const DEFAULT_DOCUMENT_KEY = 'workbook';
 
+const DOCUMENT_COLUMNS = [
+  { key: 'document', label: 'Document' },
+  { key: 'client', label: 'Client / Event' },
+  { key: 'event_date', label: 'Event Date' },
+  { key: 'created', label: 'Created' },
+  { key: 'amount', label: 'Amount' },
+  { key: 'actions', label: 'Actions' }
+];
+
 const DOCUMENT_TYPE_LABELS = {
   invoice: 'Invoice',
   quote: 'Quote',
@@ -383,6 +392,36 @@ function startCaseKey(key) {
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/\w\S*/g, word => word.charAt(0).toUpperCase() + word.slice(1));
+}
+
+function formatCompactDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return '—';
+  const formatted = date.toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: '2-digit'
+  });
+  return formatted.replace(/\s/g, '');
+}
+
+function IndeterminateCheckbox({ checked, indeterminate, className = '', ...props }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (ref.current) {
+      ref.current.indeterminate = Boolean(indeterminate);
+    }
+  }, [indeterminate, checked]);
+  return (
+    <input
+      type="checkbox"
+      ref={ref}
+      checked={checked}
+      className={`h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 ${className}`}
+      {...props}
+    />
+  );
 }
 
 function buildFieldConfig(fieldKey, registryField) {
@@ -2890,6 +2929,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [documentsLoading, setDocumentsLoading] = useState(true);
   const [documentsError, setDocumentsError] = useState('');
   const [documentsGroup, setDocumentsGroup] = useState('none');
+  const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -3209,6 +3249,11 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       await window.api.deleteDocument(doc.document_id, { removeFile });
       setMessage('Document deleted');
       await refreshDocuments();
+      setSelectedDocuments(prev => {
+        const next = new Set(prev);
+        next.delete(doc.document_id);
+        return next;
+      });
       window.api?.notifyJobsheetChange?.({ type: 'documents-updated', businessId: business.id });
       setTimeout(() => setMessage(''), 1500);
     } catch (err) {
@@ -3216,6 +3261,34 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       setError(err?.message || 'Unable to delete document');
     }
   }, [refreshDocuments, business.id]);
+
+  const handleDeleteSelected = useCallback(async () => {
+    if (!selectedDocuments.size) return;
+    const ids = Array.from(selectedDocuments);
+    const confirmMessage = ids.length === 1
+      ? 'Delete the selected document?'
+      : `Delete ${ids.length} selected documents?`;
+    if (!window.confirm(confirmMessage)) return;
+
+    const hasFiles = normalizedDocuments.some(doc => ids.includes(doc.document_id) && doc.fileAvailable);
+    let removeFiles = false;
+    if (hasFiles) {
+      removeFiles = window.confirm('Also remove the generated files from disk?');
+    }
+
+    try {
+      setError('');
+      await Promise.all(ids.map(id => window.api.deleteDocument(id, { removeFile: removeFiles })));
+      setMessage(ids.length === 1 ? 'Document deleted' : 'Selected documents deleted');
+      await refreshDocuments();
+      setSelectedDocuments(new Set());
+      window.api?.notifyJobsheetChange?.({ type: 'documents-updated', businessId: business.id });
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to delete selected documents', err);
+      setError(err?.message || 'Unable to delete selected documents');
+    }
+  }, [selectedDocuments, normalizedDocuments, refreshDocuments, business.id]);
 
   const normalizedDocuments = useMemo(() => {
     return (documents || []).map(doc => {
@@ -3225,9 +3298,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       const eventDateRaw = doc.display_event_date || doc.joined_event_date || doc.event_date || '';
       const documentDateRaw = doc.document_date || '';
       const eventDateIso = eventDateRaw ? formatDateInput(eventDateRaw) : '';
-      const formattedEventDate = eventDateIso ? formatDateDisplay(eventDateIso) : '—';
-      const formattedDocumentDate = documentDateRaw ? formatDateDisplay(documentDateRaw) : '';
-      const createdAtDisplay = doc.created_at ? formatTimestampDisplay(doc.created_at) : '—';
+      const formattedEventDate = eventDateIso ? formatCompactDate(eventDateIso) : '—';
+      const formattedDocumentDate = documentDateRaw ? formatCompactDate(documentDateRaw) : '';
+      const createdAtDisplay = formatCompactDate(doc.created_at);
+      const createdAtFull = doc.created_at ? formatTimestampDisplay(doc.created_at) : '';
       const statusLabel = (doc.status || 'draft').replace(/_/g, ' ');
 
       return {
@@ -3239,60 +3313,125 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         formattedEventDate,
         formattedDocumentDate,
         createdAtDisplay,
+        createdAtFull,
         statusLabel,
         fileAvailable: Boolean(doc.file_path)
       };
     });
   }, [documents]);
 
+  useEffect(() => {
+    setSelectedDocuments(prev => {
+      const next = new Set();
+      normalizedDocuments.forEach(doc => {
+        if (prev.has(doc.document_id)) {
+          next.add(doc.document_id);
+        }
+      });
+      return next;
+    });
+  }, [normalizedDocuments]);
+
+  const toggleDocumentSelection = useCallback((docId, checked) => {
+    setSelectedDocuments(prev => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(docId);
+      } else {
+        next.delete(docId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleSelectGroupDocs = useCallback((docIds, checked) => {
+    setSelectedDocuments(prev => {
+      const next = new Set(prev);
+      docIds.forEach(id => {
+        if (checked) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+      });
+      return next;
+    });
+  }, []);
+
+  const selectedCount = selectedDocuments.size;
+
   const renderDocumentTable = useCallback((items) => {
-    if (!items.length) {
-      return null;
-    }
+    if (!items.length) return null;
+
+    const docIds = items.map(doc => doc.document_id);
+    const allSelected = docIds.length > 0 && docIds.every(id => selectedDocuments.has(id));
+    const someSelected = docIds.some(id => selectedDocuments.has(id));
 
     return (
-      <div className="overflow-x-auto">
-        <table className="min-w-full table-fixed text-sm">
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+        <table className="min-w-full table-auto text-sm">
           <thead className="bg-slate-50">
             <tr>
-              <th className="w-48 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Document</th>
-              <th className="w-64 px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Client / Event</th>
-              <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Event Date</th>
-              <th className="px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">Created</th>
-              <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Amount</th>
-              <th className="px-4 py-2 text-right text-xs font-semibold uppercase tracking-wide text-slate-600">Actions</th>
+              <th className="w-10 px-3 py-2 align-middle text-left">
+                <IndeterminateCheckbox
+                  checked={allSelected}
+                  indeterminate={!allSelected && someSelected}
+                  onChange={event => handleSelectGroupDocs(docIds, event.target.checked)}
+                  aria-label="Select group"
+                />
+              </th>
+              {DOCUMENT_COLUMNS.map(column => (
+                <th key={column.key} className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                  {column.label}
+                </th>
+              ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-200">
-            {items.map(doc => {
+            {items.map((doc, index) => {
+              const rowSelected = selectedDocuments.has(doc.document_id);
+              const rowClass = rowSelected
+                ? 'bg-indigo-50/80'
+                : index % 2 === 0
+                  ? 'bg-white'
+                  : 'bg-slate-50';
               const docTitle = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
               return (
-                <tr key={doc.document_id} className="transition hover:bg-slate-50">
-                  <td className="px-4 py-3 align-top">
+                <tr key={doc.document_id} className={`transition ${rowClass}`}>
+                  <td className="align-top px-3 py-3">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={rowSelected}
+                      onChange={event => toggleDocumentSelection(doc.document_id, event.target.checked)}
+                      aria-label="Select document"
+                    />
+                  </td>
+                  <td className="align-top px-3 py-3">
                     <div className="font-semibold text-slate-700">{docTitle}</div>
                     <div className="text-xs uppercase tracking-wide text-slate-400">{doc.statusLabel}</div>
                     {!doc.fileAvailable ? (
                       <div className="mt-1 text-xs text-amber-600">File not found</div>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 align-top">
-                    <div className="font-medium text-slate-700">{doc.displayClient}</div>
+                  <td className="align-top px-3 py-3">
+                    <div className="font-medium text-slate-700 truncate" title={doc.displayClient}>{doc.displayClient}</div>
                     {doc.displayEvent ? (
-                      <div className="text-xs text-slate-500">{doc.displayEvent}</div>
+                      <div className="text-xs text-slate-500 truncate" title={doc.displayEvent}>{doc.displayEvent}</div>
                     ) : null}
                   </td>
-                  <td className="px-4 py-3 align-top text-sm text-slate-600">
-                    {doc.formattedEventDate}
-                    {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
-                      <div className="text-xs text-slate-400">Doc: {doc.formattedDocumentDate}</div>
-                    ) : null}
-                  </td>
-                  <td className="px-4 py-3 align-top text-sm text-slate-600">{doc.createdAtDisplay}</td>
-                  <td className="px-4 py-3 align-top text-right font-semibold text-slate-700">
-                    {toCurrency(doc.total_amount)}
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <div className="flex justify-end gap-2">
+                <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
+                  <span title={doc.eventDateIso || undefined}>{doc.formattedEventDate}</span>
+                  {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
+                    <div className="text-xs text-slate-400">Doc: {doc.formattedDocumentDate}</div>
+                  ) : null}
+                </td>
+                <td className="align-top px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
+                  <span title={doc.createdAtFull || undefined}>{doc.createdAtDisplay}</span>
+                </td>
+                  <td className="align-top px-3 py-3 text-right font-semibold text-slate-700 whitespace-nowrap">{toCurrency(doc.total_amount)}</td>
+                  <td className="align-top px-3 py-3">
+                    <div className="flex flex-wrap justify-end gap-2">
                       <button
                         type="button"
                         onClick={() => handleOpenDocumentFile(doc.file_path)}
@@ -3325,7 +3464,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         </table>
       </div>
     );
-  }, [handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument]);
+  }, [handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection]);
 
   const groupedDocuments = useMemo(() => {
     if (documentsGroup === 'none') {
@@ -3555,46 +3694,60 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
             ) : null}
 
             {workspaceSection === 'documents' ? (
-              <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-                    <p className="text-sm text-slate-500">Generated outputs for {business.business_name}.</p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {/* TODO: add search/filter inputs for documents list when revisiting. */}
-                    <button
-                      type="button"
-                      onClick={handleOpenDocumentsFolder}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                    >
-                      Open folder
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRefreshDocuments}
-                      disabled={documentsLoading}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                    >
-                      {documentsLoading ? 'Refreshing…' : 'Refresh'}
-                    </button>
-                    <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
-                      Group by
-                      <select
-                        value={documentsGroup}
-                        onChange={event => setDocumentsGroup(event.target.value)}
-                        className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
+              <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
+                <div className="max-h-[65vh] overflow-auto">
+                  <div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
+                      <p className="text-sm text-slate-500">Generated outputs for {business.business_name}.</p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleOpenDocumentsFolder}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
                       >
-                        <option value="none">None</option>
-                        <option value="doc_type">Document type</option>
-                        <option value="client">Client</option>
-                        <option value="event_date">Event date</option>
-                      </select>
-                    </label>
+                        Open folder
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRefreshDocuments}
+                        disabled={documentsLoading}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {documentsLoading ? 'Refreshing…' : 'Refresh'}
+                      </button>
+                      <label className="inline-flex items-center gap-2 text-xs font-medium text-slate-500">
+                        Group by
+                        <select
+                          value={documentsGroup}
+                          onChange={event => setDocumentsGroup(event.target.value)}
+                          className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
+                        >
+                          <option value="none">None</option>
+                          <option value="doc_type">Document type</option>
+                          <option value="client">Client</option>
+                          <option value="event_date">Event date</option>
+                        </select>
+                      </label>
+                      {selectedCount > 0 ? (
+                        <button
+                          type="button"
+                          onClick={handleDeleteSelected}
+                          className="inline-flex items-center rounded border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50"
+                        >
+                          Delete selected ({selectedCount})
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="space-y-4 px-4 py-4">
+                    {documentsError ? (
+                      <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div>
+                    ) : null}
+                    {documentsContent}
                   </div>
                 </div>
-                {documentsError ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div> : null}
-                {documentsContent}
               </section>
             ) : null}
 
