@@ -11,3 +11,7 @@ Use the live-reload setup when iterating on the Electron app:
 3. The command performs an initial development build before launching, so the renderer bundle is always ready when Electron starts.
 
 Use `npm start` for the production-style launch (it still performs a fresh production build first via `prestart`).
+
+## TODO
+
+- Investigate restructuring the documents workflow so generated docs live in a documents tab within each jobsheet editor, keeping every job's data and files together in a single view.

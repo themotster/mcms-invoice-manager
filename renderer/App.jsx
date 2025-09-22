@@ -994,46 +994,50 @@ function InlineJobsheetEditorPanel({
 
   if (!visible) {
     return (
-      <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
-        Select a jobsheet from the list (or create a new one) to edit it inline. You can still pop the editor into its own window when needed.
+      <div className="mx-auto max-w-7xl">
+        <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
+          Select a jobsheet from the list (or create a new one) to edit it inline. You can still pop the editor into its own window when needed.
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h3 className="text-base font-semibold text-slate-700">{headerTitle}</h3>
-          <p className="text-xs text-slate-500">{hint}</p>
+    <div className="mx-auto max-w-7xl">
+      <div className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
+        <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6 lg:py-4">
+          <div>
+            <h3 className="text-base font-semibold text-slate-700">{headerTitle}</h3>
+            <p className="text-xs text-slate-500">{hint}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onOpenInWindow}
+              className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              Open in window
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-red-200 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
+            >
+              Close editor
+            </button>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onOpenInWindow}
-            className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            Open in window
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-red-200 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
-          >
-            Close editor
-          </button>
+        <div className="max-h-[80vh] overflow-y-auto">
+          <JobsheetEditorWindow
+            key={sessionKey}
+            variant="inline"
+            businessId={business.id}
+            businessName={business.business_name}
+            initialJobsheetId={jobsheetId == null ? 'new' : jobsheetId}
+            targetJobsheetId={jobsheetId}
+            onRequestClose={onClose}
+          />
         </div>
-      </div>
-      <div className="max-h-[80vh] overflow-y-auto">
-        <JobsheetEditorWindow
-          key={sessionKey}
-          variant="inline"
-          businessId={business.id}
-          businessName={business.business_name}
-          initialJobsheetId={jobsheetId == null ? 'new' : jobsheetId}
-          targetJobsheetId={jobsheetId}
-          onRequestClose={onClose}
-        />
       </div>
     </div>
   );
@@ -4889,7 +4893,7 @@ function JobsheetEditorWindow({
   if (isInline) {
     const inlineStatus = saving ? 'Saving…' : message;
     return (
-      <div className="space-y-4 p-4 sm:p-6">
+      <div className="space-y-4 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 xl:px-10 py-4 sm:py-6">
         {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
         {!error && inlineStatus ? (
           <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600">
