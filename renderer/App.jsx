@@ -218,6 +218,10 @@ const FIELD_META = {
     component: 'productionPanel',
     always: true
   },
+  documents_panel: {
+    component: 'documentsPanel',
+    always: true
+  },
   notes: {
     label: 'Internal Notes',
     type: 'textarea',
@@ -382,6 +386,12 @@ const GROUP_CONFIG = {
     category: 'services',
     order: ['service_types', 'specialist_singers'],
     append: ['notes']
+  },
+  documents: {
+    title: 'Documents',
+    description: 'Generate and manage files created from this jobsheet.',
+    staticOnly: true,
+    fields: ['documents_panel']
   }
 };
 
@@ -566,6 +576,67 @@ function formatTimestampDisplay(value) {
     minute: '2-digit'
   });
   return `${datePart} ${timePart}`;
+}
+
+function normalizeLookupString(value) {
+  return (value || '')
+    .toString()
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeDateKey(value) {
+  const iso = formatDateInput(value);
+  return iso || '';
+}
+
+function slugifyForMatch(value) {
+  return (value || '')
+    .toString()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .trim();
+}
+
+function matchesDocumentToJobsheet(doc, jobsheetState) {
+  if (!doc || !jobsheetState) return false;
+
+  const jobClient = normalizeLookupString(jobsheetState.client_name);
+  const docClient = normalizeLookupString(
+    doc.client_name
+    || doc.display_client_name
+    || doc.joined_client_name
+  );
+
+  const jobEventDate = normalizeDateKey(jobsheetState.event_date);
+  const docEventDate = normalizeDateKey(
+    doc.event_date
+    || doc.display_event_date
+    || doc.joined_event_date
+  );
+
+  const jobEventName = normalizeLookupString(jobsheetState.event_type);
+  const docEventName = normalizeLookupString(
+    doc.event_name
+    || doc.display_event_name
+    || doc.joined_event_name
+  );
+
+  const clientMatches = Boolean(jobClient && docClient && docClient === jobClient);
+  const eventDateMatches = Boolean(jobEventDate && docEventDate && docEventDate === jobEventDate);
+  const eventNameMatches = Boolean(jobEventName && docEventName && docEventName === jobEventName);
+
+  if (clientMatches && (eventDateMatches || !jobEventDate || !docEventDate)) return true;
+  if (eventDateMatches && (clientMatches || !jobClient || !docClient)) return true;
+  if (clientMatches && eventNameMatches) return true;
+
+  const jobSlug = slugifyForMatch(jobsheetState.client_name || jobsheetState.event_type);
+  if (jobSlug && typeof doc.file_path === 'string' && doc.file_path.toLowerCase().includes(jobSlug)) {
+    return true;
+  }
+
+  return false;
 }
 
 function addDays(dateStr, offset) {
@@ -2531,9 +2602,239 @@ function SavedVenueSelector({
   );
 }
 
+function DocumentsPanel({
+  hasExisting,
+  documents,
+  documentsLoading,
+  documentsError,
+  onClearDocumentsError,
+  onRefreshDocuments,
+  onGenerateDocument,
+  documentGenerating,
+  documentGeneratingKey,
+  onOpenDocumentFile,
+  onRevealDocument,
+  onDeleteDocument,
+  onOpenOutputFolder,
+  onOpenOutputFile,
+  lastGeneratedPath
+}) {
+  const documentOptions = useMemo(() => Object.entries(DOCUMENT_CONFIG), []);
+
+  const normalizedDocuments = useMemo(() => (
+    (documents || []).map(doc => {
+      const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
+      const numberLabel = doc.number != null ? ` #${doc.number}` : '';
+      const eventDateRaw = doc.display_event_date || doc.event_date || doc.joined_event_date || '';
+      const createdDisplay = formatCompactDate(doc.created_at);
+      const createdFull = formatTimestampDisplay(doc.created_at);
+      const eventDateDisplay = formatCompactDate(eventDateRaw);
+      const amountDisplay = doc.total_amount != null ? toCurrency(doc.total_amount) : '—';
+      const documentDateDisplay = formatCompactDate(doc.document_date);
+      return {
+        ...doc,
+        typeLabel,
+        documentTitle: `${typeLabel}${numberLabel}`,
+        eventDateDisplay,
+        createdDisplay,
+        createdFull,
+        documentDateDisplay,
+        amountDisplay,
+        fileAvailable: Boolean(doc.file_path)
+      };
+    })
+  ), [documents]);
+
+  const handleGenerate = useCallback(async (docKey) => {
+    if (!hasExisting || !onGenerateDocument) return;
+    await onGenerateDocument(docKey);
+  }, [hasExisting, onGenerateDocument]);
+
+  const renderDocumentTable = () => {
+    if (documentsLoading) {
+      return (
+        <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+          Loading documents…
+        </div>
+      );
+    }
+
+    if (!normalizedDocuments.length) {
+      return (
+        <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
+          No documents generated yet.
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
+        <table className="w-full table-auto text-sm">
+          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
+            <tr>
+              <th className="px-3 py-3 text-left">Document</th>
+              <th className="px-3 py-3 text-left">Created</th>
+              <th className="px-3 py-3 text-left">Event</th>
+              <th className="px-3 py-3 text-right">Amount</th>
+              <th className="px-3 py-3 text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 bg-white">
+            {normalizedDocuments.map(doc => (
+              <tr key={doc.document_id || `${doc.doc_type}-${doc.created_at || Math.random()}`} className="align-top">
+                <td className="px-3 py-3 text-sm text-slate-700">
+                  <div className="font-semibold">{doc.documentTitle}</div>
+                  {doc.documentDateDisplay && doc.documentDateDisplay !== '—' ? (
+                    <div className="text-xs text-slate-500">Document date {doc.documentDateDisplay}</div>
+                  ) : null}
+                  {doc.fileAvailable ? null : (
+                    <div className="text-xs text-red-500">File not found</div>
+                  )}
+                </td>
+                <td className="px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
+                  <span title={doc.createdFull || undefined}>{doc.createdDisplay}</span>
+                </td>
+                <td className="px-3 py-3 text-sm text-slate-600 whitespace-nowrap">
+                  {doc.eventDateDisplay && doc.eventDateDisplay !== '—'
+                    ? doc.eventDateDisplay
+                    : 'Date tbc'}
+                </td>
+                <td className="px-3 py-3 text-right text-sm font-semibold text-slate-700 whitespace-nowrap">{doc.amountDisplay}</td>
+                <td className="px-3 py-3">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onOpenDocumentFile?.(doc.file_path)}
+                      disabled={!doc.fileAvailable}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Open
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRevealDocument?.(doc.file_path)}
+                      disabled={!doc.fileAvailable}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Reveal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteDocument?.(doc)}
+                      className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="space-y-3">
+        <div>
+          <h4 className="text-sm font-semibold text-slate-700">Generate documents</h4>
+          <p className="text-xs text-slate-500">Build workbooks, quotes, and invoices using the current jobsheet details.</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {documentOptions.map(([key, config]) => {
+            const isPrimary = key === DEFAULT_DOCUMENT_KEY;
+            const isGenerating = documentGenerating && documentGeneratingKey === key;
+            const baseClasses = isPrimary
+              ? 'bg-indigo-600 text-white hover:bg-indigo-500'
+              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50';
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => handleGenerate(key)}
+                disabled={!hasExisting || documentGenerating}
+                className={`inline-flex items-center rounded px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${baseClasses}`}
+              >
+                {isGenerating ? 'Generating…' : config.label}
+              </button>
+            );
+          })}
+        </div>
+        {!hasExisting ? (
+          <p className="text-xs text-slate-500">Save the jobsheet before creating documents.</p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={onRefreshDocuments}
+            disabled={documentsLoading}
+            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {documentsLoading ? 'Refreshing…' : 'Refresh list'}
+          </button>
+          {onOpenOutputFolder ? (
+            <button
+              type="button"
+              onClick={onOpenOutputFolder}
+              disabled={!hasExisting}
+              className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Open folder
+            </button>
+          ) : null}
+          {onOpenOutputFile ? (
+            <button
+              type="button"
+              onClick={onOpenOutputFile}
+              disabled={!lastGeneratedPath}
+              className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Open latest file
+            </button>
+          ) : null}
+        </div>
+        {documentsError ? (
+          <div className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <span>{documentsError}</span>
+            {onClearDocumentsError ? (
+              <button
+                type="button"
+                onClick={onClearDocumentsError}
+                className="text-xs font-medium text-red-600 hover:text-red-500"
+              >
+                Dismiss
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <h4 className="text-sm font-semibold text-slate-700">Generated documents</h4>
+          {normalizedDocuments.length ? (
+            <button
+              type="button"
+              onClick={onRefreshDocuments}
+              disabled={documentsLoading}
+              className="text-xs font-medium text-indigo-600 hover:text-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {documentsLoading ? 'Refreshing…' : 'Refresh'}
+            </button>
+          ) : null}
+        </div>
+        {renderDocumentTable()}
+      </div>
+    </div>
+  );
+}
+
 function JobsheetEditor({
   business,
   businessId,
+  jobsheetId,
   formState,
   onChange,
   onDelete,
@@ -2552,6 +2853,15 @@ function JobsheetEditor({
   onActiveGroupChange,
   onGenerateDocument,
   documentGenerating,
+  documentGeneratingKey,
+  documents,
+  documentsLoading,
+  documentsError,
+  onClearDocumentsError,
+  onRefreshDocuments,
+  onOpenDocumentFile,
+  onRevealDocument,
+  onDeleteDocument,
   onOpenOutputFolder,
   onOpenOutputFile,
   lastGeneratedPath,
@@ -2567,6 +2877,10 @@ function JobsheetEditor({
   const resolvedGroups = useMemo(() => (
     Array.isArray(groups) && groups.length ? groups : FALLBACK_JOBSHEET_GROUPS
   ), [groups]);
+
+  const hasDocumentsGroup = useMemo(() => (
+    resolvedGroups.some(group => group.key === 'documents')
+  ), [resolvedGroups]);
 
   const [savedVenueId, setSavedVenueId] = useState(() => (
     formState.venue_id ? String(formState.venue_id) : ''
@@ -2735,32 +3049,17 @@ function JobsheetEditor({
             <p className="text-sm text-slate-500">Business: {business.business_name}</p>
           </div>
           <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => onGenerateDocument?.()}
-                disabled={!hasExisting || documentGenerating || deleting || saving}
-                className="inline-flex items-center justify-center rounded bg-indigo-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {documentGenerating ? 'Copying…' : 'Copy to Excel'}
-              </button>
-              <button
-                type="button"
-                onClick={onOpenOutputFolder}
-                disabled={!hasExisting || !onOpenOutputFolder}
-                className="inline-flex items-center justify-center rounded border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Open folder
-              </button>
-              <button
-                type="button"
-                onClick={onOpenOutputFile}
-                disabled={!lastGeneratedPath || !onOpenOutputFile}
-                className="inline-flex items-center justify-center rounded border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Open latest file
-              </button>
-            </div>
+            {hasDocumentsGroup ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setGroupKey('documents')}
+                  className="inline-flex items-center justify-center rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
+                >
+                  Documents tab
+                </button>
+              </div>
+            ) : null}
             {hasExisting ? (
               <button
                 onClick={onDelete}
@@ -2833,6 +3132,28 @@ function JobsheetEditor({
                         formState={formState}
                         onChange={handleFieldChange}
                         totals={pricingTotals}
+                      />
+                    );
+                  }
+                  if (field.component === 'documentsPanel') {
+                    return (
+                      <DocumentsPanel
+                        key={field.name}
+                        hasExisting={hasExisting}
+                        documents={documents}
+                        documentsLoading={documentsLoading}
+                        documentsError={documentsError}
+                        onClearDocumentsError={onClearDocumentsError}
+                        onRefreshDocuments={onRefreshDocuments}
+                        onGenerateDocument={onGenerateDocument}
+                        documentGenerating={documentGenerating}
+                        documentGeneratingKey={documentGeneratingKey}
+                        onOpenDocumentFile={onOpenDocumentFile}
+                        onRevealDocument={onRevealDocument}
+                        onDeleteDocument={onDeleteDocument}
+                        onOpenOutputFolder={onOpenOutputFolder}
+                        onOpenOutputFile={onOpenOutputFile}
+                        lastGeneratedPath={lastGeneratedPath}
                       />
                     );
                   }
@@ -3417,7 +3738,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         next.delete(doc.document_id);
         return next;
       });
-      window.api?.notifyJobsheetChange?.({ type: 'documents-updated', businessId: business.id });
+      window.api?.notifyJobsheetChange?.({
+        type: 'documents-updated',
+        businessId: business.id,
+        jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+        documentId: doc.document_id
+      });
       setTimeout(() => setMessage(''), 1500);
     } catch (err) {
       console.error('Failed to delete document', err);
@@ -3445,7 +3771,28 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       setMessage(ids.length === 1 ? 'Document deleted' : 'Selected documents deleted');
       await refreshDocuments();
       setSelectedDocuments(new Set());
-      window.api?.notifyJobsheetChange?.({ type: 'documents-updated', businessId: business.id });
+      const impactedJobsheets = new Set();
+      normalizedDocuments.forEach(doc => {
+        if (ids.includes(doc.document_id) && doc.jobsheet_id != null) {
+          impactedJobsheets.add(Number(doc.jobsheet_id));
+        }
+      });
+      if (impactedJobsheets.size) {
+        impactedJobsheets.forEach(id => {
+          window.api?.notifyJobsheetChange?.({
+            type: 'documents-updated',
+            businessId: business.id,
+            jobsheetId: id,
+            documentIds: ids
+          });
+        });
+      } else {
+        window.api?.notifyJobsheetChange?.({
+          type: 'documents-updated',
+          businessId: business.id,
+          documentIds: ids
+        });
+      }
       setTimeout(() => setMessage(''), 1500);
     } catch (err) {
       console.error('Failed to delete selected documents', err);
@@ -4078,12 +4425,148 @@ function JobsheetEditorWindow({
   const [message, setMessage] = useState('');
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
   const [activeEditorSection, setActiveEditorSection] = useState('client');
-  const [documentGenerating, setDocumentGenerating] = useState(false);
+  const [documentGeneratingKey, setDocumentGeneratingKey] = useState(null);
   const [lastOutputPath, setLastOutputPath] = useState('');
+  const [jobsheetDocuments, setJobsheetDocuments] = useState([]);
+  const [jobsheetDocumentsLoading, setJobsheetDocumentsLoading] = useState(false);
+  const [jobsheetDocumentsError, setJobsheetDocumentsError] = useState('');
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
   const creatingRef = useRef(initialResolvedJobsheetId == null);
+
+  const refreshJobsheetDocuments = useCallback(async () => {
+    if (!jobsheetId) {
+      setJobsheetDocuments([]);
+      setJobsheetDocumentsLoading(false);
+      setJobsheetDocumentsError('');
+      return;
+    }
+    setJobsheetDocumentsLoading(true);
+    setJobsheetDocumentsError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.getDocuments !== 'function') {
+        throw new Error('Unable to load documents: API unavailable');
+      }
+      const response = await api.getDocuments({ businessId: numericBusinessId });
+      const normalizedJobsheetId = jobsheetId != null ? Number(jobsheetId) : null;
+      const currentState = formStateRef.current || DEFAULT_JOBSHEET(numericBusinessId);
+      const filtered = (Array.isArray(response) ? response : []).filter(doc => {
+        const docJobsheetId = doc?.jobsheet_id != null ? Number(doc.jobsheet_id) : null;
+        if (normalizedJobsheetId != null && docJobsheetId === normalizedJobsheetId) {
+          return true;
+        }
+        if (normalizedJobsheetId != null && docJobsheetId != null && docJobsheetId !== normalizedJobsheetId) {
+          return false;
+        }
+        if (docJobsheetId == null) {
+          return matchesDocumentToJobsheet(doc, currentState);
+        }
+        return false;
+      });
+      setJobsheetDocuments(filtered);
+    } catch (err) {
+      console.error('Failed to load jobsheet documents', err);
+      setJobsheetDocumentsError(err?.message || 'Unable to load documents');
+    } finally {
+      setJobsheetDocumentsLoading(false);
+    }
+  }, [jobsheetId, numericBusinessId]);
+
+  useEffect(() => {
+    if (!jobsheetId) {
+      setJobsheetDocuments([]);
+      setJobsheetDocumentsError('');
+      setJobsheetDocumentsLoading(false);
+      return;
+    }
+    refreshJobsheetDocuments();
+  }, [jobsheetId, refreshJobsheetDocuments]);
+
+  useEffect(() => {
+    if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
+    const unsubscribe = window.api.onJobsheetChange(payload => {
+      if (!payload || payload.businessId !== numericBusinessId) return;
+      if (payload.type !== 'documents-updated') return;
+      if (!jobsheetId) return;
+      const payloadJobsheetId = payload.jobsheetId != null
+        ? Number(payload.jobsheetId)
+        : payload.document?.jobsheet_id != null
+          ? Number(payload.document.jobsheet_id)
+          : null;
+      if (payloadJobsheetId == null || payloadJobsheetId === Number(jobsheetId)) {
+        refreshJobsheetDocuments();
+      }
+    });
+    return () => unsubscribe();
+  }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments]);
+
+  const handleOpenDocumentFile = useCallback(async (filePath) => {
+    if (!filePath) {
+      setJobsheetDocumentsError('Document file not available');
+      return;
+    }
+    try {
+      setJobsheetDocumentsError('');
+      const response = await window.api?.openPath?.(filePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open document');
+      }
+    } catch (err) {
+      console.error('Failed to open document', err);
+      setJobsheetDocumentsError(err?.message || 'Unable to open document');
+    }
+  }, []);
+
+  const handleRevealDocument = useCallback(async (filePath) => {
+    if (!filePath) {
+      setJobsheetDocumentsError('Document file not available');
+      return;
+    }
+    try {
+      setJobsheetDocumentsError('');
+      const result = await window.api?.showItemInFolder?.(filePath);
+      if (result && result.ok === false) {
+        throw new Error(result.message || 'Unable to reveal document');
+      }
+    } catch (err) {
+      console.error('Failed to reveal document', err);
+      setJobsheetDocumentsError(err?.message || 'Unable to locate document on disk');
+    }
+  }, []);
+
+  const handleDeleteJobsheetDocument = useCallback(async (doc) => {
+    if (!doc || doc.document_id == null) return;
+    const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
+    const title = typeLabel
+      ? `${typeLabel}${doc.number ? ` #${doc.number}` : ''}`
+      : 'this document';
+    const confirmed = window.confirm(`Delete ${title}? This removes it from this jobsheet.`);
+    if (!confirmed) return;
+
+    let removeFile = false;
+    if (doc.file_path) {
+      removeFile = window.confirm('Also remove the generated file from disk?');
+    }
+
+    try {
+      setJobsheetDocumentsError('');
+      await window.api?.deleteDocument?.(doc.document_id, { removeFile });
+      setMessage('Document deleted');
+      await refreshJobsheetDocuments();
+      window.api?.notifyJobsheetChange?.({
+        type: 'documents-updated',
+        businessId: numericBusinessId,
+        jobsheetId,
+        documentId: doc.document_id
+      });
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to delete document', err);
+      setJobsheetDocumentsError(err?.message || 'Unable to delete document');
+    }
+  }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
 
   useEffect(() => {
     if (!jobsheetId) return;
@@ -4616,8 +5099,10 @@ function JobsheetEditorWindow({
     return messages;
   }, [numericBusinessId, parseAmount, pricingDerived]);
 
-  const handlePopulateExcel = useCallback(async () => {
-    const docKey = DEFAULT_DOCUMENT_KEY;
+  const documentGenerating = documentGeneratingKey != null;
+
+  const handlePopulateExcel = useCallback(async (requestedDocKey) => {
+    const docKey = requestedDocKey || DEFAULT_DOCUMENT_KEY;
     const config = DOCUMENT_CONFIG[docKey];
     if (!config) return;
 
@@ -4639,7 +5124,11 @@ function JobsheetEditorWindow({
       return;
     }
 
-    setDocumentGenerating(true);
+    if (jobsheetId != null) {
+      payload.jobsheet_id = Number(jobsheetId);
+    }
+
+    setDocumentGeneratingKey(docKey);
     setError('');
     try {
       const result = await api.createDocument(payload);
@@ -4651,16 +5140,20 @@ function JobsheetEditorWindow({
       window.api?.notifyJobsheetChange?.({
         type: 'documents-updated',
         businessId: numericBusinessId,
+        jobsheetId: jobsheetId != null ? Number(jobsheetId) : null,
         document: result || null
       });
       setTimeout(() => setMessage(''), 4000);
+      await refreshJobsheetDocuments();
+      return result;
     } catch (err) {
       console.error('Failed to populate workbook', err);
       setError(err?.message || 'Unable to populate Excel template');
+      return null;
     } finally {
-      setDocumentGenerating(false);
+      setDocumentGeneratingKey(null);
     }
-  }, [buildDocumentPayload, setError, setMessage, validateDocumentRequest]);
+  }, [buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, validateDocumentRequest]);
 
   const handleOpenOutputFolder = useCallback(async () => {
     let folderPath = resolvedBusiness?.save_path;
@@ -4937,6 +5430,7 @@ function JobsheetEditorWindow({
       <JobsheetEditor
         business={resolvedBusiness}
         businessId={numericBusinessId}
+        jobsheetId={jobsheetId}
         formState={formState}
         onChange={setFormState}
         onDelete={handleDelete}
@@ -4955,6 +5449,15 @@ function JobsheetEditorWindow({
         onActiveGroupChange={setActiveEditorSection}
         onGenerateDocument={handlePopulateExcel}
         documentGenerating={documentGenerating}
+        documentGeneratingKey={documentGeneratingKey}
+        documents={jobsheetDocuments}
+        documentsLoading={jobsheetDocumentsLoading}
+        documentsError={jobsheetDocumentsError}
+        onRefreshDocuments={refreshJobsheetDocuments}
+        onOpenDocumentFile={handleOpenDocumentFile}
+        onRevealDocument={handleRevealDocument}
+        onDeleteDocument={handleDeleteJobsheetDocument}
+        onClearDocumentsError={() => setJobsheetDocumentsError('')}
         onOpenOutputFolder={handleOpenOutputFolder}
         onOpenOutputFile={handleOpenOutputFile}
         lastGeneratedPath={lastOutputPath}

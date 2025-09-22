@@ -757,6 +757,10 @@ async function createDocument(documentData) {
     throw new Error('business_id is required to create a document');
   }
 
+  const rawJobsheetId = documentData?.jobsheet_id;
+  const jobsheetId = rawJobsheetId != null ? Number(rawJobsheetId) : null;
+  const normalizedJobsheetId = Number.isInteger(jobsheetId) ? jobsheetId : null;
+
   const business = await db.getBusinessById(documentData.business_id);
   if (!business) {
     throw new Error('Business not found for document creation');
@@ -828,6 +832,7 @@ async function createDocument(documentData) {
   insertPayload.event_name = resolvedEventName || null;
   insertPayload.event_date = resolvedEventDate || null;
   insertPayload.document_date = documentDate;
+  insertPayload.jobsheet_id = normalizedJobsheetId;
 
   const calculatedTotal = lineItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   if ((insertPayload.total_amount == null || insertPayload.total_amount === '') && calculatedTotal) {
@@ -919,7 +924,8 @@ async function createDocument(documentData) {
   return {
     id: insertResult.id,
     number: insertResult.number,
-    file_path: destinationPath
+    file_path: destinationPath,
+    jobsheet_id: normalizedJobsheetId
   };
 }
 

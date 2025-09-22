@@ -14,5 +14,4 @@ Use `npm start` for the production-style launch (it still performs a fresh produ
 
 ## TODO
 
-- Investigate restructuring the documents workflow so generated docs live in a documents tab within each jobsheet editor, keeping every job's data and files together in a single view.
 - Add search and filtering controls to the jobsheet list so large account datasets stay manageable.

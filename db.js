@@ -218,6 +218,7 @@ function initializeDatabase() {
     db.run(`CREATE TABLE IF NOT EXISTS documents (
       document_id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id INTEGER,
+      jobsheet_id INTEGER,
       business_id INTEGER,
       doc_type TEXT NOT NULL,
       number INTEGER,
@@ -229,6 +230,7 @@ function initializeDatabase() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (event_id) REFERENCES events(event_id),
+      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id),
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
@@ -337,6 +339,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN event_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN event_date TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN document_date TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN jobsheet_id INTEGER', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
 
@@ -1330,6 +1333,10 @@ module.exports = {
       where.push('documents.event_id = ?');
       params.push(options.eventId);
     }
+    if (options.jobsheetId) {
+      where.push('documents.jobsheet_id = ?');
+      params.push(options.jobsheetId);
+    }
 
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -1369,6 +1376,9 @@ module.exports = {
 
       const businessId = documentData?.business_id || null;
       const eventId = documentData?.event_id || null;
+      const rawJobsheetId = documentData?.jobsheet_id;
+      const jobsheetId = rawJobsheetId != null ? Number(rawJobsheetId) : null;
+      const normalizedJobsheetId = Number.isInteger(jobsheetId) ? jobsheetId : null;
       const status = documentData?.status || 'draft';
       const totalAmount = documentData?.total_amount || 0;
       const balanceDue = documentData?.balance_due ?? totalAmount;
@@ -1386,6 +1396,7 @@ module.exports = {
         db.run(
           `INSERT INTO documents (
              event_id,
+             jobsheet_id,
              business_id,
              doc_type,
              number,
@@ -1398,10 +1409,11 @@ module.exports = {
              event_name,
              event_date,
              document_date
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ,
           [
             eventId,
+            normalizedJobsheetId,
             businessId,
             docType,
             resolvedNumber,
