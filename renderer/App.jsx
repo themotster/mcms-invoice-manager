@@ -746,7 +746,6 @@ function JobsheetList({
   activeJobsheetId = null
 }) {
   const sortedJobsheets = useMemo(() => {
-    // TODO: add search and filtering controls for the jobsheet list.
     const list = [...jobsheets];
     const { key, direction } = sortConfig || {};
     if (!key) return list;
