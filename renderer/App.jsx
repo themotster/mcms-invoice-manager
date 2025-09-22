@@ -1027,17 +1027,15 @@ function InlineJobsheetEditorPanel({
             </button>
           </div>
         </div>
-        <div className="max-h-[80vh] overflow-y-auto">
-          <JobsheetEditorWindow
-            key={sessionKey}
-            variant="inline"
-            businessId={business.id}
-            businessName={business.business_name}
-            initialJobsheetId={jobsheetId == null ? 'new' : jobsheetId}
-            targetJobsheetId={jobsheetId}
-            onRequestClose={onClose}
-          />
-        </div>
+        <JobsheetEditorWindow
+          key={sessionKey}
+          variant="inline"
+          businessId={business.id}
+          businessName={business.business_name}
+          initialJobsheetId={jobsheetId == null ? 'new' : jobsheetId}
+          targetJobsheetId={jobsheetId}
+          onRequestClose={onClose}
+        />
       </div>
     </div>
   );
@@ -1118,10 +1116,19 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     [existingPool]
   );
 
-  const sortedSingers = useMemo(
-    () => [...singerPool].sort((a, b) => a.name.localeCompare(b.name)),
-    [singerPool]
-  );
+  const sortedSingers = useMemo(() => {
+    const currentServiceId = formState.pricing_service_id != null ? String(formState.pricing_service_id) : '';
+    return [...singerPool].sort((a, b) => {
+      const aDefault = currentServiceId
+        ? Boolean(a.serviceFees?.[currentServiceId]?.defaultIncluded)
+        : Boolean(a.defaultIncluded);
+      const bDefault = currentServiceId
+        ? Boolean(b.serviceFees?.[currentServiceId]?.defaultIncluded)
+        : Boolean(b.defaultIncluded);
+      if (aDefault !== bDefault) return aDefault ? -1 : 1;
+      return (a.name || '').localeCompare(b.name || '', 'en', { sensitivity: 'base' });
+    });
+  }, [singerPool, formState.pricing_service_id]);
 
   const poolMap = useMemo(
     () => new Map(sortedSingers.map(singer => [singer.id, singer])),
@@ -1146,6 +1153,15 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   );
 
   const customFeesNumber = Number(formState.pricing_custom_fees) || 0;
+
+  const formatFeeForInput = useCallback((value) => {
+    if (value === null || value === undefined || value === '') return '';
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return String(value);
+    const fixed = numeric.toFixed(2);
+    if (fixed.endsWith('00')) return String(Math.round(numeric));
+    return fixed.endsWith('0') ? fixed.slice(0, -1) : fixed;
+  }, []);
 
   const updateSelected = useCallback((entries) => {
     const normalized = normalizeSingerEntries(entries);
@@ -1668,44 +1684,128 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
           </div>
         </div>
         {sortedSingers.length ? (
-          <div className="grid gap-2 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+          <div className="space-y-2">
             {sortedSingers.map(singer => {
               const singerId = singer.id;
               const isSelected = selectedIdSet.has(singerId);
               const serviceDetails = currentServiceId ? singer.serviceFees?.[currentServiceId] : null;
               const displayFee = serviceDetails?.fee != null ? serviceDetails.fee : singer.fee;
+              const selectionEntry = selectedEntries.find(entry => entry.id === singerId);
+              const isLocked = Boolean(selectionEntry?.locked);
+              const selectionFee = selectionEntry?.fee;
+              const feeInputValue = formatFeeForInput(
+                selectionFee !== undefined && selectionFee !== null && selectionFee !== ''
+                  ? selectionFee
+                  : displayFee
+              );
+
               return (
-                <button
+                <div
                   key={singerId}
-                  type="button"
-                  onClick={() => handleToggleSinger(singerId)}
-                  className={`w-full text-left rounded px-2 py-1.5 transition focus:outline-none focus:ring-2 ${
+                  className={`flex flex-wrap items-center gap-3 rounded border px-3 py-2 text-sm transition ${
                     isSelected
-                      ? (selectedEntries.find(e => e.id === singerId)?.locked
-                          ? 'bg-red-500 text-white shadow-sm focus:ring-red-200'
-                          : 'bg-indigo-500 text-white shadow-sm focus:ring-indigo-200')
-                      : 'border border-slate-200 bg-white hover:border-indigo-200 hover:bg-indigo-50/70 text-slate-700 focus:ring-indigo-500'
+                      ? isLocked
+                        ? 'border-red-300 bg-red-500 text-white shadow-sm'
+                        : 'border-indigo-200 bg-indigo-500 text-white shadow-sm'
+                      : 'border-slate-200 bg-white text-slate-700 hover:border-indigo-200 hover:bg-indigo-50/70'
                   }`}
                 >
-                  <div className="flex items-start justify-between gap-1">
-                   <span className={`inline-flex items-center gap-1 text-sm font-medium leading-tight ${isSelected ? 'text-white' : ''}`}>
-                     {singer.name || 'Unnamed singer'}
-                     <button
-                       type="button"
-                       className={`inline-flex items-center justify-center rounded ${isSelected ? 'text-indigo-100 hover:text-white' : 'text-slate-500 hover:text-slate-700'}`}
-                       title={(selectedEntries.find(e => e.id === singerId)?.locked) ? 'Unlock fee' : 'Lock fee'}
-                       onClick={(e) => {
-                         e.stopPropagation();
-                         const prev = selectedEntries.find(e => e.id === singerId);
-                         const next = selectedEntries.map(entry => entry.id === singerId ? { ...entry, locked: !Boolean(prev?.locked) } : entry);
-                         updateSelected(next);
-                       }}
-                       aria-label={(selectedEntries.find(e => e.id === singerId)?.locked) ? 'Unlock fee' : 'Lock fee'}
-                       style={{ fontSize: '0.9em' }}
-                     >
-                       {(selectedEntries.find(e => e.id === singerId)?.locked) ? '🔒' : '🔓'}
-                     </button>
-                   </span>
+                  <button
+                    type="button"
+                    onClick={() => handleToggleSinger(singerId)}
+                    className={`inline-flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full border text-xs font-semibold focus:outline-none focus:ring-2 ${
+                      isSelected ? 'border-white text-white focus:ring-white/60' : 'border-slate-300 text-slate-500 focus:ring-indigo-500'
+                    }`}
+                    aria-pressed={isSelected}
+                  >
+                    {isSelected ? '✓' : ''}
+                  </button>
+
+                  <div className="flex min-w-[10rem] flex-1 items-center">
+                    <span className={`font-medium leading-tight ${isSelected ? 'text-white' : 'text-slate-700'}`}>
+                      {singer.name || 'Unnamed singer'}
+                    </span>
+                  </div>
+
+                  <label
+                    className={`flex flex-shrink-0 items-center gap-1 text-xs uppercase tracking-wide ${
+                      isSelected ? 'text-white/80' : 'text-slate-500'
+                    }`}
+                  >
+                    <span>Fee</span>
+                    <div className="relative flex items-center">
+                      <span className={`pointer-events-none absolute left-2 ${isSelected ? 'text-white/70' : 'text-slate-400'}`}>£</span>
+                      <input
+                        type="number"
+                        step="0.01"
+                        className={`w-28 rounded border px-5 py-1 text-sm focus:outline-none focus:ring-2 ${
+                          isSelected
+                            ? 'border-white/70 bg-white text-indigo-700 placeholder-indigo-300 focus:ring-white/60'
+                            : 'border-slate-300 bg-white text-slate-700 placeholder-slate-400 focus:ring-indigo-500'
+                        }`}
+                        value={feeInputValue}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          const singerRecord = poolMap.get(singerId);
+                          if (!singerRecord) return;
+                          const serviceId = selectedService ? String(selectedService.id) : '';
+                          const serviceDetails = serviceId ? singerRecord.serviceFees?.[serviceId] : null;
+                          const fallbackFee = serviceDetails?.fee != null
+                            ? String(serviceDetails.fee)
+                            : singerRecord.fee != null ? String(singerRecord.fee) : '';
+
+                          if (!isSelected) {
+                            const nextEntries = [
+                              ...selectedEntries,
+                              {
+                                id: singerId,
+                                name: singerRecord.name,
+                                fee: value === '' ? fallbackFee : value,
+                                locked: false
+                              }
+                            ];
+                            updateSelected(nextEntries);
+                            return;
+                          }
+
+                          const next = selectedEntries.map(entry => (
+                            entry.id === singerId ? { ...entry, fee: value } : entry
+                          ));
+                          updateSelected(next);
+                        }}
+                        onClick={(event) => event.stopPropagation()}
+                        inputMode="decimal"
+                      />
+                    </div>
+                  </label>
+
+                  <div className="ml-auto flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        const next = selectedEntries.map(entry => (
+                          entry.id === singerId
+                            ? { ...entry, locked: !Boolean(entry.locked) }
+                            : entry
+                        ));
+                        if (!isSelected) {
+                          handleToggleSinger(singerId);
+                          return;
+                        }
+                        updateSelected(next);
+                      }}
+                      disabled={!isSelected}
+                      className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-medium focus:outline-none focus:ring-2 ${
+                        isSelected
+                          ? 'border-white/60 text-white focus:ring-white/40'
+                          : 'border-slate-200 text-slate-500 focus:ring-indigo-500 disabled:opacity-60'
+                      }`}
+                      aria-label={isLocked ? 'Unlock fee' : 'Lock fee'}
+                    >
+                      {isLocked ? '🔒 Locked' : '🔓 Unlocked'}
+                    </button>
+
                     {canManagePool ? (
                       <button
                         type="button"
@@ -1713,41 +1813,15 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                           event.stopPropagation();
                           handleOpenEditSingerModal(singer);
                         }}
-                        className={`font-medium ${isSelected ? 'text-indigo-100 hover:text-white' : 'text-indigo-600 hover:text-indigo-500'}`}
-                        style={{ fontSize: '0.65rem' }}
+                        className={`inline-flex items-center gap-1 rounded border px-2 py-1 text-xs font-semibold focus:outline-none focus:ring-2 ${
+                          isSelected ? 'border-white/60 text-white hover:text-indigo-100 focus:ring-white/40' : 'border-indigo-200 text-indigo-600 hover:text-indigo-500 focus:ring-indigo-200'
+                        }`}
                       >
                         Edit
                       </button>
                     ) : null}
                   </div>
-                  {isSelected ? (
-                    <div className="mt-1 flex items-center gap-2">
-                      <label className={`flex items-center gap-1 ${isSelected ? 'text-white' : 'text-slate-700'}`} style={{ fontSize: '0.8rem' }}>
-                        <span>Fee £</span>
-                        <input
-                          type="number"
-                          step="0.01"
-                          className={`w-24 rounded border px-1.5 py-1 text-sm focus:outline-none focus:ring-2 ${isSelected ? 'border-indigo-100 text-white placeholder-indigo-100/70 bg-transparent focus:ring-white' : 'border-slate-300 text-slate-800 placeholder-slate-400 bg-white focus:ring-indigo-500'}`}
-                          value={(selectedEntries.find(e => e.id === singerId)?.fee) ?? ''}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) => {
-                            e.stopPropagation();
-                            const next = selectedEntries.map(entry => entry.id === singerId ? { ...entry, fee: e.target.value } : entry);
-                            updateSelected(next);
-                          }}
-                        />
-                      </label>
-                      {/* lock icon moved next to name */}
-                    </div>
-                  ) : (
-                    <div
-                      className={`mt-0.5 ${isSelected ? 'text-indigo-100' : 'text-slate-500'}`}
-                      style={{ fontSize: '0.7rem' }}
-                    >
-                      Fee {toCurrency(displayFee)}
-                    </div>
-                  )}
-                </button>
+                </div>
               );
             })}
           </div>
@@ -4892,14 +4966,18 @@ function JobsheetEditorWindow({
 
   if (isInline) {
     const inlineStatus = saving ? 'Saving…' : message;
+    const inlineMessageVisible = !error && Boolean(inlineStatus);
+    const inlineDisplay = inlineStatus || '\u00A0';
     return (
       <div className="space-y-4 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 xl:px-10 py-4 sm:py-6">
         {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
-        {!error && inlineStatus ? (
-          <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600">
-            {inlineStatus}
+        <div className="min-h-[2.5rem]" aria-live="polite" aria-atomic="true">
+          <div
+            className={`rounded border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600 transition duration-200 ${inlineMessageVisible ? 'opacity-100 translate-y-0' : 'opacity-0 -translate-y-1 pointer-events-none'}`}
+          >
+            {inlineDisplay}
           </div>
-        ) : null}
+        </div>
         {editorContent}
       </div>
     );
