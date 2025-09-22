@@ -979,6 +979,67 @@ function JobsheetList({
 }
 
 
+function InlineJobsheetEditorPanel({
+  business,
+  visible,
+  jobsheetId,
+  sessionKey,
+  onClose,
+  onOpenInWindow
+}) {
+  const headerTitle = jobsheetId ? 'Edit jobsheet' : 'New jobsheet';
+  const hint = jobsheetId
+    ? `Jobsheet #${jobsheetId} · changes save automatically.`
+    : 'Changes save automatically. Fill in the details below.';
+
+  if (!visible) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
+        Select a jobsheet from the list (or create a new one) to edit it inline. You can still pop the editor into its own window when needed.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-slate-700">{headerTitle}</h3>
+          <p className="text-xs text-slate-500">{hint}</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onOpenInWindow}
+            className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-indigo-200 hover:text-indigo-600 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          >
+            Open in window
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-red-200 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
+          >
+            Close editor
+          </button>
+        </div>
+      </div>
+      <div className="max-h-[80vh] overflow-y-auto">
+        <JobsheetEditorWindow
+          key={sessionKey}
+          variant="inline"
+          businessId={business.id}
+          businessName={business.business_name}
+          initialJobsheetId={jobsheetId == null ? 'new' : jobsheetId}
+          targetJobsheetId={jobsheetId}
+          onRequestClose={onClose}
+        />
+      </div>
+    </div>
+  );
+}
+
+
 function normalizeSingerEntries(entries) {
   const list = Array.isArray(entries) ? entries : [];
   const seen = new Set();
@@ -2909,6 +2970,9 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [activeJobsheetId, setActiveJobsheetId] = useState(null);
+  const [inlineEditorVisible, setInlineEditorVisible] = useState(false);
+  const [inlineEditorTargetId, setInlineEditorTargetId] = useState(null);
+  const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
   const [openingTemplate, setOpeningTemplate] = useState(false);
   const [normalizingTemplate, setNormalizingTemplate] = useState(false);
@@ -3036,7 +3100,25 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         return;
       }
       if (payload.type === 'jobsheet-deleted' && payload.jobsheetId != null) {
-        setActiveJobsheetId(prev => (prev === Number(payload.jobsheetId) ? null : prev));
+        const deletedId = Number(payload.jobsheetId);
+        setActiveJobsheetId(prev => (prev === deletedId ? null : prev));
+        if (inlineEditorTargetId != null && deletedId === inlineEditorTargetId) {
+          setInlineEditorVisible(false);
+          setInlineEditorTargetId(null);
+        }
+        return;
+      }
+      if (payload.type === 'jobsheet-created' && payload.jobsheetId != null) {
+        const createdId = Number(payload.jobsheetId);
+        if (inlineEditorVisible && inlineEditorTargetId == null) {
+          setInlineEditorTargetId(createdId);
+          setActiveJobsheetId(createdId);
+        }
+        if (payload.snapshot) {
+          mergeJobsheetSnapshot(payload.snapshot);
+        } else {
+          refreshJobsheets();
+        }
         return;
       }
       if (payload.type === 'jobsheet-load-request') {
@@ -3045,13 +3127,18 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         return;
       }
       if (payload.type === 'jobsheet-updated' && payload.snapshot) {
+        if (inlineEditorVisible && inlineEditorTargetId == null && payload.snapshot.jobsheet_id != null) {
+          const snapshotId = Number(payload.snapshot.jobsheet_id);
+          setInlineEditorTargetId(snapshotId);
+          setActiveJobsheetId(snapshotId);
+        }
         mergeJobsheetSnapshot(payload.snapshot);
       } else {
         refreshJobsheets();
       }
     });
     return () => unsubscribe?.();
-  }, [business.id, refreshJobsheets, refreshDocuments, mergeJobsheetSnapshot, setActiveJobsheetId]);
+  }, [business.id, refreshJobsheets, refreshDocuments, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible]);
 
   const handleChangeDocumentsFolder = useCallback(async () => {
     const api = window.api;
@@ -3549,14 +3636,19 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
   const handleNew = useCallback(() => {
     setActiveJobsheetId(null);
-    openJobsheetWindow(undefined);
-  }, [openJobsheetWindow, setActiveJobsheetId]);
+    setInlineEditorTargetId(null);
+    setInlineEditorVisible(true);
+    setInlineEditorSession(prev => prev + 1);
+  }, []);
 
   const handleOpenExisting = useCallback((jobsheetId) => {
     if (!jobsheetId) return;
-    setActiveJobsheetId(Number(jobsheetId));
-    openJobsheetWindow(jobsheetId);
-  }, [openJobsheetWindow, setActiveJobsheetId]);
+    const numericId = Number(jobsheetId);
+    setActiveJobsheetId(numericId);
+    setInlineEditorTargetId(numericId);
+    setInlineEditorVisible(true);
+    setInlineEditorSession(prev => (numericId !== inlineEditorTargetId ? prev + 1 : prev));
+  }, [inlineEditorTargetId]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
     if (!jobsheetId) return;
@@ -3618,6 +3710,20 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       setStatusUpdatingId(null);
     }
   }, [business.id, normalizeJobsheet]);
+
+  const handleCloseInlineEditor = useCallback(() => {
+    setInlineEditorVisible(false);
+    setInlineEditorTargetId(null);
+    setActiveJobsheetId(null);
+  }, []);
+
+  const handlePopoutEditor = useCallback(() => {
+    openJobsheetWindow(inlineEditorTargetId ?? undefined);
+    setInlineEditorVisible(false);
+    setInlineEditorTargetId(null);
+  }, [inlineEditorTargetId, openJobsheetWindow]);
+
+  const inlineEditorKey = `jobsheet-editor-${inlineEditorSession}`;
 
 
   const handleSort = useCallback((columnKey) => {
@@ -3689,9 +3795,14 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                   onSort={handleSort}
                   activeJobsheetId={activeJobsheetId}
                 />
-                <div className="rounded-lg border border-dashed border-slate-300 bg-white px-6 py-8 text-sm text-slate-500">
-                  Jobsheets open in a dedicated window. Changes save automatically and this list refreshes when the editor window makes updates.
-                </div>
+                <InlineJobsheetEditorPanel
+                  business={business}
+                  visible={inlineEditorVisible}
+                  jobsheetId={inlineEditorTargetId}
+                  sessionKey={inlineEditorKey}
+                  onClose={handleCloseInlineEditor}
+                  onOpenInWindow={handlePopoutEditor}
+                />
               </section>
             ) : null}
 
@@ -3860,11 +3971,26 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   );
 }
 
-function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
+function JobsheetEditorWindow({
+  businessId,
+  businessName,
+  initialJobsheetId,
+  variant = 'window',
+  targetJobsheetId,
+  onRequestClose
+}) {
+  const isInline = variant === 'inline';
+  const resolveJobsheetId = (value) => {
+    if (value === undefined || value === null) return null;
+    if (value === '' || value === 'new') return null;
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : null;
+  };
+  const initialResolvedJobsheetId = resolveJobsheetId(targetJobsheetId !== undefined ? targetJobsheetId : initialJobsheetId);
   const numericBusinessId = Number(businessId) || 0;
   const [business, setBusiness] = useState(businessName ? { id: numericBusinessId, business_name: businessName } : null);
   const [formState, setFormState] = useState(DEFAULT_JOBSHEET(numericBusinessId));
-  const [jobsheetId, setJobsheetId] = useState(initialJobsheetId && initialJobsheetId !== 'new' ? Number(initialJobsheetId) : null);
+  const [jobsheetId, setJobsheetId] = useState(initialResolvedJobsheetId);
   const [venues, setVenues] = useState([]);
   const [fieldGroups, setFieldGroups] = useState(FALLBACK_JOBSHEET_GROUPS);
   const [pricingConfig, setPricingConfig] = useState(null);
@@ -3880,7 +4006,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
-  const creatingRef = useRef(false);
+  const creatingRef = useRef(initialResolvedJobsheetId == null);
 
   useEffect(() => {
     if (!jobsheetId) return;
@@ -3901,6 +4027,39 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   }, [numericBusinessId, jobsheetId, setBusiness, setFormState, setLoading, setActiveEditorSection, setError, setMessage]);
 
   useEffect(() => {
+    if (!isInline) return;
+    if (targetJobsheetId === undefined) return;
+    const normalize = (value) => {
+      if (value === undefined || value === null) return null;
+      if (value === '' || value === 'new') return null;
+      const numericValue = Number(value);
+      return Number.isFinite(numericValue) ? numericValue : null;
+    };
+    const nextTarget = normalize(targetJobsheetId);
+    const current = normalize(jobsheetId);
+    if (nextTarget === current) return;
+
+    initialLoadRef.current = true;
+    creatingRef.current = nextTarget == null;
+    setError('');
+    setMessage('');
+    setActiveEditorSection('client');
+    setLastOutputPath('');
+
+    if (nextTarget != null) {
+      setLoading(true);
+      setJobsheetId(nextTarget);
+    } else {
+      const resetState = DEFAULT_JOBSHEET(numericBusinessId);
+      setJobsheetId(null);
+      setFormState(resetState);
+      formStateRef.current = resetState;
+      setLoading(false);
+    }
+  }, [isInline, targetJobsheetId, jobsheetId, numericBusinessId]);
+
+  useEffect(() => {
+    if (isInline) return () => {};
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
       if (!payload || payload.businessId !== numericBusinessId) return;
@@ -3936,7 +4095,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       }
     });
     return () => unsubscribe();
-  }, [numericBusinessId, jobsheetId]);
+  }, [isInline, numericBusinessId, jobsheetId]);
 
   const buildSnapshot = useCallback((state, id) => ({
     jobsheet_id: id ?? state.jobsheet_id ?? null,
@@ -3995,7 +4154,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         setFieldGroups(buildJobsheetGroups(mergeFieldData || []));
 
         let effectiveJobsheetId = jobsheetId;
-        if (!effectiveJobsheetId && initialJobsheetId && initialJobsheetId !== 'new') {
+        if (!effectiveJobsheetId && !isInline && initialJobsheetId && initialJobsheetId !== 'new') {
           effectiveJobsheetId = Number(initialJobsheetId);
           setJobsheetId(effectiveJobsheetId);
         }
@@ -4022,7 +4181,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     return () => {
       mounted = false;
     };
-  }, [numericBusinessId, initialJobsheetId, jobsheetId]);
+  }, [numericBusinessId, initialJobsheetId, jobsheetId, isInline]);
 
   useEffect(() => {
     formStateRef.current = formState;
@@ -4475,9 +4634,11 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         const payload = preparePayload(formState, numericBusinessId);
         const newId = await api.addAhmenJobsheet(payload);
         setJobsheetId(newId);
-        const url = new URL(window.location.href);
-        url.searchParams.set('jobsheetId', newId);
-        window.history.replaceState({}, '', url.toString());
+        if (!isInline) {
+          const url = new URL(window.location.href);
+          url.searchParams.set('jobsheetId', newId);
+          window.history.replaceState({}, '', url.toString());
+        }
         window.api?.notifyJobsheetChange?.({
           type: 'jobsheet-created',
           businessId: numericBusinessId,
@@ -4495,7 +4656,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
         setSaving(false);
       }
     })();
-  }, [loading, jobsheetId, numericBusinessId, formState]);
+  }, [loading, jobsheetId, numericBusinessId, formState, isInline]);
 
   const handleSaveVenue = useCallback(async (overrideVenue) => {
     setVenueSaving(true);
@@ -4604,9 +4765,17 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
     }
   }, [numericBusinessId, formState, jobsheetId]);
 
+  const closeEditor = useCallback(() => {
+    if (isInline) {
+      onRequestClose?.();
+    } else {
+      window.close();
+    }
+  }, [isInline, onRequestClose]);
+
   const handleDelete = useCallback(async () => {
     if (!jobsheetId) {
-      window.close();
+      closeEditor();
       return;
     }
     const confirmed = window.confirm('Delete this jobsheet? This cannot be undone.');
@@ -4621,14 +4790,14 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
       }
       await api.deleteAhmenJobsheet(jobsheetId);
       window.api?.notifyJobsheetChange?.({ type: 'jobsheet-deleted', businessId: numericBusinessId, jobsheetId });
-      window.close();
+      closeEditor();
     } catch (err) {
       console.error('Failed to delete jobsheet', err);
       setError(err?.message || 'Unable to delete jobsheet');
     } finally {
       setSaving(false);
     }
-  }, [jobsheetId, numericBusinessId]);
+  }, [jobsheetId, numericBusinessId, closeEditor]);
 
   useEffect(() => {
     const handler = () => {
@@ -4648,6 +4817,89 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
   const summarySingerFee = Number(formState.ahmen_fee) || (pricingDerived ? pricingDerived.singerNet : 0);
   const summaryProductionFee = Number(formState.production_fees) || (pricingDerived ? pricingDerived.productionNet : 0);
   const summaryTotal = pricingDerived ? pricingDerived.total : summarySingerFee + summaryProductionFee;
+  const summaryCard = (
+    <div className="bg-white border border-slate-200 rounded-lg px-5 py-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 text-sm text-slate-600">
+      <div>
+        <div className="text-xs uppercase tracking-wide text-slate-400">Client</div>
+        <div className="text-base font-semibold text-slate-800">{formState.client_name || 'Untitled booking'}</div>
+      </div>
+      <div>
+        <div className="text-xs uppercase tracking-wide text-slate-400">Event</div>
+        <div className="text-base text-slate-700">{formState.event_type || '—'}</div>
+        <div className="text-xs text-slate-500">{formatDateDisplay(formState.event_date)}</div>
+      </div>
+      <div>
+        <div className="text-xs uppercase tracking-wide text-slate-400">Venue</div>
+        <div className="text-base text-slate-700">{formState.venue_name || formState.venue_town || '—'}</div>
+      </div>
+      <div>
+        <div className="text-xs uppercase tracking-wide text-slate-400">Fee</div>
+        <div className="text-base font-semibold text-slate-800">{toCurrency(summaryTotal)}</div>
+        <div className="text-xs text-slate-500">Singers {toCurrency(summarySingerFee)} · Production {toCurrency(summaryProductionFee)}</div>
+      </div>
+      <div>
+        <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
+        <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLES[formState.status] || STATUS_STYLES.enquiry}`}>
+          {STATUS_OPTIONS.find(opt => opt.value === formState.status)?.label || 'Enquiry'}
+        </span>
+      </div>
+    </div>
+  );
+
+  const editorContent = loading ? (
+    <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading jobsheet…</div>
+  ) : (
+    <>
+      {isInline ? (
+        summaryCard
+      ) : (
+        <div className="sticky top-0 z-20 -mx-6 px-6 pt-2 pb-4 bg-slate-100/95 backdrop-blur">
+          {summaryCard}
+        </div>
+      )}
+      <JobsheetEditor
+        business={resolvedBusiness}
+        businessId={numericBusinessId}
+        formState={formState}
+        onChange={setFormState}
+        onDelete={handleDelete}
+        saving={saving}
+        deleting={false}
+        hasExisting={Boolean(jobsheetId)}
+        venues={venues}
+        setVenues={setVenues}
+        onSaveVenue={handleSaveVenue}
+        venueSaving={venueSaving}
+        setVenueSaving={setVenueSaving}
+        pricingConfig={pricingConfig}
+        pricingTotals={pricingDerived}
+        onUpdateSingerPool={handleUpdateSingerPool}
+        activeGroupKey={activeEditorSection}
+        onActiveGroupChange={setActiveEditorSection}
+        onGenerateDocument={handlePopulateExcel}
+        documentGenerating={documentGenerating}
+        onOpenOutputFolder={handleOpenOutputFolder}
+        onOpenOutputFile={handleOpenOutputFile}
+        lastGeneratedPath={lastOutputPath}
+        groups={fieldGroups}
+      />
+    </>
+  );
+
+  if (isInline) {
+    const inlineStatus = saving ? 'Saving…' : message;
+    return (
+      <div className="space-y-4 p-4 sm:p-6">
+        {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+        {!error && inlineStatus ? (
+          <div className="rounded border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-medium text-slate-600">
+            {inlineStatus}
+          </div>
+        ) : null}
+        {editorContent}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-100">
@@ -4665,67 +4917,7 @@ function JobsheetEditorWindow({ businessId, businessName, initialJobsheetId }) {
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-4">
         {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
-        {loading ? (
-          <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading jobsheet…</div>
-        ) : (
-          <>
-            <div className="sticky top-0 z-20 -mx-6 px-6 pt-2 pb-4 bg-slate-100/95 backdrop-blur">
-              <div className="bg-white border border-slate-200 rounded-lg px-5 py-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 text-sm text-slate-600">
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Client</div>
-                  <div className="text-base font-semibold text-slate-800">{formState.client_name || 'Untitled booking'}</div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Event</div>
-                  <div className="text-base text-slate-700">{formState.event_type || '—'}</div>
-                  <div className="text-xs text-slate-500">{formatDateDisplay(formState.event_date)}</div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Venue</div>
-                  <div className="text-base text-slate-700">{formState.venue_name || formState.venue_town || '—'}</div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Fee</div>
-                  <div className="text-base font-semibold text-slate-800">{toCurrency(summaryTotal)}</div>
-                  <div className="text-xs text-slate-500">Singers {toCurrency(summarySingerFee)} · Production {toCurrency(summaryProductionFee)}</div>
-                </div>
-                <div>
-                  <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
-                  <span className={`inline-flex items-center rounded-full px-3 py-1 text-xs font-semibold ${STATUS_STYLES[formState.status] || STATUS_STYLES.enquiry}`}>
-                    {STATUS_OPTIONS.find(opt => opt.value === formState.status)?.label || 'Enquiry'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-         <JobsheetEditor
-            business={resolvedBusiness}
-            businessId={numericBusinessId}
-            formState={formState}
-            onChange={setFormState}
-            onDelete={handleDelete}
-            saving={saving}
-            deleting={false}
-            hasExisting={Boolean(jobsheetId)}
-            venues={venues}
-            setVenues={setVenues}
-            onSaveVenue={handleSaveVenue}
-            venueSaving={venueSaving}
-            setVenueSaving={setVenueSaving}
-            pricingConfig={pricingConfig}
-            pricingTotals={pricingDerived}
-            onUpdateSingerPool={handleUpdateSingerPool}
-            activeGroupKey={activeEditorSection}
-            onActiveGroupChange={setActiveEditorSection}
-            onGenerateDocument={handlePopulateExcel}
-            documentGenerating={documentGenerating}
-            onOpenOutputFolder={handleOpenOutputFolder}
-            onOpenOutputFile={handleOpenOutputFile}
-            lastGeneratedPath={lastOutputPath}
-            groups={fieldGroups}
-          />
-          </>
-        )}
+        {editorContent}
       </main>
     </div>
   );
