@@ -94,6 +94,12 @@ const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => 
   return acc;
 }, {});
 
+const WORKSPACE_ICON_MAP = {
+  jobsheets: '🗂️',
+  documents: '📁',
+  settings: '⚙️'
+};
+
 const STATUS_STYLES = {
   enquiry: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
   quoted: 'bg-blue-100 text-blue-800 border border-blue-200',
@@ -119,6 +125,13 @@ const STATUS_ORDER = STATUS_OPTIONS.reduce((acc, option, index) => {
   acc[option.value] = index;
   return acc;
 }, {});
+
+const STATUS_DOT_CLASSES = {
+  enquiry: 'bg-yellow-400',
+  quoted: 'bg-blue-400',
+  confirmed: 'bg-green-500',
+  completed: 'bg-slate-400'
+};
 
 const LAST_BUSINESS_STORAGE_KEY = 'invoiceMaster:lastBusinessId';
 
@@ -424,6 +437,17 @@ const GROUP_CONFIG = {
   }
 };
 
+const GROUP_ICON_MAP = {
+  client: '👤',
+  event: '🎉',
+  venue: '📍',
+  pricing: '🎶',
+  production: '🎛️',
+  billing: '💷',
+  services: '📝',
+  documents: '📁'
+};
+
 function startCaseKey(key) {
   if (!key) return '';
   return key
@@ -668,6 +692,85 @@ function matchesDocumentToJobsheet(doc, jobsheetState) {
   return false;
 }
 
+function getGroupIcon(groupKey) {
+  return GROUP_ICON_MAP[groupKey] || '•';
+}
+
+function getWorkspaceIcon(sectionKey) {
+  return WORKSPACE_ICON_MAP[sectionKey] || '•';
+}
+
+function fuzzyScore(query, text) {
+  if (!query) return 0;
+  if (!text) return null;
+  const haystack = text.toString().toLowerCase();
+  const needle = query.toLowerCase();
+  let score = 0;
+  let lastIndex = -1;
+
+  for (let i = 0; i < needle.length; i += 1) {
+    const char = needle[i];
+    const matchIndex = haystack.indexOf(char, lastIndex + 1);
+    if (matchIndex === -1) return null;
+    if (lastIndex === -1) {
+      score += matchIndex;
+    } else {
+      score += Math.max(0, matchIndex - lastIndex - 1);
+    }
+    if (matchIndex === i) {
+      score -= 0.5;
+    }
+    lastIndex = matchIndex;
+  }
+
+  if (haystack.includes(needle)) {
+    score -= 2;
+  }
+
+  return score;
+}
+
+function buildJobsheetHaystacks(sheet) {
+  const items = [
+    sheet.client_name,
+    sheet.client_email,
+    sheet.event_type,
+    sheet.venue_name,
+    sheet.venue_town,
+    sheet.notes,
+    sheet.service_types,
+    sheet.status,
+    sheet.jobsheet_id != null ? `#${sheet.jobsheet_id}` : '',
+    sheet.pricing_service_id
+  ].filter(Boolean);
+
+  const combined = items.join(' ');
+  return [...items, combined];
+}
+
+function getComparableValueForSort(sheet, field) {
+  switch (field) {
+    case 'event_date':
+      return sheet.event_date ? new Date(sheet.event_date).valueOf() : 0;
+    case 'ahmen_fee': {
+      const total = Number(sheet.pricing_total);
+      if (Number.isFinite(total) && total > 0) return total;
+      const singerFee = Number(sheet.ahmen_fee) || 0;
+      const productionFee = Number(sheet.production_fees) || 0;
+      return singerFee + productionFee;
+    }
+    case 'status':
+      return STATUS_ORDER[sheet.status] ?? STATUS_OPTIONS.length;
+    case 'client_name':
+    case 'event_type':
+      return (sheet[field] || '').toString().toLowerCase();
+    case 'venue_name':
+      return (sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '').toString().toLowerCase();
+    default:
+      return sheet[field];
+  }
+}
+
 function IconButton({ label, onClick, disabled, className = '', children }) {
   const handleClick = useCallback((event) => {
     event.stopPropagation();
@@ -897,8 +1000,55 @@ function JobsheetList({
   onSort,
   activeJobsheetId = null
 }) {
+  const [searchValue, setSearchValue] = useState('');
+  const [statusFilters, setStatusFilters] = useState(() => new Set());
+  const normalizedSearch = searchValue.trim().toLowerCase();
+
+  const filteredJobsheets = useMemo(() => {
+    if (!jobsheets || jobsheets.length === 0) {
+      return [];
+    }
+
+    const activeStatuses = Array.from(statusFilters);
+    const hasStatusFilter = activeStatuses.length > 0;
+
+    return jobsheets.filter(sheet => {
+      if (!sheet) return false;
+      if (hasStatusFilter && !activeStatuses.includes(sheet.status)) {
+        return false;
+      }
+
+      if (!normalizedSearch) {
+        return true;
+      }
+
+      const formattedEventDate = sheet.event_date ? formatDateDisplay(sheet.event_date) : '';
+      const haystack = [
+        sheet.jobsheet_id != null ? `#${sheet.jobsheet_id}` : '',
+        sheet.client_name,
+        sheet.client_email,
+        sheet.client_phone,
+        sheet.event_type,
+        sheet.event_date,
+        formattedEventDate,
+        sheet.venue_name,
+        sheet.venue_town,
+        sheet.venue_postcode,
+        sheet.venue_address1,
+        sheet.venue_address2,
+        sheet.venue_address3,
+        sheet.notes
+      ];
+
+      return haystack.some(value => {
+        if (value == null || value === '') return false;
+        return String(value).toLowerCase().includes(normalizedSearch);
+      });
+    });
+  }, [jobsheets, normalizedSearch, statusFilters]);
+
   const sortedJobsheets = useMemo(() => {
-    const list = [...jobsheets];
+    const list = [...filteredJobsheets];
     const { key, direction } = sortConfig || {};
     if (!key) return list;
     const multiplier = direction === 'asc' ? 1 : -1;
@@ -941,7 +1091,33 @@ function JobsheetList({
     });
 
     return list;
-  }, [jobsheets, sortConfig]);
+  }, [filteredJobsheets, sortConfig]);
+
+  const toggleStatusFilter = useCallback((status) => {
+    if (!status) return;
+    setStatusFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(status)) {
+        next.delete(status);
+      } else {
+        next.add(status);
+      }
+      return next;
+    });
+  }, []);
+
+  const clearFilters = useCallback(() => {
+    setSearchValue('');
+    setStatusFilters(() => new Set());
+  }, []);
+
+  const hasActiveFilters = Boolean(normalizedSearch) || statusFilters.size > 0;
+  const totalCount = jobsheets?.length || 0;
+  const filteredCount = filteredJobsheets.length;
+
+  const summaryLabel = hasActiveFilters
+    ? `${filteredCount} of ${totalCount} jobsheets`
+    : `${filteredCount} jobsheet${filteredCount === 1 ? '' : 's'}`;
 
   const renderSortIndicator = (columnKey) => {
     if (!sortConfig || sortConfig.key !== columnKey) return <span className="text-slate-400 ml-1">⇅</span>;
@@ -1067,20 +1243,61 @@ function JobsheetList({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-slate-700">Jobsheets</h2>
-        <button
-          onClick={onNew}
-          className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 rounded"
-        >
-          + New Jobsheet
-        </button>
+      <div className="mb-4 space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-700">Jobsheets</h2>
+            <p className="text-sm text-slate-500">{summaryLabel}</p>
+          </div>
+          <button
+            onClick={onNew}
+            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 rounded"
+          >
+            + New Jobsheet
+          </button>
+        </div>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="relative w-full md:max-w-xs">
+            <input
+              type="search"
+              value={searchValue}
+              onChange={event => setSearchValue(event.target.value)}
+              placeholder="Search jobsheets"
+              className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {STATUS_OPTIONS.map(option => {
+              const active = statusFilters.has(option.value);
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  onClick={() => toggleStatusFilter(option.value)}
+                  className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium transition ${active ? 'border-indigo-200 bg-indigo-50 text-indigo-700 shadow-sm' : 'border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50'}`}
+                  aria-pressed={active}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+            {hasActiveFilters ? (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="inline-flex items-center rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500 hover:bg-slate-50"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+        </div>
       </div>
       <div className="flex-1 overflow-hidden rounded-lg border border-slate-200 bg-white">
         {loading ? (
           <div className="p-6 text-center text-slate-500">Loading…</div>
         ) : !sortedJobsheets.length ? (
-          <div className="p-6 text-center text-slate-500">No jobsheets yet. Create your first one!</div>
+          <div className="p-6 text-center text-slate-500">{hasActiveFilters ? 'No jobsheets match your filters yet. Adjust the search or status filter to see more results.' : 'No jobsheets yet. Create your first one!'}</div>
         ) : (
           <div className="overflow-y-auto">
             <table className="min-w-full text-sm border-separate border-spacing-y-2">
