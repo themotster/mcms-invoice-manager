@@ -385,11 +385,10 @@ function buildDestinationPath({ business, client, event, docType, number, templa
   const dateSource = event?.event_date || new Date().toISOString();
   const { iso, human } = formatDateParts(dateSource);
   const clientName = sanitizeForFilename(client?.name || business?.business_name || 'Client');
-  const eventName = sanitizeForFilename(event?.event_name || `${docType || 'document'}`);
+  const humanFormatted = sanitizeForFilename(human);
 
-  const numberPart = number ? `#${number} – ` : '';
-  const fileNameParts = [iso, numberPart + clientName, eventName, human].filter(Boolean);
-  const fileName = `${fileNameParts.join(' – ')}${extension}`;
+  const fileNameParts = [iso, clientName, humanFormatted].filter(Boolean);
+  const fileName = `${fileNameParts.join(' - ')}${extension}`;
   const baseDir = business?.save_path || path.join(process.cwd(), 'documents');
   ensureDirectoryExists(baseDir);
 
@@ -849,10 +848,19 @@ async function createDocument(documentData) {
     templatePath = path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx');
   }
 
+  const clientForPath = clientOverride
+    ? { ...(client || {}), ...clientOverride, name: resolvedClientName || clientOverride.name }
+    : (resolvedClientName ? { ...(client || {}), name: resolvedClientName } : client);
+  const eventForPath = eventOverride
+    ? { ...(event || {}), ...eventOverride, event_name: resolvedEventName || eventOverride.event_name, event_date: resolvedEventDate || eventOverride.event_date }
+    : (resolvedEventName || resolvedEventDate
+      ? { ...(event || {}), event_name: resolvedEventName || event?.event_name, event_date: resolvedEventDate || event?.event_date }
+      : event);
+
   let destinationPath = manualFilePath || buildDestinationPath({
     business,
-    client,
-    event,
+    client: clientForPath,
+    event: eventForPath,
     docType: documentData.doc_type,
     number: insertResult.number,
     templatePath

@@ -32,7 +32,7 @@ const STATUS_OPTIONS = [
 ];
 
 const DOCUMENT_CONFIG = {
-  workbook: { docType: 'workbook', label: 'Excel Workbook', fileSuffix: ' - Workbook' },
+  workbook: { docType: 'workbook', label: 'Excel Workbook' },
   quote: { docType: 'quote', label: 'Quote', fileSuffix: ' - Quote' },
   contract: { docType: 'contract', label: 'Contract', fileSuffix: ' - Contract' },
   invoice_deposit: { docType: 'invoice', label: 'Invoice – Deposit', fileSuffix: ' - Deposit', invoiceVariant: 'deposit' },
