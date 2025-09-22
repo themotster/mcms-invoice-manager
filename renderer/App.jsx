@@ -32,7 +32,7 @@ const STATUS_OPTIONS = [
 ];
 
 const DOCUMENT_CONFIG = {
-  workbook: { docType: 'invoice', label: 'Excel Workbook', fileSuffix: ' - Workbook' },
+  workbook: { docType: 'workbook', label: 'Excel Workbook', fileSuffix: ' - Workbook' },
   quote: { docType: 'quote', label: 'Quote', fileSuffix: ' - Quote' },
   contract: { docType: 'contract', label: 'Contract', fileSuffix: ' - Contract' },
   invoice_deposit: { docType: 'invoice', label: 'Invoice – Deposit', fileSuffix: ' - Deposit', invoiceVariant: 'deposit' },
@@ -42,19 +42,19 @@ const DOCUMENT_CONFIG = {
 const DEFAULT_DOCUMENT_KEY = 'workbook';
 
 const DOCUMENT_COLUMNS = [
-  { key: 'document', label: 'Document' },
-  { key: 'client', label: 'Client / Event' },
-  { key: 'event_date', label: 'Event Date' },
-  { key: 'created', label: 'Created' },
-  { key: 'amount', label: 'Amount' },
-  { key: 'actions', label: 'Actions' }
+  { key: 'document', label: 'Document', headerClass: 'px-3 py-3 text-left' },
+  { key: 'client', label: 'Client / Event', headerClass: 'px-3 py-3 text-left' },
+  { key: 'event_date', label: 'Event Date', headerClass: 'px-3 py-3 text-left' },
+  { key: 'created', label: 'Created', headerClass: 'px-3 py-3 text-left' },
+  { key: 'amount', label: 'Amount', headerClass: 'px-3 py-3 text-center' },
+  { key: 'actions', label: 'Actions', headerClass: 'px-3 py-3 text-center' }
 ];
 
 const DOCUMENT_TYPE_LABELS = {
   invoice: 'Invoice',
   quote: 'Quote',
   contract: 'Contract',
-  workbook: 'Workbook'
+  workbook: 'Excel Workbook'
 };
 
 const WORKSPACE_SECTIONS = [
@@ -3380,7 +3380,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                 />
               </th>
               {DOCUMENT_COLUMNS.map(column => (
-                <th key={column.key} className="px-3 py-3 text-left">{column.label}</th>
+                <th
+                  key={column.key}
+                  className={column.headerClass || 'px-3 py-3 text-left'}
+                >
+                  {column.label}
+                </th>
               ))}
             </tr>
           </thead>
