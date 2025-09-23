@@ -261,6 +261,28 @@ ipcMain.handle('choose-directory', async (event, args = {}) => {
   return result.filePaths[0] || null;
 });
 
+ipcMain.handle('choose-file', async (event, args = {}) => {
+  const browser = BrowserWindow.fromWebContents(event.sender);
+  const dialogOptions = {
+    title: args.title || 'Select file',
+    defaultPath: args.defaultPath || undefined,
+    properties: ['openFile']
+  };
+
+  if (Array.isArray(args.filters) && args.filters.length) {
+    dialogOptions.filters = args.filters;
+  }
+
+  const result = browser && !browser.isDestroyed()
+    ? await dialog.showOpenDialog(browser, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions);
+
+  if (result.canceled || !result.filePaths || !result.filePaths.length) {
+    return null;
+  }
+  return result.filePaths[0] || null;
+});
+
 ipcMain.handle('open-path', async (_event, targetPath) => {
   if (!targetPath || typeof targetPath !== 'string') return { ok: false, message: 'Missing path' };
   try {

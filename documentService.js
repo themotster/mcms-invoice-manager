@@ -750,9 +750,6 @@ async function relocateBusinessDocuments({ businessId, sourcePath, targetPath })
 }
 
 async function createDocument(documentData) {
-  if (!documentData?.doc_type) {
-    throw new Error('Document type is required');
-  }
   if (!documentData?.business_id) {
     throw new Error('business_id is required to create a document');
   }
@@ -765,6 +762,23 @@ async function createDocument(documentData) {
   if (!business) {
     throw new Error('Business not found for document creation');
   }
+
+  const definitionKeyInput = documentData.document_definition_key || documentData.definition_key || null;
+  const definitionIdInput = documentData.document_definition_id != null ? Number(documentData.document_definition_id) : null;
+  let definitionRecord = null;
+  if ((definitionIdInput != null && Number.isInteger(definitionIdInput)) || (typeof definitionKeyInput === 'string' && definitionKeyInput.trim())) {
+    try {
+      definitionRecord = await db.getDocumentDefinition(documentData.business_id, definitionIdInput != null ? definitionIdInput : definitionKeyInput);
+    } catch (err) {
+      console.error('Failed to load document definition', err);
+    }
+  }
+
+  const resolvedDocType = (documentData?.doc_type || definitionRecord?.doc_type || '').toLowerCase();
+  if (!resolvedDocType) {
+    throw new Error('Document type is required');
+  }
+  documentData.doc_type = resolvedDocType;
 
   let event = null;
   let client = null;
@@ -802,9 +816,11 @@ async function createDocument(documentData) {
   const balanceAmountOverride = documentData.balance_amount;
   const balanceDateOverride = documentData.balance_due_date;
   const balanceRemindOverride = documentData.balance_reminder_date;
-  const invoiceVariant = documentData.invoice_variant || null;
-  const fileNameSuffix = documentData.file_name_suffix || '';
+  const invoiceVariant = documentData.invoice_variant || definitionRecord?.invoice_variant || null;
+  const fileNameSuffix = documentData.file_name_suffix || definitionRecord?.file_suffix || '';
   const footerText = documentData.footer || business?.document_footer || '';
+  const definitionKey = definitionRecord?.key || (typeof definitionKeyInput === 'string' ? definitionKeyInput : null);
+  const templateOverride = documentData.template_path || definitionRecord?.template_path || null;
 
   delete insertPayload.line_items;
   delete insertPayload.client_override;
@@ -823,6 +839,10 @@ async function createDocument(documentData) {
   delete insertPayload.invoice_variant;
   delete insertPayload.file_name_suffix;
   delete insertPayload.footer;
+  delete insertPayload.definition_key;
+  delete insertPayload.document_definition_key;
+  delete insertPayload.document_definition_id;
+  delete insertPayload.template_path;
 
   const resolvedClientName = (clientOverride?.name || client?.name || documentData.client_name || '').trim();
   const resolvedEventName = (eventOverride?.event_name || eventOverride?.type || event?.event_name || documentData.event_name || '').trim();
@@ -833,6 +853,8 @@ async function createDocument(documentData) {
   insertPayload.event_date = resolvedEventDate || null;
   insertPayload.document_date = documentDate;
   insertPayload.jobsheet_id = normalizedJobsheetId;
+  insertPayload.definition_key = definitionKey || null;
+  insertPayload.invoice_variant = invoiceVariant || null;
 
   const calculatedTotal = lineItems.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
   if ((insertPayload.total_amount == null || insertPayload.total_amount === '') && calculatedTotal) {
@@ -848,7 +870,7 @@ async function createDocument(documentData) {
 
   const insertResult = await db.addDocument(insertPayload);
 
-  let templatePath = pickTemplatePath(business, documentData.doc_type);
+  let templatePath = templateOverride || pickTemplatePath(business, documentData.doc_type);
   if (!templatePath && business?.business_name === 'AhMen A Cappella Ltd') {
     templatePath = path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx');
   }
@@ -886,6 +908,7 @@ async function createDocument(documentData) {
     client: clientOverride ? { ...client, ...clientOverride } : client,
     event: eventOverride ? { ...event, ...eventOverride } : event,
     docType: documentData.doc_type,
+    definitionKey,
     number: insertResult.number,
     documentDate,
     dueDate: insertPayload.due_date,

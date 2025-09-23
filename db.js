@@ -32,6 +32,69 @@ const DEFAULT_BUSINESSES = [
   }
 ];
 
+const DEFAULT_DOCUMENT_DEFINITIONS = [
+  {
+    key: 'workbook',
+    doc_type: 'workbook',
+    label: 'Excel Workbook',
+    description: 'Excel workbook populated with all jobsheet details.',
+    file_suffix: '',
+    invoice_variant: null,
+    requires_total: 1,
+    is_primary: 1,
+    sort_order: 0,
+    locked: 1
+  },
+  {
+    key: 'quote',
+    doc_type: 'quote',
+    label: 'Quote',
+    description: 'Quote document with pricing totals.',
+    file_suffix: ' - Quote',
+    invoice_variant: null,
+    requires_total: 1,
+    is_primary: 0,
+    sort_order: 1,
+    locked: 1
+  },
+  {
+    key: 'contract',
+    doc_type: 'contract',
+    label: 'Contract',
+    description: 'Contract ready for signatures.',
+    file_suffix: ' - Contract',
+    invoice_variant: null,
+    requires_total: 0,
+    is_primary: 0,
+    sort_order: 2,
+    locked: 1
+  },
+  {
+    key: 'invoice_deposit',
+    doc_type: 'invoice',
+    label: 'Invoice – Deposit',
+    description: 'Deposit invoice for the booking.',
+    file_suffix: ' - Deposit',
+    invoice_variant: 'deposit',
+    requires_total: 1,
+    is_primary: 0,
+    sort_order: 3,
+    locked: 1
+  },
+  {
+    key: 'invoice_balance',
+    doc_type: 'invoice',
+    label: 'Invoice – Balance',
+    description: 'Balance invoice for the booking.',
+    file_suffix: ' - Balance',
+    invoice_variant: 'balance',
+    requires_total: 1,
+    is_primary: 0,
+    sort_order: 4,
+    locked: 1
+  }
+];
+
 const BUSINESS_SETTINGS_MUTABLE_FIELDS = new Set([
   'save_path',
   'invoice_template_path',
@@ -234,6 +297,30 @@ function initializeDatabase() {
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
+      definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      business_id INTEGER NOT NULL,
+      key TEXT NOT NULL,
+      doc_type TEXT NOT NULL,
+      label TEXT NOT NULL,
+      description TEXT,
+      file_suffix TEXT,
+      invoice_variant TEXT,
+      template_path TEXT,
+      requires_total INTEGER DEFAULT 0,
+      is_primary INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 1,
+      is_locked INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (business_id) REFERENCES business_settings(id),
+      UNIQUE (business_id, key)
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_document_definitions_business_sort
+      ON document_definitions (business_id, sort_order)`);
+
     db.run(`CREATE TABLE IF NOT EXISTS event_musicians (
       musician_id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id INTEGER NOT NULL,
@@ -341,6 +428,8 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN document_date TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN jobsheet_id INTEGER', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN definition_key TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN invoice_variant TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
 
     db.run('ALTER TABLE business_settings ADD COLUMN invoice_template_path TEXT', logDuplicateColumn);
@@ -369,6 +458,7 @@ function initializeDatabase() {
     seedBusinesses();
     syncLegacyBusinessesTable();
     seedMergeFieldDefaults();
+    seedDocumentDefinitions();
   });
 }
 
@@ -479,6 +569,134 @@ function seedMergeFieldDefaults() {
   });
 }
 
+function resolveDefinitionTemplatePath(business, definitionKey) {
+  if (!business) return null;
+  switch (definitionKey) {
+    case 'workbook':
+      return business.gig_sheet_template_path || business.invoice_template_path || null;
+    case 'quote':
+      return business.quote_template_path || null;
+    case 'contract':
+      return business.contract_template_path || null;
+    case 'invoice_deposit':
+    case 'invoice_balance':
+      return business.invoice_template_path || null;
+    default:
+      return null;
+  }
+}
+
+function seedDocumentDefinitions() {
+  db.all(`SELECT id, invoice_template_path, quote_template_path, contract_template_path, gig_sheet_template_path FROM business_settings`, (err, businesses) => {
+    if (err) {
+      console.error('Failed to load businesses for document definition seeding', err);
+      return;
+    }
+
+    businesses.forEach(business => {
+      if (!business || business.id == null) return;
+      const businessId = business.id;
+
+      db.all(
+        `SELECT key FROM document_definitions WHERE business_id = ?`,
+        [businessId],
+        (defErr, rows) => {
+          if (defErr) {
+            console.error('Failed to read document definitions', defErr);
+            return;
+          }
+
+          const existingKeys = new Set(Array.isArray(rows) ? rows.map(row => row.key) : []);
+
+          DEFAULT_DOCUMENT_DEFINITIONS.forEach(definition => {
+            const templatePath = resolveDefinitionTemplatePath(business, definition.key);
+
+            db.run(
+              `INSERT OR IGNORE INTO document_definitions (
+                business_id,
+                key,
+                doc_type,
+                label,
+                description,
+                file_suffix,
+                invoice_variant,
+                template_path,
+                requires_total,
+                is_primary,
+                is_active,
+                is_locked,
+                sort_order,
+                created_at,
+                updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, datetime('now'), datetime('now'))`,
+              [
+                businessId,
+                definition.key,
+                definition.doc_type,
+                definition.label,
+                definition.description || null,
+                definition.file_suffix || null,
+                definition.invoice_variant || null,
+                templatePath || null,
+                definition.requires_total ? 1 : 0,
+                definition.is_primary ? 1 : 0,
+                definition.locked ? 1 : 0,
+                definition.sort_order
+              ],
+              insertErr => {
+                if (insertErr) {
+                  console.error('Failed to seed document definition', definition.key, insertErr);
+                }
+              }
+            );
+
+            const updateSql = `UPDATE document_definitions
+              SET doc_type = ?,
+                  label = ?,
+                  description = ?,
+                  file_suffix = ?,
+                  invoice_variant = ?,
+                  requires_total = ?,
+                  is_primary = ?,
+                  is_locked = CASE WHEN is_locked = 1 THEN 1 ELSE ? END,
+                  sort_order = CASE WHEN is_locked = 1 THEN ? ELSE sort_order END,
+                  template_path = CASE WHEN ? IS NOT NULL AND (template_path IS NULL OR template_path = '') THEN ? ELSE template_path END
+              WHERE business_id = ? AND key = ?`;
+
+            db.run(
+              updateSql,
+              [
+                definition.doc_type,
+                definition.label,
+                definition.description || null,
+                definition.file_suffix || null,
+                definition.invoice_variant || null,
+                definition.requires_total ? 1 : 0,
+                definition.is_primary ? 1 : 0,
+                definition.locked ? 1 : 0,
+                definition.sort_order,
+                templatePath || null,
+                templatePath || null,
+                businessId,
+                definition.key
+              ],
+              updateErr => {
+                if (updateErr) {
+                  console.error('Failed to update seeded document definition', definition.key, updateErr);
+                }
+              }
+            );
+
+            if (!existingKeys.has(definition.key)) {
+              existingKeys.add(definition.key);
+            }
+          });
+        }
+      );
+    });
+  });
+}
+
 function syncLegacyBusinessesTable() {
   DEFAULT_BUSINESSES.forEach(business => {
     db.run(
@@ -490,6 +708,284 @@ function syncLegacyBusinessesTable() {
       `UPDATE businesses SET name = ? WHERE business_id = ?`,
       [business.business_name, business.id]
     );
+  });
+}
+
+function mapDocumentDefinitionRow(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    requires_total: row.requires_total ? 1 : 0,
+    is_primary: row.is_primary ? 1 : 0,
+    is_active: row.is_active ? 1 : 0,
+    is_locked: row.is_locked ? 1 : 0,
+    sort_order: Number.isFinite(row.sort_order) ? Number(row.sort_order) : 0
+  };
+}
+
+function getDocumentDefinitionsForBusiness(businessId, options = {}) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    const includeInactive = options.includeInactive === true;
+    const whereParts = ['business_id = ?'];
+    if (!includeInactive) {
+      whereParts.push('is_active = 1');
+    }
+
+    db.all(
+      `SELECT * FROM document_definitions WHERE ${whereParts.join(' AND ')} ORDER BY sort_order ASC, label COLLATE NOCASE ASC`,
+      [id],
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve((rows || []).map(mapDocumentDefinitionRow));
+      }
+    );
+  });
+}
+
+function getDocumentDefinitionRecord(businessId, identifier) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    if (identifier == null || identifier === '') {
+      resolve(null);
+      return;
+    }
+
+    const query = typeof identifier === 'number'
+      ? 'SELECT * FROM document_definitions WHERE business_id = ? AND definition_id = ?'
+      : 'SELECT * FROM document_definitions WHERE business_id = ? AND key = ?';
+
+    db.get(query, [id, identifier], (err, row) => {
+      if (err) reject(err);
+      else resolve(mapDocumentDefinitionRow(row));
+    });
+  });
+}
+
+function determineNextDefinitionSortOrder(businessId) {
+  return new Promise((resolve, reject) => {
+    db.get(
+      'SELECT COALESCE(MAX(sort_order), -1) AS max_order FROM document_definitions WHERE business_id = ?',
+      [businessId],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve((Number(row?.max_order) || 0) + 1);
+      }
+    );
+  });
+}
+
+function sanitizeDefinitionPayload(definition) {
+  if (!definition || typeof definition !== 'object') return {};
+  return {
+    key: (definition.key || '').trim(),
+    doc_type: (definition.doc_type || '').trim(),
+    label: (definition.label || '').trim(),
+    description: definition.description != null && definition.description !== '' ? String(definition.description) : null,
+    file_suffix: definition.file_suffix != null && definition.file_suffix !== '' ? String(definition.file_suffix) : null,
+    invoice_variant: definition.invoice_variant != null && definition.invoice_variant !== '' ? String(definition.invoice_variant) : null,
+    template_path: definition.template_path != null && definition.template_path !== '' ? String(definition.template_path) : null,
+    requires_total: definition.requires_total ? 1 : 0,
+    is_primary: definition.is_primary ? 1 : 0,
+    is_active: definition.is_active === 0 ? 0 : 1,
+    is_locked: definition.is_locked ? 1 : 0,
+    sort_order: Number.isFinite(definition.sort_order) ? Number(definition.sort_order) : null
+  };
+}
+
+function saveDocumentDefinition(businessId, definition) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    const payload = sanitizeDefinitionPayload(definition);
+    if (!payload.key) {
+      reject(new Error('Definition key is required'));
+      return;
+    }
+    if (!payload.doc_type) {
+      reject(new Error('Document type is required')); return;
+    }
+    if (!payload.label) {
+      reject(new Error('Definition label is required'));
+      return;
+    }
+
+    const proceed = (sortOrder) => {
+      const now = new Date().toISOString();
+      const orderValue = sortOrder != null ? sortOrder : 0;
+
+      db.run(
+        `INSERT INTO document_definitions (
+           business_id,
+           key,
+           doc_type,
+           label,
+           description,
+           file_suffix,
+           invoice_variant,
+           template_path,
+           requires_total,
+           is_primary,
+           is_active,
+           is_locked,
+           sort_order,
+           created_at,
+           updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(business_id, key) DO UPDATE SET
+           doc_type = excluded.doc_type,
+           label = excluded.label,
+           description = excluded.description,
+           file_suffix = excluded.file_suffix,
+           invoice_variant = excluded.invoice_variant,
+           template_path = excluded.template_path,
+           requires_total = excluded.requires_total,
+           is_primary = excluded.is_primary,
+           is_active = excluded.is_active,
+           sort_order = excluded.sort_order,
+           updated_at = excluded.updated_at,
+           is_locked = CASE WHEN document_definitions.is_locked = 1 THEN 1 ELSE excluded.is_locked END`,
+        [
+          id,
+          payload.key,
+          payload.doc_type,
+          payload.label,
+          payload.description,
+          payload.file_suffix,
+          payload.invoice_variant,
+          payload.template_path,
+          payload.requires_total,
+          payload.is_primary,
+          payload.is_active,
+          payload.is_locked,
+          orderValue,
+          now,
+          now
+        ],
+        function (err) {
+          if (err) {
+            reject(err);
+          } else {
+            resolve({ key: payload.key, changes: this.changes });
+          }
+        }
+      );
+    };
+
+    if (payload.sort_order == null) {
+      determineNextDefinitionSortOrder(id)
+        .then(order => proceed(order))
+        .catch(reject);
+    } else {
+      proceed(payload.sort_order);
+    }
+  });
+}
+
+function deleteDocumentDefinition(businessId, identifier) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    if (identifier == null || identifier === '') {
+      reject(new Error('Definition identifier is required'));
+      return;
+    }
+
+    const query = typeof identifier === 'number'
+      ? 'SELECT definition_id, is_locked FROM document_definitions WHERE business_id = ? AND definition_id = ?'
+      : 'SELECT definition_id, is_locked FROM document_definitions WHERE business_id = ? AND key = ?';
+
+    db.get(query, [id, identifier], (err, row) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      if (!row) {
+        resolve({ removed: 0 });
+        return;
+      }
+      if (row.is_locked) {
+        reject(new Error('Locked document definitions cannot be deleted'));
+        return;
+      }
+
+      db.run(
+        "UPDATE document_definitions SET is_active = 0, updated_at = datetime('now') WHERE definition_id = ?",
+        [row.definition_id],
+        function (updateErr) {
+          if (updateErr) reject(updateErr);
+          else resolve({ removed: this.changes });
+        }
+      );
+    });
+  });
+}
+
+function reorderDocumentDefinitions(businessId, orderedKeys) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+    if (!Array.isArray(orderedKeys)) {
+      resolve({ changes: 0 });
+      return;
+    }
+
+    const stmt = db.prepare("UPDATE document_definitions SET sort_order = ?, updated_at = datetime('now') WHERE business_id = ? AND key = ?");
+    orderedKeys.forEach((key, index) => {
+      if (!key) return;
+      stmt.run(index, id, key);
+    });
+    stmt.finalize(err => {
+      if (err) reject(err);
+      else resolve({ changes: orderedKeys.length });
+    });
+  });
+}
+
+function applyTemplatePathUpdates(businessId, updates = {}) {
+  const id = Number(businessId);
+  if (!Number.isInteger(id)) return;
+
+  const templateMap = {
+    invoice_template_path: ['invoice_deposit', 'invoice_balance'],
+    quote_template_path: ['quote'],
+    contract_template_path: ['contract'],
+    gig_sheet_template_path: ['workbook']
+  };
+
+  Object.entries(templateMap).forEach(([field, keys]) => {
+    if (!(field in updates)) return;
+    const value = updates[field] == null || updates[field] === '' ? null : updates[field];
+    keys.forEach(key => {
+      db.run(
+        "UPDATE document_definitions SET template_path = ?, updated_at = datetime('now') WHERE business_id = ? AND key = ?",
+        [value, id, key],
+        err => {
+          if (err) console.error('Failed to sync template path for definition', key, err);
+        }
+      );
+    });
   });
 }
 
@@ -741,6 +1237,7 @@ function updateBusinessSettingsRecord(businessId, updates = {}) {
             if (selectErr) {
               reject(selectErr);
             } else {
+              applyTemplatePathUpdates(id, updates);
               resolve({ changes, record: row || null });
             }
           }
@@ -1344,6 +1841,10 @@ module.exports = {
       db.all(
         `SELECT
            documents.*,
+           def.label AS definition_label,
+           def.file_suffix AS definition_file_suffix,
+           def.invoice_variant AS definition_invoice_variant,
+           def.doc_type AS definition_doc_type,
            COALESCE(documents.client_name, clients.name) AS display_client_name,
            COALESCE(documents.event_name, events.event_name) AS display_event_name,
            COALESCE(documents.event_date, events.event_date) AS display_event_date,
@@ -1352,6 +1853,7 @@ module.exports = {
            clients.name AS joined_client_name,
            business_settings.business_name
          FROM documents
+         LEFT JOIN document_definitions def ON def.business_id = documents.business_id AND def.key = documents.definition_key
          LEFT JOIN events ON documents.event_id = events.event_id
          LEFT JOIN clients ON events.client_id = clients.client_id
          LEFT JOIN business_settings ON documents.business_id = business_settings.id
@@ -1365,6 +1867,12 @@ module.exports = {
       );
     });
   },
+
+  getDocumentDefinitions: (businessId, options) => getDocumentDefinitionsForBusiness(businessId, options),
+  getDocumentDefinition: (businessId, identifier) => getDocumentDefinitionRecord(businessId, identifier),
+  saveDocumentDefinition: (businessId, definition) => saveDocumentDefinition(businessId, definition),
+  deleteDocumentDefinition: (businessId, identifier) => deleteDocumentDefinition(businessId, identifier),
+  reorderDocumentDefinitions: (businessId, orderedKeys) => reorderDocumentDefinitions(businessId, orderedKeys),
 
   addDocument: (documentData) => {
     return new Promise((resolve, reject) => {
@@ -1388,6 +1896,8 @@ module.exports = {
       const eventName = documentData?.event_name || null;
       const eventDate = documentData?.event_date || null;
       const documentDate = documentData?.document_date || null;
+      const definitionKey = documentData?.definition_key || documentData?.document_definition_key || null;
+      const invoiceVariant = documentData?.invoice_variant || null;
 
       const requestedNumber = documentData?.number ? Number(documentData.number) : null;
       const counterColumn = getCounterColumn(docType);
@@ -1408,8 +1918,10 @@ module.exports = {
              client_name,
              event_name,
              event_date,
-             document_date
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             document_date,
+             definition_key,
+             invoice_variant
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ,
           [
             eventId,
@@ -1425,7 +1937,9 @@ module.exports = {
             clientName,
             eventName,
             eventDate,
-            documentDate
+            documentDate,
+            definitionKey,
+            invoiceVariant
           ],
           function (err) {
             if (err) {

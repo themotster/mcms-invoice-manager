@@ -48,6 +48,13 @@ const DOCUMENT_TYPE_LABELS = {
   workbook: 'Excel Workbook'
 };
 
+const DOCUMENT_TYPE_OPTIONS = [
+  { value: 'invoice', label: DOCUMENT_TYPE_LABELS.invoice },
+  { value: 'quote', label: DOCUMENT_TYPE_LABELS.quote },
+  { value: 'contract', label: DOCUMENT_TYPE_LABELS.contract },
+  { value: 'workbook', label: DOCUMENT_TYPE_LABELS.workbook }
+];
+
 const DOCUMENT_GROUP_OPTIONS = [
   { value: 'none', label: 'All Documents' },
   { value: 'doc_type', label: 'Document Type' },
@@ -79,11 +86,58 @@ function getDocumentIcon(docType) {
   }
 }
 
+const WORKSPACE_ICON_MAP = {
+  jobsheets: '🗂️',
+  documents: '📁',
+  settings: '⚙️'
+};
+
 const WORKSPACE_SECTIONS = [
-  { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses' },
-  { key: 'documents', label: 'Documents', description: 'Generated outputs and files' },
-  { key: 'settings', label: 'Settings', description: 'Folders, templates, and placeholders' }
+  { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
+  { key: 'documents', label: 'Documents', description: 'Generated outputs and files', icon: WORKSPACE_ICON_MAP.documents },
+  { key: 'settings', label: 'Settings', description: 'Folders, templates, and placeholders', icon: WORKSPACE_ICON_MAP.settings }
 ];
+
+const DEFAULT_TEMPLATE_CONFIG = [
+  {
+    field: 'invoice_template_path',
+    label: 'Invoice template',
+    description: 'Used for invoices, deposits, and balances.',
+    docType: 'invoice',
+    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
+    supportsNormalize: true
+  },
+  {
+    field: 'quote_template_path',
+    label: 'Quote template',
+    description: 'Used when generating quotes from jobsheets.',
+    docType: 'quote',
+    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
+    supportsNormalize: true
+  },
+  {
+    field: 'contract_template_path',
+    label: 'Contract template',
+    description: 'Used for contract documents requiring signatures.',
+    docType: 'contract',
+    filters: [{ name: 'Word documents', extensions: ['docx'] }]
+  },
+  {
+    field: 'gig_sheet_template_path',
+    label: 'Gig sheet template',
+    description: 'Used for the Excel workbook export.',
+    docType: 'workbook',
+    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
+    supportsNormalize: true
+  }
+];
+
+const TEMPLATE_FIELD_BY_DOC_TYPE = {
+  invoice: 'invoice_template_path',
+  quote: 'quote_template_path',
+  contract: 'contract_template_path',
+  workbook: 'gig_sheet_template_path'
+};
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
 const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
@@ -94,11 +148,32 @@ const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => 
   return acc;
 }, {});
 
-const WORKSPACE_ICON_MAP = {
-  jobsheets: '🗂️',
-  documents: '📁',
-  settings: '⚙️'
-};
+function slugifyDefinitionKey(value) {
+  return (value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 60);
+}
+
+function createDefinitionDraft(overrides = {}) {
+  return {
+    key: '',
+    label: '',
+    doc_type: 'invoice',
+    description: '',
+    file_suffix: '',
+    invoice_variant: '',
+    template_path: '',
+    requires_total: 1,
+    is_primary: 0,
+    is_active: 1,
+    is_locked: 0,
+    sort_order: null,
+    ...overrides
+  };
+}
 
 const STATUS_STYLES = {
   enquiry: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
@@ -584,7 +659,8 @@ function buildJobsheetGroups(mergeFields = []) {
         title: config.title,
         description: config.description,
         defaultOpen: Boolean(config.defaultOpen),
-        fields
+        fields,
+        icon: GROUP_ICON_MAP[groupKey] || '📄'
       });
     }
   });
@@ -693,11 +769,11 @@ function matchesDocumentToJobsheet(doc, jobsheetState) {
 }
 
 function getGroupIcon(groupKey) {
-  return GROUP_ICON_MAP[groupKey] || '•';
+  return GROUP_ICON_MAP[groupKey] || '📄';
 }
 
 function getWorkspaceIcon(sectionKey) {
-  return WORKSPACE_ICON_MAP[sectionKey] || '•';
+  return WORKSPACE_ICON_MAP[sectionKey] || '🗂️';
 }
 
 function fuzzyScore(query, text) {
@@ -1372,7 +1448,7 @@ function InlineJobsheetEditorPanel({
 
   return (
     <div className="mx-auto max-w-7xl">
-      <div className="rounded-lg border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <div className="rounded-lg border border-slate-200 bg-slate-100 shadow-sm overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6 lg:py-4">
           <div>
             <h3 className="text-base font-semibold text-slate-700">{headerTitle}</h3>
@@ -3363,6 +3439,7 @@ function JobsheetEditor({
           <div className="space-y-2" role="tablist" aria-orientation="vertical">
             {resolvedGroups.map(group => {
               const isActive = activeGroup?.key === group.key;
+              const icon = group.icon ?? getGroupIcon(group.key);
               return (
                 <button
                   key={group.key}
@@ -3370,12 +3447,17 @@ function JobsheetEditor({
                   role="tab"
                   aria-selected={isActive}
                   onClick={() => setGroupKey(group.key)}
-                  className={`w-full text-left rounded-lg border px-4 py-3 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
+                  className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
                 >
-                  <div className="text-sm font-semibold">{group.title}</div>
-                  {group.description ? (
-                    <p className="mt-1 text-xs text-slate-500">{group.description}</p>
-                  ) : null}
+                  <span className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-lg transition ${isActive ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200 group-hover:text-slate-700'}`}>
+                    {icon}
+                  </span>
+                  <span className="flex-1">
+                    <span className="block text-sm font-semibold">{group.title}</span>
+                    {group.description ? (
+                      <span className="mt-1 block text-xs text-slate-500">{group.description}</span>
+                    ) : null}
+                  </span>
                 </button>
               );
             })}
@@ -3658,8 +3740,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [inlineEditorTargetId, setInlineEditorTargetId] = useState(null);
   const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
-  const [openingTemplate, setOpeningTemplate] = useState(false);
-  const [normalizingTemplate, setNormalizingTemplate] = useState(false);
+  const [templateUpdatingKey, setTemplateUpdatingKey] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState('overview');
   const [workspaceSection, setWorkspaceSection] = useState(() => {
     if (typeof window === 'undefined') return 'jobsheets';
@@ -3700,6 +3781,20 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const columnsMenuContentRef = useRef(null);
   const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
   const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
+  const [documentDefinitions, setDocumentDefinitions] = useState([]);
+  const [documentDefinitionsLoading, setDocumentDefinitionsLoading] = useState(false);
+  const [documentDefinitionsError, setDocumentDefinitionsError] = useState('');
+  const [definitionSavingKey, setDefinitionSavingKey] = useState(null);
+  const [definitionModalOpen, setDefinitionModalOpen] = useState(false);
+  const [definitionDraft, setDefinitionDraft] = useState(() => createDefinitionDraft());
+  const [definitionModalError, setDefinitionModalError] = useState('');
+  const [definitionKeyEdited, setDefinitionKeyEdited] = useState(false);
+  const [definitionSaving, setDefinitionSaving] = useState(false);
+  const definitionFallbackTemplate = useMemo(() => {
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.docType === definitionDraft.doc_type);
+    if (!config) return '';
+    return business[config.field] || '';
+  }, [business, definitionDraft.doc_type]);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -3761,6 +3856,24 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business.id]);
 
+  const loadDocumentDefinitions = useCallback(async () => {
+    setDocumentDefinitionsLoading(true);
+    setDocumentDefinitionsError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.getDocumentDefinitions !== 'function') {
+        throw new Error('Unable to load document definitions: API unavailable');
+      }
+      const data = await api.getDocumentDefinitions(business.id, { includeInactive: true });
+      setDocumentDefinitions(Array.isArray(data) ? data : []);
+    } catch (err) {
+      console.error('Failed to load document definitions', err);
+      setDocumentDefinitionsError(err?.message || 'Unable to load document definitions');
+    } finally {
+      setDocumentDefinitionsLoading(false);
+    }
+  }, [business.id]);
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
@@ -3795,6 +3908,11 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       console.warn('Unable to persist document columns preference', err);
     }
   }, [documentColumnsState]);
+
+  useEffect(() => {
+    if (workspaceSection !== 'settings') return;
+    loadDocumentDefinitions();
+  }, [workspaceSection, loadDocumentDefinitions]);
 
   useEffect(() => {
     if (!columnsMenuOpen) return undefined;
@@ -3958,57 +4076,357 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business, onBusinessUpdate]);
 
-  const handleOpenTemplate = useCallback(async () => {
-    setWorkspaceSection('settings');
-    setSettingsPanel('overview');
+  const handleSelectDefaultTemplate = useCallback(async (field) => {
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
     const api = window.api;
-    if (!api || typeof api.openTemplate !== 'function') {
-      setError('Unable to open template: API unavailable');
+    if (!config || !api || typeof api.chooseFile !== 'function' || typeof api.updateBusinessSettings !== 'function') {
+      setError('Unable to update template: API unavailable');
       return;
     }
 
     try {
-      setOpeningTemplate(true);
+      setTemplateUpdatingKey(field);
       setError('');
-      const response = await api.openTemplate({ templatePath: business.invoice_template_path || undefined });
-      if (!response || response.ok === false) {
-        throw new Error(response?.message || 'Unable to open template');
-      }
-      setMessage('Template opened. Save changes, then normalize.');
-      setTimeout(() => setMessage(''), 2000);
-    } catch (err) {
-      console.error('Failed to open template', err);
-      setError(err?.message || 'Unable to open template');
-    } finally {
-      setOpeningTemplate(false);
-    }
-  }, [business.invoice_template_path, setWorkspaceSection, setSettingsPanel]);
+      const selectedPath = await api.chooseFile({
+        title: `Choose ${config.label.toLowerCase()}`,
+        defaultPath: business[field] || undefined,
+        filters: config.filters
+      });
+      if (!selectedPath) return;
 
-  const handleNormalizeTemplate = useCallback(async () => {
-    setWorkspaceSection('settings');
-    setSettingsPanel('overview');
+      const result = await api.updateBusinessSettings(business.id, { [field]: selectedPath });
+      const updatedBusiness = result?.record || { ...business, [field]: selectedPath };
+      onBusinessUpdate?.(updatedBusiness);
+      setMessage(`${config.label} updated`);
+      setTimeout(() => setMessage(''), 1500);
+      await loadDocumentDefinitions();
+    } catch (err) {
+      console.error('Failed to update template path', err);
+      setError(err?.message || 'Unable to update template path');
+    } finally {
+      setTemplateUpdatingKey(null);
+    }
+  }, [business, loadDocumentDefinitions, onBusinessUpdate]);
+
+  const handleClearDefaultTemplate = useCallback(async (field) => {
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
     const api = window.api;
-    if (!api || typeof api.normalizeTemplate !== 'function') {
+    if (!config || !api || typeof api.updateBusinessSettings !== 'function') {
+      setError('Unable to update template: API unavailable');
+      return;
+    }
+
+    try {
+      setTemplateUpdatingKey(field);
+      setError('');
+      const result = await api.updateBusinessSettings(business.id, { [field]: null });
+      const updatedBusiness = result?.record || { ...business, [field]: null };
+      onBusinessUpdate?.(updatedBusiness);
+      setMessage(`${config.label} cleared`);
+      setTimeout(() => setMessage(''), 1500);
+      await loadDocumentDefinitions();
+    } catch (err) {
+      console.error('Failed to clear template path', err);
+      setError(err?.message || 'Unable to clear template path');
+    } finally {
+      setTemplateUpdatingKey(null);
+    }
+  }, [business, loadDocumentDefinitions, onBusinessUpdate]);
+
+  const handleNormalizeDefaultTemplate = useCallback(async (field) => {
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
+    const api = window.api;
+    if (!config || !config.supportsNormalize || !api || typeof api.normalizeTemplate !== 'function') {
       setError('Unable to normalize template: API unavailable');
       return;
     }
 
     try {
-      setNormalizingTemplate(true);
+      setTemplateUpdatingKey(field);
       setError('');
-      const response = await api.normalizeTemplate({ templatePath: business.invoice_template_path || undefined });
+      const response = await api.normalizeTemplate({ templatePath: business[field] || undefined });
       if (!response || response.ok === false) {
         throw new Error(response?.message || 'Unable to normalize template');
       }
-      setMessage('Template normalized');
+      setMessage(`${config.label} normalized`);
       setTimeout(() => setMessage(''), 1500);
     } catch (err) {
       console.error('Failed to normalize template', err);
       setError(err?.message || 'Unable to normalize template');
     } finally {
-      setNormalizingTemplate(false);
+      setTemplateUpdatingKey(null);
     }
-  }, [business.invoice_template_path, setWorkspaceSection, setSettingsPanel]);
+  }, [business]);
+
+  const handleOpenDefaultTemplate = useCallback(async (field) => {
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
+    const api = window.api;
+    if (!config || !api || typeof api.openPath !== 'function') {
+      setError('Unable to open template: API unavailable');
+      return;
+    }
+
+    const targetPath = business[field];
+    if (!targetPath) {
+      setError(`No template configured for ${config.label.toLowerCase()}`);
+      return;
+    }
+
+    try {
+      setError('');
+      const response = await api.openPath(targetPath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open template');
+      }
+    } catch (err) {
+      console.error('Failed to open template', err);
+      setError(err?.message || 'Unable to open template');
+    }
+  }, [business]);
+
+  const handleSelectDefinitionTemplate = useCallback(async (definition) => {
+    if (!definition) return;
+    const api = window.api;
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.docType === definition.doc_type);
+    if (!api || typeof api.chooseFile !== 'function' || typeof api.saveDocumentDefinition !== 'function') {
+      setDocumentDefinitionsError('Unable to update definition: API unavailable');
+      return;
+    }
+
+    try {
+      setDefinitionSavingKey(definition.key);
+      setDocumentDefinitionsError('');
+      const defaultPath = definition.template_path
+        || (config ? business[config.field] : null)
+        || undefined;
+      const selectedPath = await api.chooseFile({
+        title: `Choose template for ${definition.label}`,
+        defaultPath,
+        filters: config?.filters
+      });
+      if (!selectedPath) return;
+
+      await api.saveDocumentDefinition(business.id, { ...definition, template_path: selectedPath });
+      setDocumentDefinitions(prev => prev.map(item => (
+        item.key === definition.key ? { ...item, template_path: selectedPath } : item
+      )));
+      setMessage(`${definition.label} template updated`);
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to update document definition template', err);
+      setDocumentDefinitionsError(err?.message || 'Unable to update definition template');
+    } finally {
+      setDefinitionSavingKey(null);
+    }
+  }, [business]);
+
+  const handleClearDefinitionTemplate = useCallback(async (definition) => {
+    if (!definition) return;
+    const api = window.api;
+    if (!api || typeof api.saveDocumentDefinition !== 'function') {
+      setDocumentDefinitionsError('Unable to update definition: API unavailable');
+      return;
+    }
+
+    try {
+      setDefinitionSavingKey(definition.key);
+      setDocumentDefinitionsError('');
+      await api.saveDocumentDefinition(business.id, { ...definition, template_path: null });
+      setDocumentDefinitions(prev => prev.map(item => (
+        item.key === definition.key ? { ...item, template_path: null } : item
+      )));
+      setMessage(`${definition.label} template cleared`);
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to clear document definition template', err);
+      setDocumentDefinitionsError(err?.message || 'Unable to clear definition template');
+    } finally {
+      setDefinitionSavingKey(null);
+    }
+  }, [business]);
+
+  const handleOpenDefinitionTemplate = useCallback(async (definition) => {
+    if (!definition) return;
+    const api = window.api;
+    if (!api || typeof api.openPath !== 'function') {
+      setDocumentDefinitionsError('Unable to open template: API unavailable');
+      return;
+    }
+
+    const templatePath = definition.template_path
+      || (TEMPLATE_FIELD_BY_DOC_TYPE[definition.doc_type]
+        ? business[TEMPLATE_FIELD_BY_DOC_TYPE[definition.doc_type]]
+        : null);
+    if (!templatePath) {
+      setDocumentDefinitionsError('No template configured for this document');
+      return;
+    }
+
+    try {
+      setDocumentDefinitionsError('');
+      const response = await api.openPath(templatePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open template');
+      }
+    } catch (err) {
+      console.error('Failed to open definition template', err);
+      setDocumentDefinitionsError(err?.message || 'Unable to open definition template');
+    }
+  }, [business]);
+
+  const handleShowNewDefinitionModal = useCallback(() => {
+    setDefinitionDraft(createDefinitionDraft());
+    setDefinitionModalError('');
+    setDefinitionKeyEdited(false);
+    setDefinitionModalOpen(true);
+  }, []);
+
+  const handleCloseDefinitionModal = useCallback(() => {
+    setDefinitionModalOpen(false);
+    setDefinitionSaving(false);
+    setDefinitionModalError('');
+    setDefinitionDraft(createDefinitionDraft());
+    setDefinitionKeyEdited(false);
+  }, []);
+
+  const handleDefinitionDraftChange = useCallback((field, rawValue) => {
+    setDefinitionDraft(prev => {
+      const next = { ...prev };
+      const value = rawValue;
+
+      switch (field) {
+        case 'label':
+          next.label = value;
+          if (!definitionKeyEdited) {
+            next.key = slugifyDefinitionKey(value);
+          }
+          break;
+        case 'key':
+          next.key = slugifyDefinitionKey(value);
+          break;
+        case 'doc_type':
+          next.doc_type = value;
+          if (value !== 'invoice') {
+            next.invoice_variant = '';
+          }
+          break;
+        case 'invoice_variant':
+          next.invoice_variant = value;
+          break;
+        case 'description':
+          next.description = value;
+          break;
+        case 'file_suffix':
+          next.file_suffix = value;
+          break;
+        case 'template_path':
+          next.template_path = value || '';
+          break;
+        case 'requires_total':
+          next.requires_total = value ? 1 : 0;
+          break;
+        case 'is_primary':
+          next.is_primary = value ? 1 : 0;
+          break;
+        case 'is_active':
+          next.is_active = value ? 1 : 0;
+          break;
+        default:
+          next[field] = value;
+          break;
+      }
+
+      return next;
+    });
+
+    if (field === 'key') {
+      setDefinitionKeyEdited(true);
+    }
+  }, [definitionKeyEdited]);
+
+  const handlePickDefinitionDraftTemplate = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.chooseFile !== 'function') {
+      setDefinitionModalError('Unable to select template: API unavailable');
+      return;
+    }
+
+    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.docType === definitionDraft.doc_type);
+    try {
+      const selectedPath = await api.chooseFile({
+        title: `Choose template for ${definitionDraft.label || 'document'}`,
+        defaultPath: definitionDraft.template_path || (config ? business[config.field] : undefined),
+        filters: config?.filters
+      });
+      if (!selectedPath) return;
+      handleDefinitionDraftChange('template_path', selectedPath);
+      setDefinitionModalError('');
+    } catch (err) {
+      console.error('Failed to choose template file', err);
+      setDefinitionModalError(err?.message || 'Unable to choose template file');
+    }
+  }, [business, definitionDraft, handleDefinitionDraftChange]);
+
+  const handleClearDefinitionDraftTemplate = useCallback(() => {
+    handleDefinitionDraftChange('template_path', '');
+  }, [handleDefinitionDraftChange]);
+
+  const handleSaveDefinition = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.saveDocumentDefinition !== 'function') {
+      setDefinitionModalError('Unable to save definition: API unavailable');
+      return;
+    }
+
+    const trimmedKey = slugifyDefinitionKey(definitionDraft.key);
+    const trimmedLabel = (definitionDraft.label || '').trim();
+    const docType = (definitionDraft.doc_type || '').trim();
+
+    if (!trimmedLabel) {
+      setDefinitionModalError('Label is required');
+      return;
+    }
+    if (!trimmedKey) {
+      setDefinitionModalError('Key is required');
+      return;
+    }
+    if (!docType) {
+      setDefinitionModalError('Document type is required');
+      return;
+    }
+
+    setDefinitionModalError('');
+    setDefinitionSaving(true);
+
+    const payload = {
+      key: trimmedKey,
+      label: trimmedLabel,
+      doc_type: docType,
+      description: definitionDraft.description ? definitionDraft.description : null,
+      file_suffix: definitionDraft.file_suffix ? definitionDraft.file_suffix : null,
+      invoice_variant: docType === 'invoice' && definitionDraft.invoice_variant
+        ? definitionDraft.invoice_variant
+        : null,
+      template_path: definitionDraft.template_path ? definitionDraft.template_path : null,
+      requires_total: definitionDraft.requires_total ? 1 : 0,
+      is_primary: definitionDraft.is_primary ? 1 : 0,
+      is_active: definitionDraft.is_active ? 1 : 0,
+      is_locked: 0
+    };
+
+    try {
+      await api.saveDocumentDefinition(business.id, payload);
+      setMessage('Document definition saved');
+      setTimeout(() => setMessage(''), 1500);
+      await loadDocumentDefinitions();
+      handleCloseDefinitionModal();
+    } catch (err) {
+      console.error('Failed to save document definition', err);
+      setDefinitionModalError(err?.message || 'Unable to save document definition');
+    } finally {
+      setDefinitionSaving(false);
+    }
+  }, [business.id, definitionDraft, handleCloseDefinitionModal, loadDocumentDefinitions]);
 
   const handleOpenDocumentsFolder = useCallback(async () => {
     setDocumentsError('');
@@ -4627,6 +5045,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
             <div className="space-y-2" role="tablist" aria-orientation="vertical">
               {WORKSPACE_SECTIONS.map(section => {
                 const isActive = workspaceSection === section.key;
+                const icon = section.icon ?? getWorkspaceIcon(section.key);
                 return (
                   <button
                     key={section.key}
@@ -4634,10 +5053,15 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     role="tab"
                     aria-selected={isActive}
                     onClick={() => setWorkspaceSection(section.key)}
-                    className={`w-full text-left rounded-lg border px-4 py-3 transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
+                    className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
                   >
-                    <div className="text-sm font-semibold">{section.label}</div>
-                    <p className="mt-1 text-xs text-slate-500">{section.description}</p>
+                    <span className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-lg transition ${isActive ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200 group-hover:text-slate-700'}`}>
+                      {icon}
+                    </span>
+                    <span className="flex-1">
+                      <span className="block text-sm font-semibold">{section.label}</span>
+                      <span className="mt-1 block text-xs text-slate-500">{section.description}</span>
+                    </span>
                   </button>
                 );
               })}
@@ -4814,27 +5238,137 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                       </div>
                       <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
                         <div>
-                          <h3 className="text-sm font-semibold text-slate-700">Template tools</h3>
-                          <p className="text-xs text-slate-500">Open or normalize the current workbook template.</p>
+                          <h3 className="text-sm font-semibold text-slate-700">Default templates</h3>
+                          <p className="text-xs text-slate-500">Point each document type at the correct master template.</p>
                         </div>
-                        <div className="flex flex-wrap gap-2">
+                        <div className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
+                          {DEFAULT_TEMPLATE_CONFIG.map(config => {
+                            const currentPath = business[config.field] || '';
+                            const busy = templateUpdatingKey === config.field;
+                            return (
+                              <div key={config.field} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="min-w-0 space-y-1">
+                                  <p className="text-sm font-semibold text-slate-700">{config.label}</p>
+                                  <p className="text-xs text-slate-500">{config.description}</p>
+                                  <p className="text-xs text-slate-500 break-all" title={currentPath || 'Not configured'}>
+                                    {currentPath || 'Not configured'}
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap gap-2 sm:justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectDefaultTemplate(config.field)}
+                                    disabled={busy}
+                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {busy ? 'Working…' : 'Change'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenDefaultTemplate(config.field)}
+                                    disabled={busy || !currentPath}
+                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Open
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleClearDefaultTemplate(config.field)}
+                                    disabled={busy || !currentPath}
+                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Clear
+                                  </button>
+                                  {config.supportsNormalize ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleNormalizeDefaultTemplate(config.field)}
+                                      disabled={busy}
+                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {busy ? 'Working…' : 'Normalize'}
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div>
+                            <h3 className="text-sm font-semibold text-slate-700">Document definitions</h3>
+                            <p className="text-xs text-slate-500">Override templates for specific outputs (deposit, balance, contracts, etc.).</p>
+                          </div>
                           <button
                             type="button"
-                            onClick={handleOpenTemplate}
-                            disabled={openingTemplate}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                            onClick={handleShowNewDefinitionModal}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
                           >
-                            {openingTemplate ? 'Opening…' : 'Edit template'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleNormalizeTemplate}
-                            disabled={normalizingTemplate}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {normalizingTemplate ? 'Normalizing…' : 'Normalize template'}
+                            New definition
                           </button>
                         </div>
+                        {documentDefinitionsError ? (
+                          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{documentDefinitionsError}</div>
+                        ) : null}
+                        {documentDefinitionsLoading ? (
+                          <div className="rounded border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">Loading document definitions…</div>
+                        ) : documentDefinitions.length ? (
+                          <div className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
+                            {documentDefinitions.map(definition => {
+                              const fallbackField = TEMPLATE_FIELD_BY_DOC_TYPE[definition.doc_type];
+                              const fallbackPath = fallbackField ? business[fallbackField] : null;
+                              const hasOverride = Boolean(definition.template_path);
+                              const busy = definitionSavingKey === definition.key;
+                              const variantLabel = definition.invoice_variant ? ` · ${startCaseKey(definition.invoice_variant)} variant` : '';
+                              return (
+                                <div key={definition.key} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                                  <div className="min-w-0 space-y-1">
+                                    <p className="text-sm font-semibold text-slate-700">{definition.label}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {DOCUMENT_TYPE_LABELS[definition.doc_type] || startCaseKey(definition.doc_type)}{variantLabel}
+                                    </p>
+                                    <p
+                                      className="text-xs text-slate-500 break-all"
+                                      title={hasOverride ? definition.template_path : (fallbackPath || 'Not configured')}
+                                    >
+                                      {hasOverride ? definition.template_path : fallbackPath ? `Inherits ${fallbackPath}` : 'Not configured'}
+                                    </p>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2 sm:justify-end">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSelectDefinitionTemplate(definition)}
+                                      disabled={busy}
+                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      {busy ? 'Working…' : 'Change'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenDefinitionTemplate(definition)}
+                                      disabled={busy || (!hasOverride && !fallbackPath)}
+                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      Open
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleClearDefinitionTemplate(definition)}
+                                      disabled={busy || !hasOverride}
+                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                                    >
+                                      Clear override
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="rounded border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">No document definitions found.</div>
+                        )}
                       </div>
                       <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
                         <div>
@@ -4881,6 +5415,184 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
           </div>
         </div>
       </main>
+
+      {definitionModalOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+          <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
+            <form
+              onSubmit={event => {
+                event.preventDefault();
+                if (!definitionSaving) handleSaveDefinition();
+              }}
+              className="space-y-5 p-6"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h3 className="text-lg font-semibold text-slate-800">New document definition</h3>
+                  <p className="text-sm text-slate-500">Create a reusable template entry for generated documents.</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleCloseDefinitionModal}
+                  className="text-slate-400 transition hover:text-slate-600"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {definitionModalError ? (
+                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+                  {definitionModalError}
+                </div>
+              ) : null}
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="block text-sm font-medium text-slate-600">
+                  Label
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={definitionDraft.label}
+                    onChange={event => handleDefinitionDraftChange('label', event.target.value)}
+                    placeholder="e.g. Statement of Work"
+                  />
+                </label>
+                <label className="block text-sm font-medium text-slate-600">
+                  Key
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={definitionDraft.key}
+                    onChange={event => handleDefinitionDraftChange('key', event.target.value)}
+                    placeholder="e.g. statement_of_work"
+                  />
+                  <span className="mt-1 block text-xs text-slate-500">Lowercase letters, numbers, and underscores only.</span>
+                </label>
+                <label className="block text-sm font-medium text-slate-600">
+                  Document type
+                  <select
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={definitionDraft.doc_type}
+                    onChange={event => handleDefinitionDraftChange('doc_type', event.target.value)}
+                  >
+                    {DOCUMENT_TYPE_OPTIONS.map(option => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+                {definitionDraft.doc_type === 'invoice' ? (
+                  <label className="block text-sm font-medium text-slate-600">
+                    Invoice variant (optional)
+                    <input
+                      type="text"
+                      className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                      value={definitionDraft.invoice_variant}
+                      onChange={event => handleDefinitionDraftChange('invoice_variant', event.target.value)}
+                      placeholder="e.g. deposit, balance"
+                    />
+                  </label>
+                ) : (
+                  <div className="hidden md:block" />
+                )}
+                <label className="block text-sm font-medium text-slate-600 md:col-span-2">
+                  File suffix (optional)
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={definitionDraft.file_suffix}
+                    onChange={event => handleDefinitionDraftChange('file_suffix', event.target.value)}
+                    placeholder="e.g. - Statement of Work"
+                  />
+                </label>
+                <label className="block text-sm font-medium text-slate-600 md:col-span-2">
+                  Description (optional)
+                  <textarea
+                    rows={3}
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={definitionDraft.description}
+                    onChange={event => handleDefinitionDraftChange('description', event.target.value)}
+                    placeholder="Explain what this template is used for."
+                  />
+                </label>
+              </div>
+
+              <div className="space-y-3">
+                <div className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-600">
+                  <div className="font-medium text-slate-700">Template file</div>
+                  <p className="mt-1 break-all">
+                    {definitionDraft.template_path || definitionFallbackTemplate || 'No override selected. The default template will be used.'}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handlePickDefinitionDraftTemplate}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      Choose file
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleClearDefinitionDraftTemplate}
+                      disabled={!definitionDraft.template_path}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Clear override
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-4 text-sm text-slate-600">
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={Boolean(definitionDraft.requires_total)}
+                      onChange={event => handleDefinitionDraftChange('requires_total', event.target.checked)}
+                    />
+                    Requires total amount
+                  </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={Boolean(definitionDraft.is_primary)}
+                      onChange={event => handleDefinitionDraftChange('is_primary', event.target.checked)}
+                    />
+                    Mark as primary option
+                  </label>
+                  <label className="inline-flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      checked={Boolean(definitionDraft.is_active)}
+                      onChange={event => handleDefinitionDraftChange('is_active', event.target.checked)}
+                    />
+                    Active
+                  </label>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleCloseDefinitionModal}
+                  className="inline-flex items-center rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={definitionSaving}
+                  className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {definitionSaving ? 'Saving…' : 'Save definition'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
