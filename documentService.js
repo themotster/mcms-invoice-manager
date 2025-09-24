@@ -749,6 +749,68 @@ async function relocateBusinessDocuments({ businessId, sourcePath, targetPath })
   return summary;
 }
 
+async function prepareJobsheetTemplateOverride(options = {}) {
+  const {
+    businessId,
+    jobsheetId,
+    definitionKey,
+    definitionLabel,
+    sourceTemplatePath,
+    clientName,
+    eventDate
+  } = options;
+
+  const numericBusinessId = Number(businessId);
+  const numericJobsheetId = Number(jobsheetId);
+  const normalizedKey = (definitionKey || '').trim();
+
+  if (!Number.isInteger(numericBusinessId)) {
+    throw new Error('Invalid business reference for template preparation');
+  }
+  if (!Number.isInteger(numericJobsheetId)) {
+    throw new Error('Invalid jobsheet reference for template preparation');
+  }
+  if (!normalizedKey) {
+    throw new Error('Definition key is required to prepare template');
+  }
+
+  const existingOverrides = await db.getJobsheetTemplateOverrides(numericJobsheetId);
+  const existing = (existingOverrides || []).find(item => item.definition_key === normalizedKey);
+  if (existing?.template_path && fs.existsSync(existing.template_path)) {
+    return { template_path: existing.template_path, source: 'existing' };
+  }
+
+  const resolvedSource = sourceTemplatePath ? path.resolve(sourceTemplatePath) : null;
+  if (!resolvedSource || !fs.existsSync(resolvedSource)) {
+    throw new Error('Source template not found. Configure the template before customising it for this job.');
+  }
+
+  const business = await db.getBusinessById(numericBusinessId);
+  if (!business) {
+    throw new Error('Business not found for template preparation');
+  }
+
+  const baseDir = business.save_path ? path.resolve(business.save_path) : path.join(process.cwd(), 'documents');
+  ensureDirectoryExists(baseDir);
+
+  const { iso } = formatDateParts(eventDate || new Date());
+  const clientPart = sanitizeForFilename(clientName || business.business_name || 'Client');
+  const labelPart = sanitizeForFilename(definitionLabel || normalizedKey);
+  const extension = path.extname(resolvedSource) || '.xlsx';
+  const templateName = `${iso} - ${clientPart} - ${labelPart} Template${extension}`;
+  const destinationPath = path.join(baseDir, templateName);
+  const targetPath = findAvailablePath(destinationPath);
+
+  if (resolvedSource !== targetPath) {
+    ensureDirectoryExists(path.dirname(targetPath));
+    fs.copyFileSync(resolvedSource, targetPath);
+  }
+
+  await db.setJobsheetTemplateOverride(numericJobsheetId, normalizedKey, targetPath);
+
+  return { template_path: targetPath, source: 'copied' };
+}
+
 async function createDocument(documentData) {
   if (!documentData?.business_id) {
     throw new Error('business_id is required to create a document');
@@ -1047,6 +1109,7 @@ module.exports = {
   pickTemplatePath,
   deleteDocument,
   relocateBusinessDocuments,
+  prepareJobsheetTemplateOverride,
   normalizeTemplateFile,
   __private: {
     applyAhmenTemplateWithZip,

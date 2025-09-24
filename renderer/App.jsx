@@ -31,16 +31,6 @@ const STATUS_OPTIONS = [
   { value: 'completed', label: 'Completed' }
 ];
 
-const DOCUMENT_CONFIG = {
-  workbook: { docType: 'workbook', label: 'Excel Workbook' },
-  quote: { docType: 'quote', label: 'Quote', fileSuffix: ' - Quote' },
-  contract: { docType: 'contract', label: 'Contract', fileSuffix: ' - Contract' },
-  invoice_deposit: { docType: 'invoice', label: 'Invoice – Deposit', fileSuffix: ' - Deposit', invoiceVariant: 'deposit' },
-  invoice_balance: { docType: 'invoice', label: 'Invoice – Balance', fileSuffix: ' - Balance', invoiceVariant: 'balance' }
-};
-
-const DEFAULT_DOCUMENT_KEY = 'workbook';
-
 const DOCUMENT_TYPE_LABELS = {
   invoice: 'Invoice',
   quote: 'Quote',
@@ -48,12 +38,33 @@ const DOCUMENT_TYPE_LABELS = {
   workbook: 'Excel Workbook'
 };
 
-const DOCUMENT_TYPE_OPTIONS = [
-  { value: 'invoice', label: DOCUMENT_TYPE_LABELS.invoice },
-  { value: 'quote', label: DOCUMENT_TYPE_LABELS.quote },
-  { value: 'contract', label: DOCUMENT_TYPE_LABELS.contract },
-  { value: 'workbook', label: DOCUMENT_TYPE_LABELS.workbook }
-];
+const DOC_TYPE_META = {
+  invoice: {
+    label: DOCUMENT_TYPE_LABELS.invoice,
+    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
+    supportsNormalize: true
+  },
+  quote: {
+    label: DOCUMENT_TYPE_LABELS.quote,
+    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
+    supportsNormalize: true
+  },
+  contract: {
+    label: DOCUMENT_TYPE_LABELS.contract,
+    filters: [{ name: 'Word documents', extensions: ['docx'] }],
+    supportsNormalize: false
+  },
+  workbook: {
+    label: DOCUMENT_TYPE_LABELS.workbook,
+    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
+    supportsNormalize: true
+  }
+};
+
+const DOCUMENT_TYPE_OPTIONS = Object.entries(DOC_TYPE_META).map(([value, meta]) => ({
+  value,
+  label: meta.label
+}));
 
 const DOCUMENT_GROUP_OPTIONS = [
   { value: 'none', label: 'All Documents' },
@@ -97,47 +108,6 @@ const WORKSPACE_SECTIONS = [
   { key: 'documents', label: 'Documents', description: 'Generated outputs and files', icon: WORKSPACE_ICON_MAP.documents },
   { key: 'settings', label: 'Settings', description: 'Folders, templates, and placeholders', icon: WORKSPACE_ICON_MAP.settings }
 ];
-
-const DEFAULT_TEMPLATE_CONFIG = [
-  {
-    field: 'invoice_template_path',
-    label: 'Invoice template',
-    description: 'Used for invoices, deposits, and balances.',
-    docType: 'invoice',
-    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
-    supportsNormalize: true
-  },
-  {
-    field: 'quote_template_path',
-    label: 'Quote template',
-    description: 'Used when generating quotes from jobsheets.',
-    docType: 'quote',
-    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
-    supportsNormalize: true
-  },
-  {
-    field: 'contract_template_path',
-    label: 'Contract template',
-    description: 'Used for contract documents requiring signatures.',
-    docType: 'contract',
-    filters: [{ name: 'Word documents', extensions: ['docx'] }]
-  },
-  {
-    field: 'gig_sheet_template_path',
-    label: 'Gig sheet template',
-    description: 'Used for the Excel workbook export.',
-    docType: 'workbook',
-    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
-    supportsNormalize: true
-  }
-];
-
-const TEMPLATE_FIELD_BY_DOC_TYPE = {
-  invoice: 'invoice_template_path',
-  quote: 'quote_template_path',
-  contract: 'contract_template_path',
-  workbook: 'gig_sheet_template_path'
-};
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
 const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
@@ -2984,8 +2954,19 @@ function DocumentsPanel({
   onClearDocumentsError,
   onRefreshDocuments,
   onGenerateDocument,
-  documentGenerating,
   documentGeneratingKey,
+  documentDefinitions,
+  definitionsLoading,
+  documentDefinitionsError,
+  selectedDefinitionKey,
+  onSelectDefinition,
+  onNewDefinition,
+  onEditDefinition,
+  onOpenDefinitionTemplate,
+  jobTemplateOverrides,
+  onOpenJobTemplate,
+  onClearJobTemplate,
+  jobTemplateLoadingKey,
   onOpenDocumentFile,
   onRevealDocument,
   onDeleteDocument,
@@ -2993,7 +2974,32 @@ function DocumentsPanel({
   onOpenOutputFile,
   lastGeneratedPath
 }) {
-  const documentOptions = useMemo(() => Object.entries(DOCUMENT_CONFIG), []);
+  const sortedDefinitions = useMemo(() => (
+    Array.isArray(documentDefinitions)
+      ? [...documentDefinitions].sort((a, b) => {
+          const orderA = Number.isFinite(a.sort_order) ? a.sort_order : 0;
+          const orderB = Number.isFinite(b.sort_order) ? b.sort_order : 0;
+          if (orderA !== orderB) return orderA - orderB;
+          return (a.label || a.key || '').localeCompare(b.label || b.key || '', 'en', { sensitivity: 'base' });
+        })
+      : []
+  ), [documentDefinitions]);
+
+  useEffect(() => {
+    if (definitionsLoading) return;
+    if (!sortedDefinitions.length) {
+      if (selectedDefinitionKey) onSelectDefinition?.(null);
+      return;
+    }
+    const hasSelection = sortedDefinitions.some(def => def.key === selectedDefinitionKey);
+    if (!hasSelection) {
+      onSelectDefinition?.(sortedDefinitions[0].key);
+    }
+  }, [definitionsLoading, sortedDefinitions, selectedDefinitionKey, onSelectDefinition]);
+
+  const activeDefinition = useMemo(() => (
+    sortedDefinitions.find(def => def.key === selectedDefinitionKey) || sortedDefinitions[0] || null
+  ), [sortedDefinitions, selectedDefinitionKey]);
 
   const normalizedDocuments = useMemo(() => (
     (documents || []).map(doc => {
@@ -3016,10 +3022,20 @@ function DocumentsPanel({
     })
   ), [documents]);
 
-  const handleGenerate = useCallback(async (docKey) => {
-    if (!hasExisting || !onGenerateDocument) return;
-    await onGenerateDocument(docKey);
-  }, [hasExisting, onGenerateDocument]);
+  const jobTemplatePath = activeDefinition ? jobTemplateOverrides?.[activeDefinition.key] : null;
+  const defaultTemplatePath = activeDefinition?.template_path || '';
+  const docTypeMeta = activeDefinition ? DOC_TYPE_META[activeDefinition.doc_type] : null;
+  const generating = documentGeneratingKey != null;
+
+  const handleGenerateClick = useCallback(() => {
+    if (!hasExisting || !activeDefinition || generating) return;
+    onGenerateDocument?.(activeDefinition.key);
+  }, [hasExisting, activeDefinition, generating, onGenerateDocument]);
+
+  const handleDefinitionChange = useCallback((event) => {
+    const nextKey = event.target.value || null;
+    onSelectDefinition?.(nextKey);
+  }, [onSelectDefinition]);
 
   const renderDocumentTable = () => {
     if (documentsLoading) {
@@ -3102,31 +3118,95 @@ function DocumentsPanel({
       <div className="space-y-3">
         <div>
           <h4 className="text-sm font-semibold text-slate-700">Generate documents</h4>
-          <p className="text-xs text-slate-500">Build workbooks, quotes, and invoices using the current jobsheet details.</p>
+          <p className="text-xs text-slate-500">Choose a template, tweak it for this jobsheet, and create the output without leaving the editor.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {documentOptions.map(([key, config]) => {
-            const isPrimary = key === DEFAULT_DOCUMENT_KEY;
-            const isGenerating = documentGenerating && documentGeneratingKey === key;
-            const baseClasses = isPrimary
-              ? 'bg-indigo-600 text-white hover:bg-indigo-500'
-              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50';
-            return (
-              <button
-                key={key}
-                type="button"
-                onClick={() => handleGenerate(key)}
-                disabled={!hasExisting || documentGenerating}
-                className={`inline-flex items-center rounded px-3 py-2 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-60 ${baseClasses}`}
-              >
-                {isGenerating ? 'Generating…' : config.label}
-              </button>
-            );
-          })}
-        </div>
-        {!hasExisting ? (
-          <p className="text-xs text-slate-500">Save the jobsheet before creating documents.</p>
+
+        {documentDefinitionsError ? (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+            {documentDefinitionsError}
+          </div>
         ) : null}
+
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,280px)_auto] lg:items-end">
+          <label className="block text-sm font-medium text-slate-600">
+            Document type
+            <select
+              disabled={definitionsLoading || !sortedDefinitions.length}
+              value={activeDefinition ? activeDefinition.key : ''}
+              onChange={handleDefinitionChange}
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {sortedDefinitions.length ? null : <option value="">No document types configured</option>}
+              {sortedDefinitions.map(definition => (
+                <option key={definition.key} value={definition.key}>
+                  {definition.label || startCaseKey(definition.key)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleGenerateClick}
+              disabled={!hasExisting || !activeDefinition || generating}
+              className="inline-flex items-center rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {generating && documentGeneratingKey === (activeDefinition?.key || '') ? 'Generating…' : 'Generate'}
+            </button>
+            <button
+              type="button"
+              onClick={() => activeDefinition && onOpenJobTemplate?.(activeDefinition)}
+              disabled={!hasExisting || !activeDefinition || jobTemplateLoadingKey === activeDefinition.key}
+              className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {jobTemplateLoadingKey === (activeDefinition?.key || '') ? 'Preparing…' : 'Edit for this job'}
+            </button>
+            <button
+              type="button"
+              onClick={() => activeDefinition && onClearJobTemplate?.(activeDefinition)}
+              disabled={!jobTemplatePath}
+              className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              Clear job template
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
+            <div className="font-medium text-slate-700">Default template</div>
+            <p className="mt-1 break-all">{defaultTemplatePath || 'Not set. Set a template before generating.'}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => activeDefinition && onEditDefinition?.(activeDefinition)}
+                disabled={!activeDefinition}
+                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Manage definition
+              </button>
+              <button
+                type="button"
+                onClick={() => activeDefinition && onOpenDefinitionTemplate?.(activeDefinition)}
+                disabled={!defaultTemplatePath}
+                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Open default template
+              </button>
+            </div>
+          </div>
+
+          <div className="rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
+            <div className="font-medium text-slate-700">Job template override</div>
+            {jobTemplatePath ? (
+              <p className="mt-1 break-all">{jobTemplatePath}</p>
+            ) : (
+              <p className="mt-1 text-slate-500">No job-specific template. The default above will be used.</p>
+            )}
+          </div>
+        </div>
+
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
@@ -3156,7 +3236,15 @@ function DocumentsPanel({
               Open latest file
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={onNewDefinition}
+            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            New document type
+          </button>
         </div>
+
         {documentsError ? (
           <div className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
             <span>{documentsError}</span>
@@ -3214,7 +3302,6 @@ function JobsheetEditor({
   activeGroupKey: activeGroupKeyProp,
   onActiveGroupChange,
   onGenerateDocument,
-  documentGenerating,
   documentGeneratingKey,
   documents,
   documentsLoading,
@@ -3227,7 +3314,19 @@ function JobsheetEditor({
   onOpenOutputFolder,
   onOpenOutputFile,
   lastGeneratedPath,
-  groups
+  groups,
+  documentDefinitions,
+  documentDefinitionsLoading,
+  selectedDefinitionKey,
+  onSelectDefinition,
+  onNewDefinition,
+  onEditDefinition,
+  onOpenDefinitionTemplate,
+  jobTemplateOverrides,
+  onOpenJobTemplate,
+  onClearJobTemplate,
+  jobTemplateLoadingKey,
+  documentDefinitionsError
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -3514,8 +3613,19 @@ function JobsheetEditor({
                         onClearDocumentsError={onClearDocumentsError}
                         onRefreshDocuments={onRefreshDocuments}
                         onGenerateDocument={onGenerateDocument}
-                        documentGenerating={documentGenerating}
                         documentGeneratingKey={documentGeneratingKey}
+                        documentDefinitions={documentDefinitions}
+                        definitionsLoading={documentDefinitionsLoading}
+                        documentDefinitionsError={documentDefinitionsError}
+                        selectedDefinitionKey={selectedDefinitionKey}
+                        onSelectDefinition={onSelectDefinition}
+                        onNewDefinition={onNewDefinition}
+                        onEditDefinition={onEditDefinition}
+                        onOpenDefinitionTemplate={onOpenDefinitionTemplate}
+                        jobTemplateOverrides={jobTemplateOverrides}
+                        onOpenJobTemplate={onOpenJobTemplate}
+                        onClearJobTemplate={onClearJobTemplate}
+                        jobTemplateLoadingKey={jobTemplateLoadingKey}
                         onOpenDocumentFile={onOpenDocumentFile}
                         onRevealDocument={onRevealDocument}
                         onDeleteDocument={onDeleteDocument}
@@ -3740,7 +3850,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [inlineEditorTargetId, setInlineEditorTargetId] = useState(null);
   const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
-  const [templateUpdatingKey, setTemplateUpdatingKey] = useState(null);
   const [settingsPanel, setSettingsPanel] = useState('overview');
   const [workspaceSection, setWorkspaceSection] = useState(() => {
     if (typeof window === 'undefined') return 'jobsheets';
@@ -3781,20 +3890,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const columnsMenuContentRef = useRef(null);
   const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
   const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
-  const [documentDefinitions, setDocumentDefinitions] = useState([]);
-  const [documentDefinitionsLoading, setDocumentDefinitionsLoading] = useState(false);
-  const [documentDefinitionsError, setDocumentDefinitionsError] = useState('');
-  const [definitionSavingKey, setDefinitionSavingKey] = useState(null);
-  const [definitionModalOpen, setDefinitionModalOpen] = useState(false);
-  const [definitionDraft, setDefinitionDraft] = useState(() => createDefinitionDraft());
-  const [definitionModalError, setDefinitionModalError] = useState('');
-  const [definitionKeyEdited, setDefinitionKeyEdited] = useState(false);
-  const [definitionSaving, setDefinitionSaving] = useState(false);
-  const definitionFallbackTemplate = useMemo(() => {
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.docType === definitionDraft.doc_type);
-    if (!config) return '';
-    return business[config.field] || '';
-  }, [business, definitionDraft.doc_type]);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -3856,23 +3951,96 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business.id]);
 
-  const loadDocumentDefinitions = useCallback(async () => {
-    setDocumentDefinitionsLoading(true);
-    setDocumentDefinitionsError('');
-    try {
-      const api = window.api;
-      if (!api || typeof api.getDocumentDefinitions !== 'function') {
-        throw new Error('Unable to load document definitions: API unavailable');
-      }
-      const data = await api.getDocumentDefinitions(business.id, { includeInactive: true });
-      setDocumentDefinitions(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error('Failed to load document definitions', err);
-      setDocumentDefinitionsError(err?.message || 'Unable to load document definitions');
-    } finally {
-      setDocumentDefinitionsLoading(false);
+  const handleRefreshDocuments = useCallback(() => {
+    refreshDocuments();
+  }, [refreshDocuments]);
+
+  const handleOpenDocumentsFolder = useCallback(async () => {
+    setDocumentsError('');
+    if (!business.save_path) {
+      setDocumentsError('Documents folder not configured');
+      return;
     }
-  }, [business.id]);
+    try {
+      const response = await window.api?.openPath?.(business.save_path);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open documents folder');
+      }
+    } catch (err) {
+      console.error('Failed to open documents folder', err);
+      setDocumentsError(err?.message || 'Unable to open documents folder');
+    }
+  }, [business.save_path]);
+
+  const handleOpenDocumentFile = useCallback(async (filePath) => {
+    setDocumentsError('');
+    if (!filePath) {
+      setDocumentsError('Document file not available');
+      return;
+    }
+    try {
+      const response = await window.api?.openPath?.(filePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open document');
+      }
+    } catch (err) {
+      console.error('Failed to open document', err);
+      setDocumentsError(err?.message || 'Unable to open document');
+    }
+  }, []);
+
+  const handleRevealDocument = useCallback(async (filePath) => {
+    setDocumentsError('');
+    if (!filePath) {
+      setDocumentsError('Document file not available');
+      return;
+    }
+    try {
+      const response = await window.api?.showItemInFolder?.(filePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to locate document on disk');
+      }
+    } catch (err) {
+      console.error('Failed to reveal document', err);
+      setDocumentsError(err?.message || 'Unable to locate document on disk');
+    }
+  }, []);
+
+  const handleDeleteDocumentRecord = useCallback(async (doc) => {
+    if (!doc || doc.document_id == null) return;
+    const title = doc.typeLabel
+      ? `${doc.typeLabel}${doc.number ? ` #${doc.number}` : ''}`
+      : 'this document';
+    const confirmDelete = window.confirm(`Delete ${title}? This will remove it from the documents list.`);
+    if (!confirmDelete) return;
+
+    let removeFile = false;
+    if (doc.file_path) {
+      removeFile = window.confirm('Also remove the generated file from disk?');
+    }
+
+    try {
+      setError('');
+      await window.api?.deleteDocument?.(doc.document_id, { removeFile });
+      setMessage('Document deleted');
+      await refreshDocuments();
+      setSelectedDocuments(prev => {
+        const next = new Set(prev);
+        next.delete(doc.document_id);
+        return next;
+      });
+      window.api?.notifyJobsheetChange?.({
+        type: 'documents-updated',
+        businessId: business.id,
+        jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+        documentId: doc.document_id
+      });
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to delete document', err);
+      setError(err?.message || 'Unable to delete document');
+    }
+  }, [refreshDocuments, business.id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -3908,11 +4076,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       console.warn('Unable to persist document columns preference', err);
     }
   }, [documentColumnsState]);
-
-  useEffect(() => {
-    if (workspaceSection !== 'settings') return;
-    loadDocumentDefinitions();
-  }, [workspaceSection, loadDocumentDefinitions]);
 
   useEffect(() => {
     if (!columnsMenuOpen) return undefined;
@@ -4076,446 +4239,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business, onBusinessUpdate]);
 
-  const handleSelectDefaultTemplate = useCallback(async (field) => {
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
-    const api = window.api;
-    if (!config || !api || typeof api.chooseFile !== 'function' || typeof api.updateBusinessSettings !== 'function') {
-      setError('Unable to update template: API unavailable');
-      return;
-    }
-
-    try {
-      setTemplateUpdatingKey(field);
-      setError('');
-      const selectedPath = await api.chooseFile({
-        title: `Choose ${config.label.toLowerCase()}`,
-        defaultPath: business[field] || undefined,
-        filters: config.filters
-      });
-      if (!selectedPath) return;
-
-      const result = await api.updateBusinessSettings(business.id, { [field]: selectedPath });
-      const updatedBusiness = result?.record || { ...business, [field]: selectedPath };
-      onBusinessUpdate?.(updatedBusiness);
-      setMessage(`${config.label} updated`);
-      setTimeout(() => setMessage(''), 1500);
-      await loadDocumentDefinitions();
-    } catch (err) {
-      console.error('Failed to update template path', err);
-      setError(err?.message || 'Unable to update template path');
-    } finally {
-      setTemplateUpdatingKey(null);
-    }
-  }, [business, loadDocumentDefinitions, onBusinessUpdate]);
-
-  const handleClearDefaultTemplate = useCallback(async (field) => {
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
-    const api = window.api;
-    if (!config || !api || typeof api.updateBusinessSettings !== 'function') {
-      setError('Unable to update template: API unavailable');
-      return;
-    }
-
-    try {
-      setTemplateUpdatingKey(field);
-      setError('');
-      const result = await api.updateBusinessSettings(business.id, { [field]: null });
-      const updatedBusiness = result?.record || { ...business, [field]: null };
-      onBusinessUpdate?.(updatedBusiness);
-      setMessage(`${config.label} cleared`);
-      setTimeout(() => setMessage(''), 1500);
-      await loadDocumentDefinitions();
-    } catch (err) {
-      console.error('Failed to clear template path', err);
-      setError(err?.message || 'Unable to clear template path');
-    } finally {
-      setTemplateUpdatingKey(null);
-    }
-  }, [business, loadDocumentDefinitions, onBusinessUpdate]);
-
-  const handleNormalizeDefaultTemplate = useCallback(async (field) => {
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
-    const api = window.api;
-    if (!config || !config.supportsNormalize || !api || typeof api.normalizeTemplate !== 'function') {
-      setError('Unable to normalize template: API unavailable');
-      return;
-    }
-
-    try {
-      setTemplateUpdatingKey(field);
-      setError('');
-      const response = await api.normalizeTemplate({ templatePath: business[field] || undefined });
-      if (!response || response.ok === false) {
-        throw new Error(response?.message || 'Unable to normalize template');
-      }
-      setMessage(`${config.label} normalized`);
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to normalize template', err);
-      setError(err?.message || 'Unable to normalize template');
-    } finally {
-      setTemplateUpdatingKey(null);
-    }
-  }, [business]);
-
-  const handleOpenDefaultTemplate = useCallback(async (field) => {
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.field === field);
-    const api = window.api;
-    if (!config || !api || typeof api.openPath !== 'function') {
-      setError('Unable to open template: API unavailable');
-      return;
-    }
-
-    const targetPath = business[field];
-    if (!targetPath) {
-      setError(`No template configured for ${config.label.toLowerCase()}`);
-      return;
-    }
-
-    try {
-      setError('');
-      const response = await api.openPath(targetPath);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to open template');
-      }
-    } catch (err) {
-      console.error('Failed to open template', err);
-      setError(err?.message || 'Unable to open template');
-    }
-  }, [business]);
-
-  const handleSelectDefinitionTemplate = useCallback(async (definition) => {
-    if (!definition) return;
-    const api = window.api;
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.docType === definition.doc_type);
-    if (!api || typeof api.chooseFile !== 'function' || typeof api.saveDocumentDefinition !== 'function') {
-      setDocumentDefinitionsError('Unable to update definition: API unavailable');
-      return;
-    }
-
-    try {
-      setDefinitionSavingKey(definition.key);
-      setDocumentDefinitionsError('');
-      const defaultPath = definition.template_path
-        || (config ? business[config.field] : null)
-        || undefined;
-      const selectedPath = await api.chooseFile({
-        title: `Choose template for ${definition.label}`,
-        defaultPath,
-        filters: config?.filters
-      });
-      if (!selectedPath) return;
-
-      await api.saveDocumentDefinition(business.id, { ...definition, template_path: selectedPath });
-      setDocumentDefinitions(prev => prev.map(item => (
-        item.key === definition.key ? { ...item, template_path: selectedPath } : item
-      )));
-      setMessage(`${definition.label} template updated`);
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to update document definition template', err);
-      setDocumentDefinitionsError(err?.message || 'Unable to update definition template');
-    } finally {
-      setDefinitionSavingKey(null);
-    }
-  }, [business]);
-
-  const handleClearDefinitionTemplate = useCallback(async (definition) => {
-    if (!definition) return;
-    const api = window.api;
-    if (!api || typeof api.saveDocumentDefinition !== 'function') {
-      setDocumentDefinitionsError('Unable to update definition: API unavailable');
-      return;
-    }
-
-    try {
-      setDefinitionSavingKey(definition.key);
-      setDocumentDefinitionsError('');
-      await api.saveDocumentDefinition(business.id, { ...definition, template_path: null });
-      setDocumentDefinitions(prev => prev.map(item => (
-        item.key === definition.key ? { ...item, template_path: null } : item
-      )));
-      setMessage(`${definition.label} template cleared`);
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to clear document definition template', err);
-      setDocumentDefinitionsError(err?.message || 'Unable to clear definition template');
-    } finally {
-      setDefinitionSavingKey(null);
-    }
-  }, [business]);
-
-  const handleOpenDefinitionTemplate = useCallback(async (definition) => {
-    if (!definition) return;
-    const api = window.api;
-    if (!api || typeof api.openPath !== 'function') {
-      setDocumentDefinitionsError('Unable to open template: API unavailable');
-      return;
-    }
-
-    const templatePath = definition.template_path
-      || (TEMPLATE_FIELD_BY_DOC_TYPE[definition.doc_type]
-        ? business[TEMPLATE_FIELD_BY_DOC_TYPE[definition.doc_type]]
-        : null);
-    if (!templatePath) {
-      setDocumentDefinitionsError('No template configured for this document');
-      return;
-    }
-
-    try {
-      setDocumentDefinitionsError('');
-      const response = await api.openPath(templatePath);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to open template');
-      }
-    } catch (err) {
-      console.error('Failed to open definition template', err);
-      setDocumentDefinitionsError(err?.message || 'Unable to open definition template');
-    }
-  }, [business]);
-
-  const handleShowNewDefinitionModal = useCallback(() => {
-    setDefinitionDraft(createDefinitionDraft());
-    setDefinitionModalError('');
-    setDefinitionKeyEdited(false);
-    setDefinitionModalOpen(true);
-  }, []);
-
-  const handleCloseDefinitionModal = useCallback(() => {
-    setDefinitionModalOpen(false);
-    setDefinitionSaving(false);
-    setDefinitionModalError('');
-    setDefinitionDraft(createDefinitionDraft());
-    setDefinitionKeyEdited(false);
-  }, []);
-
-  const handleDefinitionDraftChange = useCallback((field, rawValue) => {
-    setDefinitionDraft(prev => {
-      const next = { ...prev };
-      const value = rawValue;
-
-      switch (field) {
-        case 'label':
-          next.label = value;
-          if (!definitionKeyEdited) {
-            next.key = slugifyDefinitionKey(value);
-          }
-          break;
-        case 'key':
-          next.key = slugifyDefinitionKey(value);
-          break;
-        case 'doc_type':
-          next.doc_type = value;
-          if (value !== 'invoice') {
-            next.invoice_variant = '';
-          }
-          break;
-        case 'invoice_variant':
-          next.invoice_variant = value;
-          break;
-        case 'description':
-          next.description = value;
-          break;
-        case 'file_suffix':
-          next.file_suffix = value;
-          break;
-        case 'template_path':
-          next.template_path = value || '';
-          break;
-        case 'requires_total':
-          next.requires_total = value ? 1 : 0;
-          break;
-        case 'is_primary':
-          next.is_primary = value ? 1 : 0;
-          break;
-        case 'is_active':
-          next.is_active = value ? 1 : 0;
-          break;
-        default:
-          next[field] = value;
-          break;
-      }
-
-      return next;
-    });
-
-    if (field === 'key') {
-      setDefinitionKeyEdited(true);
-    }
-  }, [definitionKeyEdited]);
-
-  const handlePickDefinitionDraftTemplate = useCallback(async () => {
-    const api = window.api;
-    if (!api || typeof api.chooseFile !== 'function') {
-      setDefinitionModalError('Unable to select template: API unavailable');
-      return;
-    }
-
-    const config = DEFAULT_TEMPLATE_CONFIG.find(item => item.docType === definitionDraft.doc_type);
-    try {
-      const selectedPath = await api.chooseFile({
-        title: `Choose template for ${definitionDraft.label || 'document'}`,
-        defaultPath: definitionDraft.template_path || (config ? business[config.field] : undefined),
-        filters: config?.filters
-      });
-      if (!selectedPath) return;
-      handleDefinitionDraftChange('template_path', selectedPath);
-      setDefinitionModalError('');
-    } catch (err) {
-      console.error('Failed to choose template file', err);
-      setDefinitionModalError(err?.message || 'Unable to choose template file');
-    }
-  }, [business, definitionDraft, handleDefinitionDraftChange]);
-
-  const handleClearDefinitionDraftTemplate = useCallback(() => {
-    handleDefinitionDraftChange('template_path', '');
-  }, [handleDefinitionDraftChange]);
-
-  const handleSaveDefinition = useCallback(async () => {
-    const api = window.api;
-    if (!api || typeof api.saveDocumentDefinition !== 'function') {
-      setDefinitionModalError('Unable to save definition: API unavailable');
-      return;
-    }
-
-    const trimmedKey = slugifyDefinitionKey(definitionDraft.key);
-    const trimmedLabel = (definitionDraft.label || '').trim();
-    const docType = (definitionDraft.doc_type || '').trim();
-
-    if (!trimmedLabel) {
-      setDefinitionModalError('Label is required');
-      return;
-    }
-    if (!trimmedKey) {
-      setDefinitionModalError('Key is required');
-      return;
-    }
-    if (!docType) {
-      setDefinitionModalError('Document type is required');
-      return;
-    }
-
-    setDefinitionModalError('');
-    setDefinitionSaving(true);
-
-    const payload = {
-      key: trimmedKey,
-      label: trimmedLabel,
-      doc_type: docType,
-      description: definitionDraft.description ? definitionDraft.description : null,
-      file_suffix: definitionDraft.file_suffix ? definitionDraft.file_suffix : null,
-      invoice_variant: docType === 'invoice' && definitionDraft.invoice_variant
-        ? definitionDraft.invoice_variant
-        : null,
-      template_path: definitionDraft.template_path ? definitionDraft.template_path : null,
-      requires_total: definitionDraft.requires_total ? 1 : 0,
-      is_primary: definitionDraft.is_primary ? 1 : 0,
-      is_active: definitionDraft.is_active ? 1 : 0,
-      is_locked: 0
-    };
-
-    try {
-      await api.saveDocumentDefinition(business.id, payload);
-      setMessage('Document definition saved');
-      setTimeout(() => setMessage(''), 1500);
-      await loadDocumentDefinitions();
-      handleCloseDefinitionModal();
-    } catch (err) {
-      console.error('Failed to save document definition', err);
-      setDefinitionModalError(err?.message || 'Unable to save document definition');
-    } finally {
-      setDefinitionSaving(false);
-    }
-  }, [business.id, definitionDraft, handleCloseDefinitionModal, loadDocumentDefinitions]);
-
-  const handleOpenDocumentsFolder = useCallback(async () => {
-    setDocumentsError('');
-    if (!business.save_path) {
-      setDocumentsError('Documents folder not configured');
-      return;
-    }
-    try {
-      if (window.api && typeof window.api.openPath === 'function') {
-        await window.api.openPath(business.save_path);
-      }
-    } catch (err) {
-      console.error('Failed to open documents folder', err);
-      setDocumentsError(err?.message || 'Unable to open documents folder');
-    }
-  }, [business.save_path]);
-
-  const handleOpenDocumentFile = useCallback(async (filePath) => {
-    setDocumentsError('');
-    if (!filePath) {
-      setDocumentsError('Document file not available');
-      return;
-    }
-    try {
-      if (window.api && typeof window.api.openPath === 'function') {
-        await window.api.openPath(filePath);
-      }
-    } catch (err) {
-      console.error('Failed to open document', err);
-      setDocumentsError(err?.message || 'Unable to open document');
-    }
-  }, []);
-
-  const handleRevealDocument = useCallback(async (filePath) => {
-    setDocumentsError('');
-    if (!filePath) {
-      setDocumentsError('Document file not available');
-      return;
-    }
-    try {
-      if (window.api && typeof window.api.showItemInFolder === 'function') {
-        await window.api.showItemInFolder(filePath);
-      }
-    } catch (err) {
-      console.error('Failed to reveal document', err);
-      setDocumentsError(err?.message || 'Unable to locate document on disk');
-    }
-  }, []);
-
-  const handleRefreshDocuments = useCallback(() => {
-    refreshDocuments();
-  }, [refreshDocuments]);
-
-  const handleDeleteDocumentRecord = useCallback(async (doc) => {
-    if (!doc || doc.document_id == null) return;
-    const title = doc.typeLabel
-      ? `${doc.typeLabel}${doc.number ? ` #${doc.number}` : ''}`
-      : 'this document';
-    const confirmDelete = window.confirm(`Delete ${title}? This will remove it from the documents list.`);
-    if (!confirmDelete) return;
-
-    let removeFile = false;
-    if (doc.file_path) {
-      removeFile = window.confirm('Also remove the generated file from disk?');
-    }
-
-    try {
-      setError('');
-      await window.api.deleteDocument(doc.document_id, { removeFile });
-      setMessage('Document deleted');
-      await refreshDocuments();
-      setSelectedDocuments(prev => {
-        const next = new Set(prev);
-        next.delete(doc.document_id);
-        return next;
-      });
-      window.api?.notifyJobsheetChange?.({
-        type: 'documents-updated',
-        businessId: business.id,
-        jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
-        documentId: doc.document_id
-      });
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to delete document', err);
-      setError(err?.message || 'Unable to delete document');
-    }
-  }, [refreshDocuments, business.id]);
-
   const handleDeleteSelected = useCallback(async () => {
     if (!selectedDocuments.size) return;
     const ids = Array.from(selectedDocuments);
@@ -4532,7 +4255,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
     try {
       setError('');
-      await Promise.all(ids.map(id => window.api.deleteDocument(id, { removeFile: removeFiles })));
+      await Promise.all(ids.map(id => window.api?.deleteDocument?.(id, { removeFile: removeFiles })));
       setMessage(ids.length === 1 ? 'Document deleted' : 'Selected documents deleted');
       await refreshDocuments();
       setSelectedDocuments(new Set());
@@ -5236,140 +4959,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                           </button>
                         </div>
                       </div>
-                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
-                        <div>
-                          <h3 className="text-sm font-semibold text-slate-700">Default templates</h3>
-                          <p className="text-xs text-slate-500">Point each document type at the correct master template.</p>
-                        </div>
-                        <div className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-                          {DEFAULT_TEMPLATE_CONFIG.map(config => {
-                            const currentPath = business[config.field] || '';
-                            const busy = templateUpdatingKey === config.field;
-                            return (
-                              <div key={config.field} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="min-w-0 space-y-1">
-                                  <p className="text-sm font-semibold text-slate-700">{config.label}</p>
-                                  <p className="text-xs text-slate-500">{config.description}</p>
-                                  <p className="text-xs text-slate-500 break-all" title={currentPath || 'Not configured'}>
-                                    {currentPath || 'Not configured'}
-                                  </p>
-                                </div>
-                                <div className="flex flex-wrap gap-2 sm:justify-end">
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSelectDefaultTemplate(config.field)}
-                                    disabled={busy}
-                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    {busy ? 'Working…' : 'Change'}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenDefaultTemplate(config.field)}
-                                    disabled={busy || !currentPath}
-                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    Open
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleClearDefaultTemplate(config.field)}
-                                    disabled={busy || !currentPath}
-                                    className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    Clear
-                                  </button>
-                                  {config.supportsNormalize ? (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleNormalizeDefaultTemplate(config.field)}
-                                      disabled={busy}
-                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      {busy ? 'Working…' : 'Normalize'}
-                                    </button>
-                                  ) : null}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
-                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                          <div>
-                            <h3 className="text-sm font-semibold text-slate-700">Document definitions</h3>
-                            <p className="text-xs text-slate-500">Override templates for specific outputs (deposit, balance, contracts, etc.).</p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={handleShowNewDefinitionModal}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                          >
-                            New definition
-                          </button>
-                        </div>
-                        {documentDefinitionsError ? (
-                          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{documentDefinitionsError}</div>
-                        ) : null}
-                        {documentDefinitionsLoading ? (
-                          <div className="rounded border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">Loading document definitions…</div>
-                        ) : documentDefinitions.length ? (
-                          <div className="divide-y divide-slate-200 rounded border border-slate-200 bg-white">
-                            {documentDefinitions.map(definition => {
-                              const fallbackField = TEMPLATE_FIELD_BY_DOC_TYPE[definition.doc_type];
-                              const fallbackPath = fallbackField ? business[fallbackField] : null;
-                              const hasOverride = Boolean(definition.template_path);
-                              const busy = definitionSavingKey === definition.key;
-                              const variantLabel = definition.invoice_variant ? ` · ${startCaseKey(definition.invoice_variant)} variant` : '';
-                              return (
-                                <div key={definition.key} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                                  <div className="min-w-0 space-y-1">
-                                    <p className="text-sm font-semibold text-slate-700">{definition.label}</p>
-                                    <p className="text-xs text-slate-500">
-                                      {DOCUMENT_TYPE_LABELS[definition.doc_type] || startCaseKey(definition.doc_type)}{variantLabel}
-                                    </p>
-                                    <p
-                                      className="text-xs text-slate-500 break-all"
-                                      title={hasOverride ? definition.template_path : (fallbackPath || 'Not configured')}
-                                    >
-                                      {hasOverride ? definition.template_path : fallbackPath ? `Inherits ${fallbackPath}` : 'Not configured'}
-                                    </p>
-                                  </div>
-                                  <div className="flex flex-wrap gap-2 sm:justify-end">
-                                    <button
-                                      type="button"
-                                      onClick={() => handleSelectDefinitionTemplate(definition)}
-                                      disabled={busy}
-                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      {busy ? 'Working…' : 'Change'}
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenDefinitionTemplate(definition)}
-                                      disabled={busy || (!hasOverride && !fallbackPath)}
-                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      Open
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleClearDefinitionTemplate(definition)}
-                                      disabled={busy || !hasOverride}
-                                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                                    >
-                                      Clear override
-                                    </button>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : (
-                          <div className="rounded border border-slate-200 bg-white px-3 py-3 text-xs text-slate-500">No document definitions found.</div>
-                        )}
-                      </div>
                       <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
                         <div>
                           <h3 className="text-sm font-semibold text-slate-700">Placeholder registry</h3>
@@ -5416,183 +5005,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         </div>
       </main>
 
-      {definitionModalOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
-          <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
-            <form
-              onSubmit={event => {
-                event.preventDefault();
-                if (!definitionSaving) handleSaveDefinition();
-              }}
-              className="space-y-5 p-6"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-800">New document definition</h3>
-                  <p className="text-sm text-slate-500">Create a reusable template entry for generated documents.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleCloseDefinitionModal}
-                  className="text-slate-400 transition hover:text-slate-600"
-                  aria-label="Close"
-                >
-                  ✕
-                </button>
-              </div>
-
-              {definitionModalError ? (
-                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
-                  {definitionModalError}
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="block text-sm font-medium text-slate-600">
-                  Label
-                  <input
-                    type="text"
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    value={definitionDraft.label}
-                    onChange={event => handleDefinitionDraftChange('label', event.target.value)}
-                    placeholder="e.g. Statement of Work"
-                  />
-                </label>
-                <label className="block text-sm font-medium text-slate-600">
-                  Key
-                  <input
-                    type="text"
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    value={definitionDraft.key}
-                    onChange={event => handleDefinitionDraftChange('key', event.target.value)}
-                    placeholder="e.g. statement_of_work"
-                  />
-                  <span className="mt-1 block text-xs text-slate-500">Lowercase letters, numbers, and underscores only.</span>
-                </label>
-                <label className="block text-sm font-medium text-slate-600">
-                  Document type
-                  <select
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    value={definitionDraft.doc_type}
-                    onChange={event => handleDefinitionDraftChange('doc_type', event.target.value)}
-                  >
-                    {DOCUMENT_TYPE_OPTIONS.map(option => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </label>
-                {definitionDraft.doc_type === 'invoice' ? (
-                  <label className="block text-sm font-medium text-slate-600">
-                    Invoice variant (optional)
-                    <input
-                      type="text"
-                      className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                      value={definitionDraft.invoice_variant}
-                      onChange={event => handleDefinitionDraftChange('invoice_variant', event.target.value)}
-                      placeholder="e.g. deposit, balance"
-                    />
-                  </label>
-                ) : (
-                  <div className="hidden md:block" />
-                )}
-                <label className="block text-sm font-medium text-slate-600 md:col-span-2">
-                  File suffix (optional)
-                  <input
-                    type="text"
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    value={definitionDraft.file_suffix}
-                    onChange={event => handleDefinitionDraftChange('file_suffix', event.target.value)}
-                    placeholder="e.g. - Statement of Work"
-                  />
-                </label>
-                <label className="block text-sm font-medium text-slate-600 md:col-span-2">
-                  Description (optional)
-                  <textarea
-                    rows={3}
-                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                    value={definitionDraft.description}
-                    onChange={event => handleDefinitionDraftChange('description', event.target.value)}
-                    placeholder="Explain what this template is used for."
-                  />
-                </label>
-              </div>
-
-              <div className="space-y-3">
-                <div className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-600">
-                  <div className="font-medium text-slate-700">Template file</div>
-                  <p className="mt-1 break-all">
-                    {definitionDraft.template_path || definitionFallbackTemplate || 'No override selected. The default template will be used.'}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={handlePickDefinitionDraftTemplate}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                    >
-                      Choose file
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleClearDefinitionDraftTemplate}
-                      disabled={!definitionDraft.template_path}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Clear override
-                    </button>
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap gap-4 text-sm text-slate-600">
-                  <label className="inline-flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={Boolean(definitionDraft.requires_total)}
-                      onChange={event => handleDefinitionDraftChange('requires_total', event.target.checked)}
-                    />
-                    Requires total amount
-                  </label>
-                  <label className="inline-flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={Boolean(definitionDraft.is_primary)}
-                      onChange={event => handleDefinitionDraftChange('is_primary', event.target.checked)}
-                    />
-                    Mark as primary option
-                  </label>
-                  <label className="inline-flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={Boolean(definitionDraft.is_active)}
-                      onChange={event => handleDefinitionDraftChange('is_active', event.target.checked)}
-                    />
-                    Active
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={handleCloseDefinitionModal}
-                  className="inline-flex items-center rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={definitionSaving}
-                  className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {definitionSaving ? 'Saving…' : 'Save definition'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -5632,6 +5044,19 @@ function JobsheetEditorWindow({
   const [jobsheetDocuments, setJobsheetDocuments] = useState([]);
   const [jobsheetDocumentsLoading, setJobsheetDocumentsLoading] = useState(false);
   const [jobsheetDocumentsError, setJobsheetDocumentsError] = useState('');
+  const [documentDefinitions, setDocumentDefinitions] = useState([]);
+  const [documentDefinitionsLoading, setDocumentDefinitionsLoading] = useState(false);
+  const [documentDefinitionsError, setDocumentDefinitionsError] = useState('');
+  const [selectedDefinitionKey, setSelectedDefinitionKey] = useState(null);
+  const [definitionModalOpen, setDefinitionModalOpen] = useState(false);
+  const [definitionModalMode, setDefinitionModalMode] = useState('create');
+  const [definitionDraft, setDefinitionDraft] = useState(createDefinitionDraft());
+  const [definitionModalError, setDefinitionModalError] = useState('');
+  const [definitionKeyEdited, setDefinitionKeyEdited] = useState(false);
+  const [definitionSaving, setDefinitionSaving] = useState(false);
+  const [pendingDefinitionAction, setPendingDefinitionAction] = useState(null);
+  const [jobTemplateOverrides, setJobTemplateOverrides] = useState({});
+  const [jobTemplateLoadingKey, setJobTemplateLoadingKey] = useState(null);
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
@@ -5769,6 +5194,420 @@ function JobsheetEditorWindow({
       setJobsheetDocumentsError(err?.message || 'Unable to delete document');
     }
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
+
+  const findDefinitionByKey = useCallback((key) => {
+    if (!key) return null;
+    return documentDefinitions.find(definition => definition.key === key) || null;
+  }, [documentDefinitions]);
+
+  const loadDocumentDefinitions = useCallback(async () => {
+    if (!numericBusinessId) {
+      setDocumentDefinitions([]);
+      selectDefinitionKey(null);
+      return;
+    }
+    setDocumentDefinitionsLoading(true);
+    setDocumentDefinitionsError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.getDocumentDefinitions !== 'function') {
+        throw new Error('Unable to load document definitions: API unavailable');
+      }
+      const data = await api.getDocumentDefinitions(numericBusinessId, { includeInactive: true });
+      const list = Array.isArray(data) ? data : [];
+      setDocumentDefinitions(list);
+
+      if (!list.length) {
+        selectDefinitionKey(null);
+        return;
+      }
+
+      const hasSelection = list.some(def => def.key === selectedDefinitionKey);
+      if (!hasSelection) {
+        const primary = list.find(def => def.is_primary);
+        const fallback = primary || list[0];
+        selectDefinitionKey(fallback ? fallback.key : null);
+      }
+    } catch (err) {
+      console.error('Failed to load document definitions', err);
+      setDocumentDefinitions([]);
+      setDocumentDefinitionsError(err?.message || 'Unable to load document definitions');
+    } finally {
+      setDocumentDefinitionsLoading(false);
+    }
+  }, [numericBusinessId, selectedDefinitionKey, selectDefinitionKey]);
+
+  const loadJobsheetTemplateOverrides = useCallback(async (jobsheetValue) => {
+    const id = Number(jobsheetValue);
+    if (!Number.isInteger(id)) {
+      setJobTemplateOverrides({});
+      return;
+    }
+    try {
+      const api = window.api;
+      if (!api || typeof api.getJobsheetTemplateOverrides !== 'function') return;
+      const rows = await api.getJobsheetTemplateOverrides(id);
+      const map = {};
+      (rows || []).forEach(row => {
+        if (row?.definition_key && row?.template_path) {
+          map[row.definition_key] = row.template_path;
+        }
+      });
+      setJobTemplateOverrides(map);
+    } catch (err) {
+      console.error('Failed to load jobsheet template overrides', err);
+      setJobTemplateOverrides({});
+    }
+  }, []);
+
+  useEffect(() => {
+    loadDocumentDefinitions();
+  }, [loadDocumentDefinitions]);
+
+  useEffect(() => {
+    if (!jobsheetId) {
+      setJobTemplateOverrides({});
+      return;
+    }
+    loadJobsheetTemplateOverrides(jobsheetId);
+  }, [jobsheetId, loadJobsheetTemplateOverrides]);
+
+  const selectDefinitionKey = useCallback((key) => {
+    setDocumentDefinitionsError('');
+    setSelectedDefinitionKey(key);
+  }, []);
+
+  const openNewDefinitionModal = useCallback(() => {
+    setDefinitionModalMode('create');
+    setDefinitionDraft(createDefinitionDraft());
+    setDefinitionModalError('');
+    setDefinitionKeyEdited(false);
+    setDocumentDefinitionsError('');
+    setDefinitionModalOpen(true);
+  }, []);
+
+  const openEditDefinitionModal = useCallback((definition) => {
+    if (!definition) return;
+    setDefinitionModalMode('edit');
+    setDefinitionDraft(createDefinitionDraft({
+      ...definition,
+      template_path: definition.template_path || '',
+      requires_total: definition.requires_total ? 1 : 0,
+      is_primary: definition.is_primary ? 1 : 0,
+      is_active: definition.is_active === 0 ? 0 : 1,
+      is_locked: definition.is_locked ? 1 : 0,
+      sort_order: definition.sort_order != null ? definition.sort_order : null
+    }));
+    setDefinitionModalError('');
+    setDefinitionKeyEdited(true);
+    setDocumentDefinitionsError('');
+    setDefinitionModalOpen(true);
+  }, []);
+
+  const handleCloseDefinitionModal = useCallback(() => {
+    setDefinitionModalOpen(false);
+    setDefinitionSaving(false);
+    setDefinitionModalError('');
+    setDefinitionDraft(createDefinitionDraft());
+    setDefinitionKeyEdited(false);
+    setDefinitionModalMode('create');
+  }, []);
+
+  const handleDefinitionDraftChange = useCallback((field, rawValue) => {
+    setDefinitionDraft(prev => {
+      const next = { ...prev };
+      const value = rawValue;
+
+      switch (field) {
+        case 'label':
+          next.label = value;
+          if (!definitionKeyEdited) {
+            next.key = slugifyDefinitionKey(value);
+          }
+          break;
+        case 'key':
+          next.key = slugifyDefinitionKey(value);
+          break;
+        case 'doc_type':
+          next.doc_type = value;
+          if (value !== 'invoice') {
+            next.invoice_variant = '';
+          }
+          break;
+        case 'invoice_variant':
+          next.invoice_variant = value;
+          break;
+        case 'description':
+          next.description = value;
+          break;
+        case 'file_suffix':
+          next.file_suffix = value;
+          break;
+        case 'template_path':
+          next.template_path = value || '';
+          break;
+        case 'requires_total':
+          next.requires_total = value ? 1 : 0;
+          break;
+        case 'is_primary':
+          next.is_primary = value ? 1 : 0;
+          break;
+        case 'is_active':
+          next.is_active = value ? 1 : 0;
+          break;
+        default:
+          next[field] = value;
+          break;
+      }
+
+      return next;
+    });
+
+    if (field === 'key') {
+      setDefinitionKeyEdited(true);
+    }
+    setDefinitionModalError('');
+  }, [definitionKeyEdited]);
+
+  const handlePickDefinitionDraftTemplate = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.chooseFile !== 'function') {
+      setDefinitionModalError('Unable to select template: API unavailable');
+      return;
+    }
+
+    const meta = DOC_TYPE_META[definitionDraft.doc_type] || null;
+    try {
+      const selectedPath = await api.chooseFile({
+        title: `Choose template for ${definitionDraft.label || meta?.label || 'document'}`,
+        defaultPath: definitionDraft.template_path || undefined,
+        filters: meta?.filters
+      });
+      if (!selectedPath) return;
+      handleDefinitionDraftChange('template_path', selectedPath);
+      setDefinitionModalError('');
+    } catch (err) {
+      console.error('Failed to choose template file', err);
+      setDefinitionModalError(err?.message || 'Unable to choose template file');
+    }
+  }, [definitionDraft, handleDefinitionDraftChange]);
+
+  const handleClearDefinitionDraftTemplate = useCallback(() => {
+    handleDefinitionDraftChange('template_path', '');
+  }, [handleDefinitionDraftChange]);
+
+  const handleOpenDraftTemplate = useCallback(async () => {
+    const templatePath = definitionDraft.template_path;
+    if (!templatePath) {
+      setDefinitionModalError('Select a template before opening it.');
+      return;
+    }
+    try {
+      const response = await window.api?.openPath?.(templatePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open template');
+      }
+    } catch (err) {
+      console.error('Failed to open template', err);
+      setDefinitionModalError(err?.message || 'Unable to open template');
+    }
+  }, [definitionDraft.template_path]);
+
+  const handleNormalizeDraftTemplate = useCallback(async () => {
+    const templatePath = definitionDraft.template_path;
+    if (!templatePath) {
+      setDefinitionModalError('Select a template before normalizing it.');
+      return;
+    }
+    try {
+      const response = await window.api?.normalizeTemplate?.({ templatePath });
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to normalize template');
+      }
+      setDefinitionModalError('');
+      setMessage('Template normalized');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to normalize template', err);
+      setDefinitionModalError(err?.message || 'Unable to normalize template');
+    }
+  }, [definitionDraft.template_path, setMessage]);
+
+  const handleSaveDefinition = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.saveDocumentDefinition !== 'function') {
+      setDefinitionModalError('Unable to save definition: API unavailable');
+      return;
+    }
+
+    const trimmedLabel = (definitionDraft.label || '').trim();
+    const trimmedKey = slugifyDefinitionKey(definitionDraft.key);
+    const docType = (definitionDraft.doc_type || '').trim();
+
+    if (!trimmedLabel) {
+      setDefinitionModalError('Label is required');
+      return;
+    }
+    if (!trimmedKey) {
+      setDefinitionModalError('Key is required');
+      return;
+    }
+    if (!DOC_TYPE_META[docType]) {
+      setDefinitionModalError('Choose a valid document type');
+      return;
+    }
+
+    const payload = {
+      key: trimmedKey,
+      label: trimmedLabel,
+      doc_type: docType,
+      description: definitionDraft.description ? String(definitionDraft.description) : null,
+      file_suffix: definitionDraft.file_suffix ? String(definitionDraft.file_suffix) : null,
+      invoice_variant: docType === 'invoice' && definitionDraft.invoice_variant ? String(definitionDraft.invoice_variant) : null,
+      template_path: definitionDraft.template_path ? String(definitionDraft.template_path) : null,
+      requires_total: definitionDraft.requires_total ? 1 : 0,
+      is_primary: definitionDraft.is_primary ? 1 : 0,
+      is_active: definitionDraft.is_active === 0 ? 0 : 1,
+      is_locked: definitionDraft.is_locked ? 1 : 0,
+      sort_order: definitionDraft.sort_order != null ? Number(definitionDraft.sort_order) : null
+    };
+
+    setDefinitionModalError('');
+    setDefinitionSaving(true);
+    try {
+      await api.saveDocumentDefinition(numericBusinessId, payload);
+
+      if (payload.template_path && DOC_TYPE_META[payload.doc_type]?.supportsNormalize) {
+        try {
+          await window.api?.normalizeTemplate?.({ templatePath: payload.template_path });
+        } catch (normalizeErr) {
+          console.warn('Failed to normalize template', normalizeErr);
+        }
+      }
+
+      await loadDocumentDefinitions();
+      selectDefinitionKey(trimmedKey);
+      handleCloseDefinitionModal();
+    } catch (err) {
+      console.error('Failed to save document definition', err);
+      setDefinitionModalError(err?.message || 'Unable to save document definition');
+    } finally {
+      setDefinitionSaving(false);
+    }
+  }, [definitionDraft, numericBusinessId, loadDocumentDefinitions, handleCloseDefinitionModal, selectDefinitionKey]);
+
+  const handleDeleteDefinition = useCallback(async (definition) => {
+    if (!definition) return;
+    if (definition.is_locked) {
+      setDefinitionModalError('This definition is locked and cannot be deleted.');
+      return;
+    }
+    const confirmed = window.confirm(`Delete ${definition.label || definition.key}? This cannot be undone.`);
+    if (!confirmed) return;
+    const api = window.api;
+    if (!api || typeof api.deleteDocumentDefinition !== 'function') {
+      setDefinitionModalError('Unable to delete definition: API unavailable');
+      return;
+    }
+    try {
+      await api.deleteDocumentDefinition(numericBusinessId, definition.key);
+      setMessage('Document definition deleted');
+      setTimeout(() => setMessage(''), 1500);
+      await loadDocumentDefinitions();
+      if (selectedDefinitionKey === definition.key) {
+        selectDefinitionKey(null);
+      }
+      handleCloseDefinitionModal();
+    } catch (err) {
+      console.error('Failed to delete document definition', err);
+      setDefinitionModalError(err?.message || 'Unable to delete document definition');
+    }
+  }, [numericBusinessId, loadDocumentDefinitions, selectedDefinitionKey, selectDefinitionKey, handleCloseDefinitionModal, setMessage]);
+
+  const handleOpenDefinitionTemplate = useCallback(async (definition) => {
+    if (!definition) return;
+    const templatePath = definition.template_path;
+    if (!templatePath) {
+      setDocumentDefinitionsError('No template configured for this document type. Set one before opening.');
+      return;
+    }
+    try {
+      const response = await window.api?.openPath?.(templatePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open template');
+      }
+    } catch (err) {
+      console.error('Failed to open definition template', err);
+      setDocumentDefinitionsError(err?.message || 'Unable to open definition template');
+    }
+  }, []);
+
+  const handleOpenJobTemplate = useCallback(async (definition) => {
+    if (!definition) return;
+    if (!jobsheetId) {
+      setError('Save the jobsheet before customising templates.');
+      return;
+    }
+
+    if (!definition.template_path) {
+      setPendingDefinitionAction({ type: 'open-job-template', key: definition.key });
+      openEditDefinitionModal(definition);
+      return;
+    }
+
+    try {
+      setJobTemplateLoadingKey(definition.key);
+      const result = await window.api?.prepareJobsheetTemplateOverride?.({
+        businessId: numericBusinessId,
+        jobsheetId,
+        definitionKey: definition.key,
+        definitionLabel: definition.label,
+        sourceTemplatePath: definition.template_path,
+        clientName: formStateRef.current?.client_name,
+        eventDate: formStateRef.current?.event_date
+      });
+      if (result?.template_path) {
+        setJobTemplateOverrides(prev => ({ ...prev, [definition.key]: result.template_path }));
+        await window.api?.openPath?.(result.template_path);
+      }
+    } catch (err) {
+      console.error('Failed to prepare template override', err);
+      setError(err?.message || 'Unable to prepare template override');
+    } finally {
+      setJobTemplateLoadingKey(null);
+    }
+  }, [jobsheetId, numericBusinessId, formStateRef, setError, openEditDefinitionModal]);
+
+  const handleClearJobTemplate = useCallback(async (definition) => {
+    if (!definition || !jobsheetId) return;
+    const api = window.api;
+    if (!api || typeof api.clearJobsheetTemplateOverride !== 'function') {
+      setError('Unable to clear job template override: API unavailable');
+      return;
+    }
+    try {
+      await api.clearJobsheetTemplateOverride(jobsheetId, definition.key);
+      setJobTemplateOverrides(prev => {
+        const next = { ...prev };
+        delete next[definition.key];
+        return next;
+      });
+      setMessage('Job template override cleared');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to clear job template override', err);
+      setError(err?.message || 'Unable to clear job template override');
+    }
+  }, [jobsheetId, setError, setMessage]);
+
+  const definitionModalTitle = definitionModalMode === 'edit'
+    ? 'Edit document type'
+    : 'New document type';
+  const modalDocMeta = DOC_TYPE_META[definitionDraft.doc_type] || {};
+  const modalTemplatePath = definitionDraft.template_path || '';
+  const modalHasTemplate = modalTemplatePath !== '';
+  const modalSupportsNormalize = modalDocMeta.supportsNormalize && modalHasTemplate && modalTemplatePath.toLowerCase().endsWith('.xlsx');
+  const modalIsLocked = definitionModalMode === 'edit' && Boolean(definitionDraft.is_locked);
 
   useEffect(() => {
     if (!jobsheetId) return;
@@ -6145,14 +5984,15 @@ function JobsheetEditorWindow({
     return Math.round(numeric * 100) / 100;
   }, []);
 
-  const buildDocumentPayload = useCallback((docKey) => {
-    const config = DOCUMENT_CONFIG[docKey];
-    if (!config) return null;
+  const buildDocumentPayload = useCallback((definition) => {
+    if (!definition) return null;
+    const docType = (definition.doc_type || '').toLowerCase();
+    if (!docType) return null;
 
     const current = formStateRef.current || DEFAULT_JOBSHEET(numericBusinessId);
 
     const productionItems = normalizeProductionItems(current.pricing_production_items);
-    const productionSubtotal = parseAmount(current.pricing_production_subtotal) ?? productionItems.reduce((sum, item) => sum + parseAmount(item.cost) || 0, 0);
+    const productionSubtotal = parseAmount(current.pricing_production_subtotal) ?? productionItems.reduce((sum, item) => sum + (parseAmount(item.cost) || 0), 0);
 
     const totalAmount = parseAmount(current.pricing_total)
       ?? (pricingDerived ? parseAmount(pricingDerived.total) : null)
@@ -6174,14 +6014,14 @@ function JobsheetEditorWindow({
     };
 
     const paymentLines = [];
-    if (config.docType === 'invoice' || docKey === 'quote') {
+    if (docType === 'invoice' || docType === 'quote') {
       if (current.balance_due_date) {
         paymentLines.push(`Balance due by ${formatDateDisplay(current.balance_due_date)}`);
       }
       if (depositAmount) {
         paymentLines.push(`Deposit: ${formatCurrency(depositAmount)}`);
       }
-      if (balanceAmount && config.invoiceVariant === 'balance') {
+      if (balanceAmount && definition.invoice_variant === 'balance') {
         paymentLines.push(`Outstanding balance: ${formatCurrency(balanceAmount)}`);
       }
     }
@@ -6229,7 +6069,8 @@ function JobsheetEditorWindow({
 
     const payload = {
       business_id: numericBusinessId,
-      doc_type: config.docType,
+      doc_type: docType,
+      definition_key: definition.key,
       document_date: new Date().toISOString(),
       total_amount: totalAmount ?? undefined,
       balance_amount: balanceAmount ?? undefined,
@@ -6249,14 +6090,14 @@ function JobsheetEditorWindow({
       line_items: lineItems
     };
 
-    if (config.fileSuffix) payload.file_name_suffix = config.fileSuffix;
-    if (config.invoiceVariant) payload.invoice_variant = config.invoiceVariant;
+    if (definition.file_suffix) payload.file_name_suffix = definition.file_suffix;
+    if (definition.invoice_variant) payload.invoice_variant = definition.invoice_variant;
 
-    if (config.docType === 'invoice') {
+    if (docType === 'invoice') {
       payload.due_date = current.balance_due_date || current.event_date || undefined;
     }
 
-    if (config.docType === 'quote') {
+    if (docType === 'quote') {
       payload.quote_meta = {
         validUntil: current.balance_due_date || '',
         includes: current.service_types || '',
@@ -6264,7 +6105,7 @@ function JobsheetEditorWindow({
       };
     }
 
-    if (config.docType === 'contract') {
+    if (docType === 'contract') {
       payload.contract_meta = {
         terms: current.notes ? current.notes.split('\n').filter(Boolean) : [],
         signature: null
@@ -6278,7 +6119,7 @@ function JobsheetEditorWindow({
     return payload;
   }, [business, numericBusinessId, parseAmount, pricingDerived]);
 
-  const validateDocumentRequest = useCallback((docKey) => {
+  const validateDocumentRequest = useCallback((definition) => {
     const current = formStateRef.current || DEFAULT_JOBSHEET(numericBusinessId);
     const messages = [];
 
@@ -6290,25 +6131,46 @@ function JobsheetEditorWindow({
       ?? (pricingDerived ? parseAmount(pricingDerived.total) : null)
       ?? parseAmount(current.ahmen_fee);
 
-    const needsTotal = docKey === 'quote'
-      || docKey === 'workbook'
-      || (docKey && docKey.startsWith('invoice'));
+    const docType = (definition?.doc_type || '').toLowerCase();
+    const requiresTotal = definition?.requires_total ? true : false;
+    const needsTotal = requiresTotal || docType === 'invoice' || docType === 'quote' || docType === 'workbook';
 
     if (needsTotal && !total) {
       messages.push('Enter at least one fee before generating.');
     }
 
+    if (definition && definition.is_active === 0) {
+      messages.push('This document type is inactive. Reactivate it before generating.');
+    }
+
     return messages;
   }, [numericBusinessId, parseAmount, pricingDerived]);
 
-  const documentGenerating = documentGeneratingKey != null;
+  const handlePopulateExcel = useCallback(async (requestedDefinitionKey) => {
+    const targetKey = requestedDefinitionKey || selectedDefinitionKey;
+    if (!targetKey) {
+      setError('Select a document type to generate.');
+      return;
+    }
 
-  const handlePopulateExcel = useCallback(async (requestedDocKey) => {
-    const docKey = requestedDocKey || DEFAULT_DOCUMENT_KEY;
-    const config = DOCUMENT_CONFIG[docKey];
-    if (!config) return;
+    const definition = findDefinitionByKey(targetKey);
+    if (!definition) {
+      setError('Document definition not found.');
+      return;
+    }
 
-    const errors = validateDocumentRequest(docKey);
+    const overridePath = jobTemplateOverrides?.[definition.key] || null;
+    const baseTemplatePath = definition.template_path || '';
+    const templatePath = overridePath || baseTemplatePath;
+
+    if (!templatePath) {
+      setPendingDefinitionAction({ type: 'generate', key: definition.key });
+      setDefinitionModalError('Choose a template before generating this document.');
+      openEditDefinitionModal(definition);
+      return;
+    }
+
+    const errors = validateDocumentRequest(definition);
     if (errors.length) {
       setError(errors.join(' '));
       return;
@@ -6320,25 +6182,36 @@ function JobsheetEditorWindow({
       return;
     }
 
-    const payload = buildDocumentPayload(docKey);
+    const payload = buildDocumentPayload(definition);
     if (!payload) {
       setError('Unable to build document payload');
       return;
     }
 
+    payload.template_path = templatePath;
     if (jobsheetId != null) {
       payload.jobsheet_id = Number(jobsheetId);
     }
 
-    setDocumentGeneratingKey(docKey);
+    const meta = DOC_TYPE_META[definition.doc_type] || null;
+
+    setDocumentGeneratingKey(definition.key);
     setError('');
     try {
+      if (templatePath && meta?.supportsNormalize && templatePath.toLowerCase().endsWith('.xlsx')) {
+        try {
+          await window.api?.normalizeTemplate?.({ templatePath });
+        } catch (normalizeErr) {
+          console.warn('Failed to normalize template', normalizeErr);
+        }
+      }
+
       const result = await api.createDocument(payload);
       if (result?.file_path) {
         setLastOutputPath(result.file_path);
       }
       const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
-      setMessage(`${config.label}${suffix}`.trim());
+      setMessage(`${definition.label || startCaseKey(definition.key)}${suffix}`.trim());
       window.api?.notifyJobsheetChange?.({
         type: 'documents-updated',
         businessId: numericBusinessId,
@@ -6349,13 +6222,29 @@ function JobsheetEditorWindow({
       await refreshJobsheetDocuments();
       return result;
     } catch (err) {
-      console.error('Failed to populate workbook', err);
-      setError(err?.message || 'Unable to populate Excel template');
+      console.error('Failed to generate document', err);
+      setError(err?.message || 'Unable to generate document');
       return null;
     } finally {
       setDocumentGeneratingKey(null);
     }
-  }, [buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, validateDocumentRequest]);
+  }, [selectedDefinitionKey, findDefinitionByKey, jobTemplateOverrides, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal]);
+
+  useEffect(() => {
+    if (!pendingDefinitionAction) return;
+    const definition = findDefinitionByKey(pendingDefinitionAction.key);
+    if (!definition) return;
+    const templatePath = jobTemplateOverrides?.[definition.key] || definition.template_path;
+    if (!templatePath) return;
+
+    const action = pendingDefinitionAction;
+    setPendingDefinitionAction(null);
+    if (action.type === 'generate') {
+      handlePopulateExcel(definition.key);
+    } else if (action.type === 'open-job-template') {
+      handleOpenJobTemplate(definition);
+    }
+  }, [pendingDefinitionAction, findDefinitionByKey, jobTemplateOverrides, handlePopulateExcel, handleOpenJobTemplate]);
 
   const handleOpenOutputFolder = useCallback(async () => {
     let folderPath = resolvedBusiness?.save_path;
@@ -6650,7 +6539,6 @@ function JobsheetEditorWindow({
         activeGroupKey={activeEditorSection}
         onActiveGroupChange={setActiveEditorSection}
         onGenerateDocument={handlePopulateExcel}
-        documentGenerating={documentGenerating}
         documentGeneratingKey={documentGeneratingKey}
         documents={jobsheetDocuments}
         documentsLoading={jobsheetDocumentsLoading}
@@ -6664,9 +6552,245 @@ function JobsheetEditorWindow({
         onOpenOutputFile={handleOpenOutputFile}
         lastGeneratedPath={lastOutputPath}
         groups={fieldGroups}
+        documentDefinitions={documentDefinitions}
+        documentDefinitionsLoading={documentDefinitionsLoading}
+        selectedDefinitionKey={selectedDefinitionKey}
+        onSelectDefinition={selectDefinitionKey}
+        onNewDefinition={openNewDefinitionModal}
+        onEditDefinition={openEditDefinitionModal}
+        onOpenDefinitionTemplate={handleOpenDefinitionTemplate}
+        jobTemplateOverrides={jobTemplateOverrides}
+        onOpenJobTemplate={handleOpenJobTemplate}
+        onClearJobTemplate={handleClearJobTemplate}
+        jobTemplateLoadingKey={jobTemplateLoadingKey}
+        documentDefinitionsError={documentDefinitionsError}
       />
     </>
   );
+
+  const definitionModal = definitionModalOpen ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
+      <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
+        <form
+          onSubmit={event => {
+            event.preventDefault();
+            if (!definitionSaving) handleSaveDefinition();
+          }}
+          className="space-y-5 p-6"
+        >
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-800">{definitionModalTitle}</h3>
+              <p className="text-sm text-slate-500">Configure the template and behaviour for this document type.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPendingDefinitionAction(null);
+                handleCloseDefinitionModal();
+              }}
+              className="text-slate-400 transition hover:text-slate-600"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
+
+          {definitionModalError ? (
+            <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
+              {definitionModalError}
+            </div>
+          ) : null}
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block text-sm font-medium text-slate-600">
+              Label
+              <input
+                type="text"
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                value={definitionDraft.label}
+                onChange={event => handleDefinitionDraftChange('label', event.target.value)}
+                placeholder="e.g. Statement of Work"
+                disabled={modalIsLocked}
+              />
+            </label>
+            <label className="block text-sm font-medium text-slate-600">
+              Key
+              <input
+                type="text"
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                value={definitionDraft.key}
+                onChange={event => handleDefinitionDraftChange('key', event.target.value)}
+                placeholder="e.g. statement_of_work"
+                disabled={modalIsLocked}
+              />
+              <span className="mt-1 block text-xs text-slate-500">Lowercase letters, numbers, and underscores only.</span>
+            </label>
+            <label className="block text-sm font-medium text-slate-600">
+              Document type
+              <select
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:cursor-not-allowed disabled:bg-slate-100"
+                value={definitionDraft.doc_type}
+                onChange={event => handleDefinitionDraftChange('doc_type', event.target.value)}
+                disabled={modalIsLocked}
+              >
+                {DOCUMENT_TYPE_OPTIONS.map(option => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            </label>
+            <div className="space-y-3">
+              {definitionDraft.doc_type === 'invoice' ? (
+                <label className="block text-sm font-medium text-slate-600">
+                  Invoice variant (optional)
+                  <input
+                    type="text"
+                    className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    value={definitionDraft.invoice_variant}
+                    onChange={event => handleDefinitionDraftChange('invoice_variant', event.target.value)}
+                    placeholder="e.g. deposit, balance"
+                  />
+                </label>
+              ) : null}
+              <label className="block text-sm font-medium text-slate-600">
+                File suffix (optional)
+                <input
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  value={definitionDraft.file_suffix}
+                  onChange={event => handleDefinitionDraftChange('file_suffix', event.target.value)}
+                  placeholder="e.g. - Statement of Work"
+                />
+              </label>
+            </div>
+            <label className="block text-sm font-medium text-slate-600 md:col-span-2">
+              Description (optional)
+              <textarea
+                rows={3}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                value={definitionDraft.description}
+                onChange={event => handleDefinitionDraftChange('description', event.target.value)}
+                placeholder="Explain what this template is used for."
+              />
+            </label>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-xs text-slate-600">
+              <div className="font-medium text-slate-700">Template file</div>
+              <p className="mt-1 break-all">
+                {modalHasTemplate ? modalTemplatePath : 'No template selected yet.'}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handlePickDefinitionDraftTemplate}
+                  className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  Choose file
+                </button>
+                <button
+                  type="button"
+                  onClick={handleOpenDraftTemplate}
+                  disabled={!modalHasTemplate}
+                  className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Open file
+                </button>
+                <button
+                  type="button"
+                  onClick={handleClearDefinitionDraftTemplate}
+                  disabled={!modalHasTemplate}
+                  className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Clear template
+                </button>
+                {modalSupportsNormalize ? (
+                  <button
+                    type="button"
+                    onClick={handleNormalizeDraftTemplate}
+                    className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                  >
+                    Normalize
+                  </button>
+                ) : null}
+              </div>
+              {modalDocMeta.supportsNormalize ? (
+                <p className="mt-2 text-[11px] text-slate-500">Excel templates are automatically normalized each time you generate a document.</p>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap gap-4 text-sm text-slate-600">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={Boolean(definitionDraft.requires_total)}
+                  onChange={event => handleDefinitionDraftChange('requires_total', event.target.checked)}
+                />
+                Requires total amount
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={Boolean(definitionDraft.is_primary)}
+                  onChange={event => handleDefinitionDraftChange('is_primary', event.target.checked)}
+                />
+                Mark as primary option
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={Boolean(definitionDraft.is_active)}
+                  onChange={event => handleDefinitionDraftChange('is_active', event.target.checked)}
+                />
+                Active
+              </label>
+            </div>
+
+            {definitionModalMode === 'edit' && modalIsLocked ? (
+              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-500">
+                This definition is part of the default set and cannot be deleted. You can still attach a different template.
+              </div>
+            ) : null}
+          </div>
+
+          <div className="flex items-center justify-between gap-2">
+            {definitionModalMode === 'edit' && !modalIsLocked ? (
+              <button
+                type="button"
+                onClick={() => handleDeleteDefinition(definitionDraft)}
+                className="inline-flex items-center rounded border border-red-200 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
+              >
+                Delete
+              </button>
+            ) : <span />}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setPendingDefinitionAction(null);
+                  handleCloseDefinitionModal();
+                }}
+                className="inline-flex items-center rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={definitionSaving}
+                className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {definitionSaving ? 'Saving…' : 'Save definition'}
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  ) : null;
 
   if (isInline) {
     const inlineStatus = saving ? 'Saving…' : message;
@@ -6683,6 +6807,7 @@ function JobsheetEditorWindow({
           </div>
         </div>
         {editorContent}
+        {definitionModal}
       </div>
     );
   }
@@ -6705,6 +6830,8 @@ function JobsheetEditorWindow({
         {error ? <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
         {editorContent}
       </main>
+
+      {definitionModal}
     </div>
   );
 }

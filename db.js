@@ -321,6 +321,18 @@ function initializeDatabase() {
     db.run(`CREATE INDEX IF NOT EXISTS idx_document_definitions_business_sort
       ON document_definitions (business_id, sort_order)`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS jobsheet_template_overrides (
+      override_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      jobsheet_id INTEGER NOT NULL,
+      definition_key TEXT NOT NULL,
+      template_path TEXT NOT NULL,
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE (jobsheet_id, definition_key)
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_jobsheet_template_overrides_jobsheet
+      ON jobsheet_template_overrides (jobsheet_id)`);
+
     db.run(`CREATE TABLE IF NOT EXISTS event_musicians (
       musician_id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id INTEGER NOT NULL,
@@ -960,6 +972,82 @@ function reorderDocumentDefinitions(businessId, orderedKeys) {
       if (err) reject(err);
       else resolve({ changes: orderedKeys.length });
     });
+  });
+}
+
+function getJobsheetTemplateOverrides(jobsheetId) {
+  return new Promise((resolve, reject) => {
+    const id = Number(jobsheetId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid jobsheet id'));
+      return;
+    }
+
+    db.all(
+      `SELECT definition_key, template_path FROM jobsheet_template_overrides WHERE jobsheet_id = ?`,
+      [id],
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      }
+    );
+  });
+}
+
+function setJobsheetTemplateOverride(jobsheetId, definitionKey, templatePath) {
+  return new Promise((resolve, reject) => {
+    const id = Number(jobsheetId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid jobsheet id'));
+      return;
+    }
+    const key = (definitionKey || '').trim();
+    if (!key) {
+      reject(new Error('Definition key is required'));
+      return;
+    }
+    const pathValue = (templatePath || '').trim();
+    if (!pathValue) {
+      reject(new Error('Template path is required'));
+      return;
+    }
+
+    db.run(
+      `INSERT INTO jobsheet_template_overrides (jobsheet_id, definition_key, template_path, updated_at)
+       VALUES (?, ?, ?, datetime('now'))
+       ON CONFLICT(jobsheet_id, definition_key) DO UPDATE SET
+         template_path = excluded.template_path,
+         updated_at = excluded.updated_at`,
+      [id, key, pathValue],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ overrideId: this.lastID || null, template_path: pathValue });
+      }
+    );
+  });
+}
+
+function clearJobsheetTemplateOverride(jobsheetId, definitionKey) {
+  return new Promise((resolve, reject) => {
+    const id = Number(jobsheetId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid jobsheet id'));
+      return;
+    }
+    const key = (definitionKey || '').trim();
+    if (!key) {
+      reject(new Error('Definition key is required'));
+      return;
+    }
+
+    db.run(
+      `DELETE FROM jobsheet_template_overrides WHERE jobsheet_id = ? AND definition_key = ?`,
+      [id, key],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ removed: this.changes || 0 });
+      }
+    );
   });
 }
 
@@ -1873,6 +1961,9 @@ module.exports = {
   saveDocumentDefinition: (businessId, definition) => saveDocumentDefinition(businessId, definition),
   deleteDocumentDefinition: (businessId, identifier) => deleteDocumentDefinition(businessId, identifier),
   reorderDocumentDefinitions: (businessId, orderedKeys) => reorderDocumentDefinitions(businessId, orderedKeys),
+  getJobsheetTemplateOverrides: (jobsheetId) => getJobsheetTemplateOverrides(jobsheetId),
+  setJobsheetTemplateOverride: (jobsheetId, definitionKey, templatePath) => setJobsheetTemplateOverride(jobsheetId, definitionKey, templatePath),
+  clearJobsheetTemplateOverride: (jobsheetId, definitionKey) => clearJobsheetTemplateOverride(jobsheetId, definitionKey),
 
   addDocument: (documentData) => {
     return new Promise((resolve, reject) => {
