@@ -6,6 +6,14 @@ const settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json'
 const db = new sqlite3.Database(settings.db_path);
 const mergeFieldDefaults = require('./config/mergeFields.json');
 
+function escapeLikePattern(value) {
+  if (typeof value !== 'string') return value;
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
+}
+
 const DEFAULT_BUSINESS_ID = 1;
 const DEFAULT_BUSINESSES = [
   {
@@ -354,6 +362,7 @@ function initializeDatabase() {
       is_active INTEGER DEFAULT 1,
       is_locked INTEGER DEFAULT 0,
       sort_order INTEGER DEFAULT 0,
+      sheet_exports TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (business_id) REFERENCES business_settings(id),
@@ -485,6 +494,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN definition_key TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN invoice_variant TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
 
     db.run('ALTER TABLE business_settings ADD COLUMN invoice_template_path TEXT', logDuplicateColumn);
     db.run('ALTER TABLE business_settings ADD COLUMN quote_template_path TEXT', logDuplicateColumn);
@@ -818,13 +828,23 @@ function syncLegacyBusinessesTable() {
 
 function mapDocumentDefinitionRow(row) {
   if (!row) return null;
+  let sheetExports = [];
+  if (row.sheet_exports) {
+    try {
+      const parsed = typeof row.sheet_exports === 'string' ? JSON.parse(row.sheet_exports) : row.sheet_exports;
+      if (Array.isArray(parsed)) sheetExports = parsed;
+    } catch (err) {
+      console.warn('Unable to parse sheet_exports for definition', row.key, err);
+    }
+  }
   return {
     ...row,
     requires_total: row.requires_total ? 1 : 0,
     is_primary: row.is_primary ? 1 : 0,
     is_active: row.is_active ? 1 : 0,
     is_locked: row.is_locked ? 1 : 0,
-    sort_order: Number.isFinite(row.sort_order) ? Number(row.sort_order) : 0
+    sort_order: Number.isFinite(row.sort_order) ? Number(row.sort_order) : 0,
+    sheet_exports: sheetExports
   };
 }
 
@@ -892,6 +912,13 @@ function determineNextDefinitionSortOrder(businessId) {
 
 function sanitizeDefinitionPayload(definition) {
   if (!definition || typeof definition !== 'object') return {};
+  let sheetExportsValue = null;
+  if (Array.isArray(definition.sheet_exports)) {
+    sheetExportsValue = JSON.stringify(definition.sheet_exports);
+  } else if (typeof definition.sheet_exports === 'string') {
+    const trimmed = definition.sheet_exports.trim();
+    sheetExportsValue = trimmed ? trimmed : null;
+  }
   return {
     key: (definition.key || '').trim(),
     doc_type: (definition.doc_type || '').trim(),
@@ -904,7 +931,8 @@ function sanitizeDefinitionPayload(definition) {
     is_primary: definition.is_primary ? 1 : 0,
     is_active: definition.is_active === 0 ? 0 : 1,
     is_locked: definition.is_locked ? 1 : 0,
-    sort_order: Number.isFinite(definition.sort_order) ? Number(definition.sort_order) : null
+    sort_order: Number.isFinite(definition.sort_order) ? Number(definition.sort_order) : null,
+    sheet_exports: sheetExportsValue
   };
 }
 
@@ -948,9 +976,10 @@ function saveDocumentDefinition(businessId, definition) {
            is_active,
            is_locked,
            sort_order,
+           sheet_exports,
            created_at,
            updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(business_id, key) DO UPDATE SET
            doc_type = excluded.doc_type,
            label = excluded.label,
@@ -962,6 +991,7 @@ function saveDocumentDefinition(businessId, definition) {
            is_primary = excluded.is_primary,
            is_active = excluded.is_active,
            sort_order = excluded.sort_order,
+           sheet_exports = excluded.sheet_exports,
            updated_at = excluded.updated_at,
            is_locked = CASE WHEN document_definitions.is_locked = 1 THEN 1 ELSE excluded.is_locked END`,
         [
@@ -978,6 +1008,7 @@ function saveDocumentDefinition(businessId, definition) {
           payload.is_active,
           payload.is_locked,
           orderValue,
+          payload.sheet_exports,
           now,
           now
         ],
@@ -1041,6 +1072,124 @@ function deleteDocumentDefinition(businessId, identifier) {
         }
       );
     });
+  });
+}
+
+function deleteDocumentsByDefinition(businessId, definitionKey, options = {}) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    const key = (definitionKey || '').trim();
+    if (!key) {
+      reject(new Error('definition_key is required'));
+      return;
+    }
+
+    const conditions = ['business_id = ?', 'definition_key = ?'];
+    const params = [id, key];
+
+    if (options.docType) {
+      conditions.push('doc_type = ?');
+      params.push(options.docType);
+    }
+
+    if (options.jobsheetId !== undefined) {
+      if (options.jobsheetId === null) {
+        conditions.push('jobsheet_id IS NULL');
+      } else {
+        conditions.push('jobsheet_id = ?');
+        params.push(Number(options.jobsheetId));
+      }
+    }
+
+    if (options.eventId !== undefined) {
+      if (options.eventId === null) {
+        conditions.push('event_id IS NULL');
+      } else {
+        conditions.push('event_id = ?');
+        params.push(Number(options.eventId));
+      }
+    }
+
+    const selectParams = params.slice();
+    const deleteParams = params.slice();
+
+    db.all(
+      `SELECT document_id, file_path FROM documents WHERE ${conditions.join(' AND ')}`,
+      selectParams,
+      (selectErr, rows) => {
+        if (selectErr) {
+          reject(selectErr);
+          return;
+        }
+
+        db.run(
+          `DELETE FROM documents WHERE ${conditions.join(' AND ')}`,
+          deleteParams,
+          function (err) {
+            if (err) reject(err);
+            else resolve({ removed: this.changes || 0, documents: rows || [] });
+          }
+        );
+      }
+    );
+  });
+}
+
+function deleteDocumentsByPathPrefix(businessId, absolutePath) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    if (!absolutePath) {
+      resolve({ removed: 0 });
+      return;
+    }
+
+    const normalized = path.resolve(absolutePath);
+    const escaped = escapeLikePattern(normalized);
+    const likeValue = `${escaped}%`;
+
+    db.run(
+      "DELETE FROM documents WHERE business_id = ? AND file_path LIKE ? ESCAPE '\\'",
+      [id, likeValue],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ removed: this.changes || 0 });
+      }
+    );
+  });
+}
+
+function deleteDocumentByFilePath(businessId, absolutePath) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+
+    const normalized = absolutePath ? path.resolve(absolutePath) : null;
+    if (!normalized) {
+      resolve({ removed: 0 });
+      return;
+    }
+
+    db.run(
+      'DELETE FROM documents WHERE business_id = ? AND file_path = ?',
+      [id, normalized],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ removed: this.changes || 0 });
+      }
+    );
   });
 }
 
@@ -2752,5 +2901,8 @@ module.exports = {
   setMergeFieldValueSource,
   clearMergeFieldValueSource,
   saveMergeField,
-  deleteMergeField
+  deleteMergeField,
+  deleteDocumentsByDefinition,
+  deleteDocumentsByPathPrefix,
+  deleteDocumentByFilePath
 };

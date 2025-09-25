@@ -2,6 +2,8 @@ const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const JSZip = require('jszip');
+const os = require('os');
+const { spawn } = require('child_process');
 const db = require('./db');
 
 const AHMEN_TEMPLATE_KEY = 'ahmen_excel';
@@ -18,6 +20,25 @@ function sanitizeForFilename(text) {
     .replace(/[\\/:*?"<>|]/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function slugify(value) {
+  return (value || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-+/g, '-');
+}
+
+function startCaseFromKey(value) {
+  const normalized = (value || '')
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return '';
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
 }
 
 function parseDate(value) {
@@ -537,11 +558,15 @@ function buildDestinationPath({ business, client, event, docType, number, templa
   const humanFormatted = sanitizeForFilename(human);
 
   const fileNameParts = [iso, clientName, humanFormatted].filter(Boolean);
-  const fileName = `${fileNameParts.join(' - ')}${extension}`;
+  const baseName = fileNameParts.join(' - ');
+  const fileName = `${baseName}${extension}`;
   const baseDir = business?.save_path || path.join(process.cwd(), 'documents');
   ensureDirectoryExists(baseDir);
 
-  return path.join(baseDir, fileName);
+  const jobDir = path.join(baseDir, baseName || 'Documents');
+  ensureDirectoryExists(jobDir);
+
+  return path.join(jobDir, fileName);
 }
 
 function replacePlaceholdersInWorksheet(worksheet, replacements) {
@@ -772,29 +797,33 @@ async function generateDocumentFile({ templatePath, destinationPath, business, d
   }
 }
 
-function moveFileToTrash(filePath) {
-  if (!filePath) return null;
+function movePathToTrash(targetPath) {
+  if (!targetPath) return null;
   try {
-    if (!fs.existsSync(filePath)) {
+    if (!fs.existsSync(targetPath)) {
       return null;
     }
-    const originalDir = path.dirname(filePath);
+    const originalDir = path.dirname(targetPath);
     const trashDir = path.join(originalDir, '.trash');
     ensureDirectoryExists(trashDir);
 
-    const base = path.basename(filePath);
-    let targetPath = path.join(trashDir, base);
+    const base = path.basename(targetPath);
+    let destination = path.join(trashDir, base);
     let counter = 1;
-    while (fs.existsSync(targetPath)) {
-      targetPath = path.join(trashDir, `${base}.${counter}`);
+    while (fs.existsSync(destination)) {
+      destination = path.join(trashDir, `${base}.${counter}`);
       counter += 1;
     }
-    fs.renameSync(filePath, targetPath);
-    return targetPath;
+    fs.renameSync(targetPath, destination);
+    return destination;
   } catch (err) {
-    console.error('Failed to move file to trash:', err);
+    console.error('Failed to move path to trash:', err);
     throw err;
   }
+}
+
+function moveFileToTrash(filePath) {
+  return movePathToTrash(filePath);
 }
 
 function findAvailablePath(targetPath) {
@@ -832,6 +861,459 @@ function appendFileSuffix(filePath, suffix) {
   const extension = path.extname(filePath);
   const base = extension ? filePath.slice(0, -extension.length) : filePath;
   return `${base}${suffix}${extension}`;
+}
+
+function replaceFileExtension(filePath, extension) {
+  const currentExt = path.extname(filePath);
+  return `${currentExt ? filePath.slice(0, -currentExt.length) : filePath}${extension.startsWith('.') ? extension : `.${extension}`}`;
+}
+
+let cachedLibreOfficePath = undefined;
+
+function findExecutableInPath(command) {
+  try {
+    const whichResult = spawn('which', [command], { stdio: ['ignore', 'pipe', 'ignore'] });
+    let output = '';
+    whichResult.stdout.on('data', chunk => {
+      output += chunk.toString();
+    });
+    return new Promise(resolve => {
+      whichResult.on('close', code => {
+        if (code === 0) resolve(output.trim() || null);
+        else resolve(null);
+      });
+    });
+  } catch (err) {
+    return Promise.resolve(null);
+  }
+}
+
+async function ensureLibreOfficePath() {
+  if (cachedLibreOfficePath) return cachedLibreOfficePath;
+
+  const candidates = [];
+  if (process.env.LIBREOFFICE_PATH) candidates.push(process.env.LIBREOFFICE_PATH);
+  candidates.push('/Applications/LibreOffice.app/Contents/MacOS/soffice');
+  candidates.push('/usr/local/bin/soffice');
+  candidates.push('/usr/bin/soffice');
+
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      cachedLibreOfficePath = candidate;
+      return cachedLibreOfficePath;
+    }
+  }
+
+  const resolved = await findExecutableInPath('soffice');
+  if (resolved) {
+    cachedLibreOfficePath = resolved;
+    return cachedLibreOfficePath;
+  }
+
+  throw new Error('LibreOffice (soffice) executable not found. Install LibreOffice or set LIBREOFFICE_PATH.');
+}
+
+function runLibreOfficeConversion(sofficePath, sourcePath, outDir) {
+  const attemptConversion = (filter) => new Promise((resolve, reject) => {
+    const args = ['--headless', '--convert-to', filter, '--outdir', outDir, sourcePath];
+    const child = spawn(sofficePath, args, { stdio: 'ignore' });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (code === 0) resolve();
+      else reject(new Error(`LibreOffice exited with code ${code} using filter ${filter}`));
+    });
+  });
+
+  return attemptConversion('pdf:calc_pdf_Export').catch(primaryError => (
+    attemptConversion('pdf').catch(() => { throw primaryError; })
+  ));
+}
+
+async function convertWorkbookToPdf(sourcePath, targetPath) {
+  const sofficePath = await ensureLibreOfficePath();
+  const outDir = path.dirname(targetPath);
+  ensureDirectoryExists(outDir);
+
+  await runLibreOfficeConversion(sofficePath, sourcePath, outDir);
+
+  const generatedPath = replaceFileExtension(path.join(outDir, path.basename(sourcePath)), '.pdf');
+  if (!fs.existsSync(generatedPath)) {
+    throw new Error('LibreOffice did not produce a PDF file');
+  }
+
+  if (generatedPath !== targetPath) {
+    if (fs.existsSync(targetPath)) fs.unlinkSync(targetPath);
+    fs.renameSync(generatedPath, targetPath);
+  }
+  return targetPath;
+}
+
+async function createWorkbookWithSingleSheet(sourceWorkbookPath, sheetName, tempWorkbookPath) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(sourceWorkbookPath);
+  const worksheet = workbook.getWorksheet(sheetName);
+  if (!worksheet) {
+    throw new Error(`Sheet "${sheetName}" not found in workbook`);
+  }
+
+  const idsToRemove = workbook.worksheets
+    .filter(ws => ws.id !== worksheet.id)
+    .map(ws => ws.id);
+
+  idsToRemove.forEach(id => workbook.removeWorksheet(id));
+  workbook.workbook.views = [{ activeTab: 0 }];
+
+  await workbook.xlsx.writeFile(tempWorkbookPath);
+}
+
+async function exportSheetToPdf({
+  workbookPath,
+  sheetName,
+  destinationPath
+}) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sheet-pdf-'));
+  const tempWorkbookPath = path.join(tempDir, `${slugify(sheetName) || 'sheet'}.xlsx`);
+
+  try {
+    await createWorkbookWithSingleSheet(workbookPath, sheetName, tempWorkbookPath);
+    await convertWorkbookToPdf(tempWorkbookPath, destinationPath);
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch (err) {
+      // ignore cleanup errors
+    }
+  }
+}
+
+async function generateSheetExports({
+  workbookPath,
+  sheetExports,
+  parentDefinition,
+  insertPayload,
+  documentData,
+  insertResult,
+  documentDate,
+  normalizedJobsheetId
+}) {
+  if (!Array.isArray(sheetExports) || !sheetExports.length) return [];
+
+  const results = [];
+  const businessId = documentData.business_id;
+
+  for (const entry of sheetExports) {
+    const sheetName = (entry?.sheet || '').trim();
+    if (!sheetName) {
+      results.push({ success: false, error: 'Sheet name missing on sheet export entry.' });
+      continue;
+    }
+
+    const docType = (entry?.docType || entry?.format || 'pdf').toLowerCase();
+    if (docType !== 'pdf') {
+      results.push({ success: false, error: `Unsupported export format for sheet ${sheetName}` });
+      continue;
+    }
+
+    const suffix = entry?.fileSuffix || entry?.suffix || ` - ${sheetName}`;
+    const label = entry?.label || sheetName;
+    const definitionKey = entry?.key || parentDefinition.key;
+
+    const pdfBasePath = suffix ? appendFileSuffix(workbookPath, suffix) : workbookPath;
+    const pdfPathCandidate = replaceFileExtension(pdfBasePath, '.pdf');
+    const pdfPath = findAvailablePath(pdfPathCandidate);
+
+    try {
+      await exportSheetToPdf({ workbookPath, sheetName, destinationPath: pdfPath });
+
+      const removal = await db.deleteDocumentsByDefinition(businessId, definitionKey, {
+        docType,
+        jobsheetId: normalizedJobsheetId ?? null,
+        eventId: documentData.event_id ?? null
+      });
+
+      const newDoc = await db.addDocument({
+        business_id: businessId,
+        event_id: documentData.event_id ?? null,
+        jobsheet_id: normalizedJobsheetId,
+        doc_type: docType,
+        number: insertResult?.number ?? null,
+        status: 'generated',
+        total_amount: insertPayload.total_amount ?? null,
+        balance_due: insertPayload.balance_due ?? null,
+        due_date: insertPayload.due_date ?? null,
+        file_path: pdfPath,
+        client_name: insertPayload.client_name ?? null,
+        event_name: insertPayload.event_name ?? null,
+        event_date: insertPayload.event_date ?? null,
+        document_date: documentDate,
+        definition_key: definitionKey,
+        invoice_variant: documentData.invoice_variant || null
+      });
+
+      results.push({
+        success: true,
+        sheet: sheetName,
+        file_path: pdfPath,
+        definition_key: definitionKey,
+        label,
+        document: newDoc
+      });
+
+      if (removal?.documents?.length) {
+        removal.documents.forEach(oldDoc => {
+          const oldPath = oldDoc?.file_path;
+          if (!oldPath || oldPath === pdfPath) return;
+          try {
+            moveFileToTrash(oldPath);
+          } catch (cleanupErr) {
+            console.warn('Unable to move old sheet export to trash', oldPath, cleanupErr);
+          }
+        });
+      }
+    } catch (err) {
+      console.error('Failed to export sheet to PDF', sheetName, err);
+      results.push({ success: false, sheet: sheetName, error: err?.message || String(err) });
+    }
+  }
+
+  return results;
+}
+
+async function listWorkbookSheets(templatePath) {
+  if (!templatePath || typeof templatePath !== 'string') {
+    throw new Error('Template path is required to inspect sheets');
+  }
+
+  const resolved = path.resolve(templatePath);
+  if (!fs.existsSync(resolved)) {
+    throw new Error(`Workbook not found at ${resolved}`);
+  }
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(resolved);
+  return workbook.worksheets
+    .map(ws => (ws && typeof ws.name === 'string') ? ws.name.trim() : '')
+    .filter(name => Boolean(name));
+}
+
+function buildSheetExportsFromNames(definition, sheetNames) {
+  const existing = Array.isArray(definition?.sheet_exports) ? definition.sheet_exports.slice() : [];
+  const seenSheets = new Set(existing.map(entry => (entry?.sheet || '').toLowerCase()));
+  const existingKeys = new Set(existing.map(entry => entry?.key).filter(Boolean));
+
+  const baseKey = definition?.key || 'workbook';
+  const baseLabel = definition?.label || startCaseFromKey(baseKey);
+
+  const additions = [];
+  sheetNames.forEach(rawName => {
+    const sheetName = (rawName || '').trim();
+    if (!sheetName) return;
+    const lower = sheetName.toLowerCase();
+    if (seenSheets.has(lower)) return;
+
+    const slug = slugify(sheetName) || 'sheet';
+    let candidateKey = `${baseKey}_${slug}_pdf`;
+    let counter = 1;
+    while (existingKeys.has(candidateKey)) {
+      counter += 1;
+      candidateKey = `${baseKey}_${slug}_${counter}_pdf`;
+    }
+
+    existingKeys.add(candidateKey);
+    seenSheets.add(lower);
+
+    additions.push({
+      sheet: sheetName,
+      label: `${baseLabel} – ${sheetName}`,
+      fileSuffix: ` - ${sheetName}`,
+      docType: 'pdf',
+      format: 'pdf',
+      key: candidateKey
+    });
+  });
+
+  if (!additions.length) return existing;
+  return existing.concat(additions);
+}
+
+function buildDocumentTreeStructure(basePath, currentPath) {
+  let stats;
+  try {
+    stats = fs.statSync(currentPath);
+  } catch (err) {
+    console.warn('Unable to stat path while building document tree', currentPath, err);
+    return null;
+  }
+
+  const relativePath = path.relative(basePath, currentPath) || '';
+  const node = {
+    name: relativePath ? path.basename(currentPath) : path.basename(basePath) || 'Documents',
+    path: relativePath,
+    absolutePath: currentPath,
+    type: stats.isDirectory() ? 'directory' : 'file',
+    modified: stats.mtime?.toISOString?.() || null
+  };
+
+  if (stats.isFile()) {
+    node.size = stats.size ?? 0;
+    return node;
+  }
+
+  if (!stats.isDirectory()) {
+    return node;
+  }
+
+  let entries = [];
+  try {
+    entries = fs.readdirSync(currentPath, { withFileTypes: true });
+  } catch (err) {
+    console.warn('Unable to read directory while building document tree', currentPath, err);
+    node.children = [];
+    return node;
+  }
+
+  const children = entries
+    .map(entry => buildDocumentTreeStructure(basePath, path.join(currentPath, entry.name)))
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (a.type !== b.type) {
+        return a.type === 'directory' ? -1 : 1;
+      }
+      return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
+    });
+
+  node.children = children;
+  return node;
+}
+
+async function listDocumentTree(options = {}) {
+  const businessId = Number(options.businessId);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('Invalid business id');
+  }
+
+  const business = await db.getBusinessById(businessId);
+  if (!business) {
+    throw new Error('Business not found');
+  }
+
+  const baseDir = business.save_path ? path.resolve(business.save_path) : path.join(process.cwd(), 'documents');
+  ensureDirectoryExists(baseDir);
+
+  const root = buildDocumentTreeStructure(baseDir, baseDir) || {
+    name: path.basename(baseDir) || 'Documents',
+    path: '',
+    absolutePath: baseDir,
+    type: 'directory',
+    children: []
+  };
+
+  root.path = '';
+  root.absolutePath = baseDir;
+  if (!Array.isArray(root.children)) {
+    root.children = [];
+  }
+
+  return root;
+}
+
+function resolvePathWithinBase(baseDir, relativePath) {
+  const normalizedRelative = relativePath ? relativePath.replace(/\\/g, path.sep) : '';
+  const resolvedBase = path.resolve(baseDir);
+  const resolvedTarget = path.resolve(baseDir, normalizedRelative);
+  if (resolvedTarget !== resolvedBase && !resolvedTarget.startsWith(`${resolvedBase}${path.sep}`)) {
+    throw new Error('Invalid folder path');
+  }
+  return { resolvedBase, resolvedTarget };
+}
+
+async function deleteDocumentFolder(options = {}) {
+  const businessId = Number(options.businessId);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('Invalid business id');
+  }
+
+  const relativePath = typeof options.relativePath === 'string' ? options.relativePath.trim() : '';
+  if (!relativePath) {
+    throw new Error('Folder path is required');
+  }
+
+  const business = await db.getBusinessById(businessId);
+  if (!business) {
+    throw new Error('Business not found');
+  }
+
+  const baseDir = business.save_path ? path.resolve(business.save_path) : path.join(process.cwd(), 'documents');
+  ensureDirectoryExists(baseDir);
+
+  const { resolvedBase, resolvedTarget } = resolvePathWithinBase(baseDir, relativePath);
+  if (resolvedTarget === resolvedBase) {
+    throw new Error('Cannot delete the root documents folder');
+  }
+  if (!fs.existsSync(resolvedTarget) || !fs.statSync(resolvedTarget).isDirectory()) {
+    throw new Error('Folder not found');
+  }
+
+  await db.deleteDocumentsByPathPrefix(businessId, resolvedTarget);
+
+  let trashedPath = null;
+  if (options.moveToTrash === false) {
+    fs.rmSync(resolvedTarget, { recursive: true, force: true });
+  } else {
+    trashedPath = movePathToTrash(resolvedTarget);
+  }
+
+  return {
+    ok: true,
+    trashedPath
+  };
+}
+
+async function deleteDocumentByPath(options = {}) {
+  const businessId = Number(options.businessId);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('Invalid business id');
+  }
+
+  const business = await db.getBusinessById(businessId);
+  if (!business) {
+    throw new Error('Business not found');
+  }
+
+  const baseDir = business.save_path ? path.resolve(business.save_path) : path.join(process.cwd(), 'documents');
+  ensureDirectoryExists(baseDir);
+
+  let targetPath = options.absolutePath ? path.resolve(options.absolutePath) : null;
+  if (!targetPath) {
+    const relativePath = typeof options.relativePath === 'string' ? options.relativePath.trim() : '';
+    if (!relativePath) {
+      throw new Error('File path is required');
+    }
+    targetPath = path.resolve(baseDir, relativePath);
+  }
+
+  const resolvedBase = path.resolve(baseDir);
+  if (!targetPath.startsWith(`${resolvedBase}${path.sep}`) && targetPath !== resolvedBase) {
+    throw new Error('Invalid file path');
+  }
+
+  if (!fs.existsSync(targetPath) || !fs.statSync(targetPath).isFile()) {
+    throw new Error('File not found');
+  }
+
+  await db.deleteDocumentByFilePath(businessId, targetPath);
+
+  let trashedPath = null;
+  if (options.moveToTrash === false) {
+    fs.rmSync(targetPath, { force: true });
+  } else {
+    trashedPath = movePathToTrash(targetPath);
+  }
+
+  return {
+    ok: true,
+    trashedPath
+  };
 }
 
 async function relocateBusinessDocuments({ businessId, sourcePath, targetPath }) {
@@ -1159,13 +1641,57 @@ async function createDocument(documentData) {
   });
 
   await db.updateDocumentStatus(insertResult.id, { file_path: destinationPath });
+
+  let additionalOutputs = [];
+  let sheetExports = Array.isArray(definitionRecord?.sheet_exports)
+    ? definitionRecord.sheet_exports.map(entry => ({ ...entry }))
+    : [];
+  const definitionIsWorkbook = (definitionRecord?.doc_type || '').toLowerCase() === 'workbook';
+
+  if (definitionIsWorkbook) {
+    try {
+      const workbookSheets = await listWorkbookSheets(destinationPath);
+      if (workbookSheets.length) {
+        const generatedExports = buildSheetExportsFromNames(definitionRecord, workbookSheets);
+        if (Array.isArray(generatedExports) && generatedExports.length) {
+          const existingJson = JSON.stringify(sheetExports || []);
+          const generatedJson = JSON.stringify(generatedExports);
+          sheetExports = generatedExports;
+          definitionRecord.sheet_exports = generatedExports;
+          if (generatedJson !== existingJson) {
+            await db.saveDocumentDefinition(business.id, {
+              ...definitionRecord,
+              sheet_exports: generatedExports
+            });
+          }
+        }
+      }
+    } catch (autoErr) {
+      console.warn('Unable to auto-create sheet exports for workbook', autoErr);
+    }
+  }
+
+  if (sheetExports.length) {
+    additionalOutputs = await generateSheetExports({
+      workbookPath: destinationPath,
+      sheetExports,
+      parentDefinition: definitionRecord,
+      insertPayload,
+      documentData,
+      insertResult,
+      documentDate,
+      normalizedJobsheetId
+    });
+  }
+
   await Promise.all(sessionIds.map(sessionId => db.markSessionExported(sessionId, true)));
 
   return {
     id: insertResult.id,
     number: insertResult.number,
     file_path: destinationPath,
-    jobsheet_id: normalizedJobsheetId
+    jobsheet_id: normalizedJobsheetId,
+    additional_outputs: additionalOutputs
   };
 }
 
@@ -1266,12 +1792,17 @@ module.exports = {
   relocateBusinessDocuments,
   prepareJobsheetTemplateOverride,
   normalizeTemplateFile,
+  listWorkbookSheets,
+  listDocumentTree,
+  deleteDocumentFolder,
+  deleteDocumentByPath,
   __private: {
     applyAhmenTemplateWithZip,
     replaceAhmenNumericCell,
     replaceAhmenStringCell,
     buildNumericCell,
     formatNumericForCell,
-    buildMergeFieldValueMap
+    buildMergeFieldValueMap,
+    buildDocumentTreeStructure
   }
 };

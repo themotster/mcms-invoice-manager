@@ -7,7 +7,12 @@
     "show_in_jobsheet": true,
     "description": "Primary contact name for the client",
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B3", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B3",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -17,7 +22,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B4", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B4",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -27,7 +37,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B5", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B5",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -37,7 +52,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B6", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B6",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -47,7 +67,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B7", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B7",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -57,7 +82,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B8", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B8",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -67,7 +97,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B9", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B9",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -77,7 +112,12 @@
     "category": "client",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B10", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B10",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -87,7 +127,12 @@
     "category": "event",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B13", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B13",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -97,7 +142,13 @@
     "category": "event",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B14", "data_type": "string", "format": "date_human" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B14",
+        "data_type": "string",
+        "format": "date_human"
+      }
     ]
   },
   {
@@ -107,7 +158,12 @@
     "category": "event",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B15", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B15",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -117,7 +173,12 @@
     "category": "event",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B16", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B16",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -127,7 +188,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B19", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B19",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -137,7 +203,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B20", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B20",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -147,7 +218,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B21", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B21",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -157,7 +233,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B22", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B22",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -167,7 +248,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B23", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B23",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -177,7 +263,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B24", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B24",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -187,7 +278,13 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B27", "data_type": "number", "style": "12" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B27",
+        "data_type": "number",
+        "style": "12"
+      }
     ]
   },
   {
@@ -197,7 +294,13 @@
     "category": "financial",
     "show_in_jobsheet": false,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B30", "data_type": "number", "style": "12" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B30",
+        "data_type": "number",
+        "style": "12"
+      }
     ]
   },
   {
@@ -207,7 +310,13 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B28", "data_type": "number", "style": "12" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B28",
+        "data_type": "number",
+        "style": "12"
+      }
     ]
   },
   {
@@ -217,7 +326,13 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B29", "data_type": "number", "style": "12" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B29",
+        "data_type": "number",
+        "style": "12"
+      }
     ]
   },
   {
@@ -227,7 +342,13 @@
     "category": "financial",
     "show_in_jobsheet": false,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B31", "data_type": "number", "style": "12" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B31",
+        "data_type": "number",
+        "style": "12"
+      }
     ]
   },
   {
@@ -237,7 +358,13 @@
     "category": "financial",
     "show_in_jobsheet": false,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B32", "data_type": "number", "style": "12" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B32",
+        "data_type": "number",
+        "style": "12"
+      }
     ]
   },
   {
@@ -247,7 +374,13 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B33", "data_type": "string", "format": "date_human" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B33",
+        "data_type": "string",
+        "format": "date_human"
+      }
     ]
   },
   {
@@ -257,7 +390,13 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B34", "data_type": "string", "format": "date_human" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B34",
+        "data_type": "string",
+        "format": "date_human"
+      }
     ]
   },
   {
@@ -267,7 +406,12 @@
     "category": "services",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B37", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B37",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -277,7 +421,12 @@
     "category": "services",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B38", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B38",
+        "data_type": "string"
+      }
     ]
   },
   {
@@ -287,7 +436,12 @@
     "category": "venue",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B40", "data_type": "string" }
+      {
+        "template": "ahmen_excel",
+        "sheet": "Client Data",
+        "cell": "B40",
+        "data_type": "string"
+      }
     ]
   }
 ]

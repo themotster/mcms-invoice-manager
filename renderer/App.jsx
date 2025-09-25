@@ -3283,6 +3283,129 @@ function DocumentsPanel({
   );
 }
 
+function DocumentTreeNode({ node, depth = 0, onOpen, onReveal, onDeleteFolder, onDeleteFile }) {
+  const isDirectory = node?.type === 'directory';
+  const hasChildren = Array.isArray(node?.children) && node.children.length > 0;
+  const [expanded, setExpanded] = useState(depth === 0);
+
+  const handleToggle = () => {
+    if (isDirectory && hasChildren) {
+      setExpanded(prev => !prev);
+    }
+  };
+
+  const indentStyle = { marginLeft: depth * 16 };
+  const handleOpen = () => onOpen?.(node);
+  const handleReveal = () => onReveal?.(node);
+  const handleDelete = () => {
+    if (isDirectory) onDeleteFolder?.(node);
+    else onDeleteFile?.(node);
+  };
+
+  return (
+    <div key={node?.absolutePath || node?.path || node?.name} className="space-y-1">
+      <div className="flex items-center justify-between gap-2 text-sm" style={indentStyle}>
+        <div className="flex items-center gap-2">
+          {isDirectory ? (
+            <button
+              type="button"
+              onClick={handleToggle}
+              className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 text-xs text-slate-600 hover:bg-slate-100"
+              aria-label={expanded ? 'Collapse folder' : 'Expand folder'}
+            >
+              {hasChildren ? (expanded ? '▾' : '▸') : '▸'}
+            </button>
+          ) : (
+            <span className="inline-flex h-6 w-6 items-center justify-center text-slate-400">•</span>
+          )}
+          <span className={`break-all ${isDirectory ? 'font-semibold text-slate-700' : 'text-slate-600'}`}>
+            {node?.name || node?.path || 'Documents'}
+          </span>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleOpen}
+            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          >
+            Open
+          </button>
+          <button
+            type="button"
+            onClick={handleReveal}
+            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          >
+            Reveal
+          </button>
+          {(isDirectory && node?.path) || (!isDirectory) ? (
+            <button
+              type="button"
+              onClick={handleDelete}
+              className="inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
+            >
+              Delete
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {isDirectory && hasChildren && expanded ? (
+        <div className="space-y-1">
+          {node.children.map(child => (
+            <DocumentTreeNode
+              key={child?.absolutePath || child?.path || child?.name}
+              node={child}
+              depth={depth + 1}
+              onOpen={onOpen}
+              onReveal={onReveal}
+              onDeleteFolder={onDeleteFolder}
+              onDeleteFile={onDeleteFile}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DocumentTreeView({ tree, loading, error, onRefresh, onOpen, onReveal, onDeleteFolder, onDeleteFile }) {
+  return (
+    <div className="rounded border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700">Document folders</h3>
+          <p className="text-xs text-slate-500">Browse and manage generated files on disk.</p>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+        >
+          Refresh tree
+        </button>
+      </div>
+      {error ? (
+        <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-600">{error}</div>
+      ) : null}
+      <div className="max-h-80 overflow-auto px-4 py-3 text-sm">
+        {loading ? (
+          <div className="text-slate-500">Loading folders…</div>
+        ) : tree ? (
+          <DocumentTreeNode
+            node={tree}
+            depth={0}
+            onOpen={onOpen}
+            onReveal={onReveal}
+            onDeleteFolder={onDeleteFolder}
+            onDeleteFile={onDeleteFile}
+          />
+        ) : (
+          <div className="text-slate-500">No documents found yet.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function JobsheetEditor({
   business,
   businessId,
@@ -3866,6 +3989,9 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [documents, setDocuments] = useState([]);
   const [documentsLoading, setDocumentsLoading] = useState(true);
   const [documentsError, setDocumentsError] = useState('');
+  const [documentTree, setDocumentTree] = useState(null);
+  const [documentTreeLoading, setDocumentTreeLoading] = useState(false);
+  const [documentTreeError, setDocumentTreeError] = useState('');
   const [documentsGroup, setDocumentsGroup] = useState('none');
   const [documentsSearch, setDocumentsSearch] = useState('');
   const [documentColumnsState, setDocumentColumnsState] = useState(() => {
@@ -3934,6 +4060,25 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business.id, normalizeJobsheet]);
 
+  const loadDocumentTree = useCallback(async () => {
+    setDocumentTreeLoading(true);
+    setDocumentTreeError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.listDocumentTree !== 'function') {
+        throw new Error('Document tree unavailable');
+      }
+      const tree = await api.listDocumentTree({ businessId: business.id });
+      setDocumentTree(tree || null);
+    } catch (err) {
+      console.error('Failed to load document tree', err);
+      setDocumentTreeError(err?.message || 'Unable to load document tree');
+      setDocumentTree(null);
+    } finally {
+      setDocumentTreeLoading(false);
+    }
+  }, [business.id]);
+
   const refreshDocuments = useCallback(async () => {
     setDocumentsLoading(true);
     setDocumentsError('');
@@ -3944,13 +4089,14 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       }
       const data = await api.getDocuments({ businessId: business.id });
       setDocuments(Array.isArray(data) ? data : []);
+      await loadDocumentTree();
     } catch (err) {
       console.error('Failed to refresh documents', err);
       setDocumentsError(err?.message || 'Unable to load documents');
     } finally {
       setDocumentsLoading(false);
     }
-  }, [business.id]);
+  }, [business.id, loadDocumentTree]);
 
   const handleRefreshDocuments = useCallback(() => {
     refreshDocuments();
@@ -3990,6 +4136,71 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, []);
 
+  const handleOpenTreeNode = useCallback(async (node) => {
+    if (!node?.absolutePath) return;
+    try {
+      setDocumentsError('');
+      const response = await window.api?.openPath?.(node.absolutePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to open path');
+      }
+    } catch (err) {
+      console.error('Failed to open path', err);
+      setDocumentsError(err?.message || 'Unable to open path');
+    }
+  }, []);
+
+  const handleRevealTreeNode = useCallback(async (node) => {
+    if (!node?.absolutePath) return;
+    try {
+      setDocumentsError('');
+      const response = await window.api?.showItemInFolder?.(node.absolutePath);
+      if (response && response.ok === false) {
+        throw new Error(response.message || 'Unable to reveal path');
+      }
+    } catch (err) {
+      console.error('Failed to reveal path', err);
+      setDocumentsError(err?.message || 'Unable to reveal path');
+    }
+  }, []);
+
+  const handleDeleteTreeFolder = useCallback(async (node) => {
+    if (!node?.path) {
+      setDocumentsError('Cannot delete the root documents folder.');
+      return;
+    }
+    const confirmed = window.confirm(`Move folder "${node.name}" to trash?`);
+    if (!confirmed) return;
+    try {
+      setDocumentsError('');
+      await window.api?.deleteDocumentFolder?.({ businessId: business.id, relativePath: node.path });
+      setMessage('Folder moved to trash');
+      await refreshDocuments();
+      await loadDocumentTree();
+      setTimeout(() => setMessage(''), 2000);
+    } catch (err) {
+      console.error('Failed to delete folder', err);
+      setDocumentsError(err?.message || 'Unable to delete folder');
+    }
+  }, [business.id, refreshDocuments, loadDocumentTree]);
+
+  const handleDeleteTreeFile = useCallback(async (node) => {
+    if (!node?.absolutePath) return;
+    const confirmed = window.confirm(`Move file "${node.name}" to trash?`);
+    if (!confirmed) return;
+    try {
+      setDocumentsError('');
+      await window.api?.deleteDocumentByPath?.({ businessId: business.id, absolutePath: node.absolutePath });
+      setMessage('File moved to trash');
+      await refreshDocuments();
+      await loadDocumentTree();
+      setTimeout(() => setMessage(''), 2000);
+    } catch (err) {
+      console.error('Failed to delete file', err);
+      setDocumentsError(err?.message || 'Unable to delete file');
+    }
+  }, [business.id, refreshDocuments, loadDocumentTree]);
+
   const handleRevealDocument = useCallback(async (filePath) => {
     setDocumentsError('');
     if (!filePath) {
@@ -4025,6 +4236,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       await window.api?.deleteDocument?.(doc.document_id, { removeFile });
       setMessage('Document deleted');
       await refreshDocuments();
+      await loadDocumentTree();
       setSelectedDocuments(prev => {
         const next = new Set(prev);
         next.delete(doc.document_id);
@@ -4041,7 +4253,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       console.error('Failed to delete document', err);
       setError(err?.message || 'Unable to delete document');
     }
-  }, [refreshDocuments, business.id]);
+  }, [refreshDocuments, loadDocumentTree, business.id]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -4062,6 +4274,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   useEffect(() => {
     refreshDocuments();
   }, [refreshDocuments]);
+
+  useEffect(() => {
+    if (workspaceSection === 'documents') {
+      loadDocumentTree();
+    }
+  }, [workspaceSection, loadDocumentTree]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -4107,6 +4325,13 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       if (!payload || payload.businessId !== business.id) return;
       if (payload.type === 'documents-updated') {
         refreshDocuments();
+        loadDocumentTree();
+        const payloadJobsheetId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
+        if (payloadJobsheetId != null) {
+          setInlineEditorTargetId(payloadJobsheetId);
+          setActiveJobsheetId(payloadJobsheetId);
+          setInlineEditorVisible(true);
+        }
         return;
       }
       if (payload.type === 'jobsheet-editor-focus') {
@@ -4159,7 +4384,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       }
     });
     return () => unsubscribe?.();
-  }, [business.id, refreshJobsheets, refreshDocuments, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible]);
+  }, [business.id, refreshJobsheets, refreshDocuments, loadDocumentTree, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible]);
 
   const handleChangeDocumentsFolder = useCallback(async () => {
     const api = window.api;
@@ -4726,6 +4951,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
   const inlineEditorKey = `jobsheet-editor-${inlineEditorSession}`;
 
+  useEffect(() => {
+    if (inlineEditorTargetId != null && !inlineEditorVisible) {
+      setInlineEditorVisible(true);
+    }
+  }, [inlineEditorTargetId, inlineEditorVisible]);
+
 
   const handleSort = useCallback((columnKey) => {
     if (!columnKey) return;
@@ -4907,6 +5138,16 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     </div>
                   </div>
                   <div className="px-4 py-4 space-y-4">
+                    <DocumentTreeView
+                      tree={documentTree}
+                      loading={documentTreeLoading}
+                      error={documentTreeError}
+                      onRefresh={loadDocumentTree}
+                      onOpen={handleOpenTreeNode}
+                      onReveal={handleRevealTreeNode}
+                      onDeleteFolder={handleDeleteTreeFolder}
+                      onDeleteFile={handleDeleteTreeFile}
+                    />
                     {documentsError ? (
                       <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div>
                     ) : null}
@@ -5193,17 +5434,19 @@ function JobsheetEditorWindow({
       }
       const data = await api.getDocumentDefinitions(numericBusinessId, { includeInactive: true });
       const list = Array.isArray(data) ? data : [];
-      setDocumentDefinitions(list);
+      const workbookDefinitions = list.filter(item => (item?.doc_type || '').toLowerCase() === 'workbook');
+      const nextList = workbookDefinitions.length ? workbookDefinitions : list;
+      setDocumentDefinitions(nextList);
 
-      if (!list.length) {
+      if (!nextList.length) {
         selectDefinitionKey(null);
         return;
       }
 
-      const hasSelection = list.some(def => def.key === selectedDefinitionKey);
+      const hasSelection = nextList.some(def => def.key === selectedDefinitionKey);
       if (!hasSelection) {
-        const primary = list.find(def => def.is_primary);
-        const fallback = primary || list[0];
+        const primary = nextList.find(def => def.is_primary);
+        const fallback = primary || nextList[0];
         selectDefinitionKey(fallback ? fallback.key : null);
       }
     } catch (err) {
@@ -6202,6 +6445,24 @@ function JobsheetEditorWindow({
       }
       const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
       setMessage(`${definition.label || startCaseKey(definition.key)}${suffix}`.trim());
+
+      if (Array.isArray(result?.additional_outputs) && result.additional_outputs.length) {
+        const successes = result.additional_outputs.filter(item => item && item.success);
+        if (successes.length) {
+          const labels = successes.map(item => item.label || item.sheet || 'PDF').join(', ');
+          setMessage(prev => `${prev ? `${prev}. ` : ''}Generated ${labels}.`);
+          const pdf = successes.find(item => item.file_path);
+          if (pdf && pdf.file_path) {
+            setLastOutputPath(pdf.file_path);
+          }
+        }
+        const failures = result.additional_outputs.filter(item => !item?.success);
+        if (failures.length) {
+          const reasons = failures.map(item => `${item.sheet || 'Sheet'}: ${item.error || 'Unable to export'}`).join(' ');
+          setError(reasons);
+        }
+      }
+
       window.api?.notifyJobsheetChange?.({
         type: 'documents-updated',
         businessId: numericBusinessId,
