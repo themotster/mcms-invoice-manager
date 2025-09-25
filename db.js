@@ -95,6 +95,38 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
   }
 ];
 
+const DEFAULT_FIELD_VALUE_SOURCES = {
+  client_name: 'jobsheet.client_name',
+  client_email: 'jobsheet.client_email',
+  client_phone: 'jobsheet.client_phone',
+  client_address1: 'jobsheet.client_address1',
+  client_address2: 'jobsheet.client_address2',
+  client_address3: 'jobsheet.client_address3',
+  client_town: 'jobsheet.client_town',
+  client_postcode: 'jobsheet.client_postcode',
+  event_type: 'jobsheet.event_type',
+  event_date: 'jobsheet.event_date',
+  event_start: 'jobsheet.event_start',
+  event_end: 'jobsheet.event_end',
+  venue_name: 'jobsheet.venue_name',
+  venue_address1: 'jobsheet.venue_address1',
+  venue_address2: 'jobsheet.venue_address2',
+  venue_address3: 'jobsheet.venue_address3',
+  venue_town: 'jobsheet.venue_town',
+  venue_postcode: 'jobsheet.venue_postcode',
+  caterer_name: 'jobsheet.caterer_name',
+  ahmen_fee: 'jobsheet.ahmen_fee',
+  total_amount: 'context.totalAmount',
+  extra_fees: 'context.extraFees',
+  production_fees: 'context.productionFees',
+  deposit_amount: 'context.depositAmount',
+  balance_amount: 'context.balanceAmount',
+  balance_due_date: 'context.balanceDate',
+  balance_reminder_date: 'context.balanceRemind',
+  service_types: 'jobsheet.service_types',
+  specialist_singers: 'jobsheet.specialist_singers'
+};
+
 const BUSINESS_SETTINGS_MUTABLE_FIELDS = new Set([
   'save_path',
   'invoice_template_path',
@@ -239,6 +271,16 @@ function initializeDatabase() {
 
     db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_merge_field_bindings_unique
       ON ${MERGE_FIELD_BINDINGS_TABLE} (${MERGE_FIELD_BINDING_UNIQUE_COLUMNS.join(', ')})`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS merge_field_value_sources (
+      field_key TEXT PRIMARY KEY,
+      source_type TEXT NOT NULL,
+      source_path TEXT,
+      literal_value TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY(field_key) REFERENCES ${MERGE_FIELD_TABLE}(field_key) ON DELETE CASCADE
+    )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS businesses (
       business_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,6 +512,41 @@ function initializeDatabase() {
     seedBusinesses();
     syncLegacyBusinessesTable();
     seedMergeFieldDefaults();
+    db.run(
+      `UPDATE ${MERGE_FIELD_TABLE}
+       SET placeholder = 'TOTAL_FEES', updated_at = datetime('now')
+       WHERE field_key = 'total_amount' AND (placeholder IS NULL OR placeholder = '' OR placeholder = 'TOTAL')`
+    );
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET cell = 'B30'
+       WHERE field_key = 'total_amount' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
+    );
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET cell = 'B31'
+       WHERE field_key = 'deposit_amount' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
+    );
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET cell = 'B32'
+       WHERE field_key = 'balance_amount' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
+    );
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET cell = 'B33'
+       WHERE field_key = 'balance_due_date' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
+    );
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET cell = 'B34'
+       WHERE field_key = 'balance_reminder_date' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
+    );
+    db.run(
+      `INSERT OR IGNORE INTO ${MERGE_FIELD_BINDINGS_TABLE} (field_key, template, sheet, cell, data_type, style, format)
+       VALUES ('ahmen_fee', 'ahmen_excel', 'Client Data', 'B27', 'number', '12', NULL)`
+    );
+    seedMergeFieldValueSources();
     seedDocumentDefinitions();
   });
 }
@@ -578,6 +655,22 @@ function seedMergeFieldDefaults() {
 
     insertField.finalize();
     insertBinding.finalize();
+  });
+}
+
+function seedMergeFieldValueSources() {
+  Object.entries(DEFAULT_FIELD_VALUE_SOURCES).forEach(([fieldKey, sourcePath]) => {
+    if (!fieldKey || !sourcePath) return;
+    db.run(
+      `INSERT OR IGNORE INTO merge_field_value_sources (field_key, source_type, source_path, literal_value, created_at, updated_at)
+       VALUES (?, 'contextPath', ?, NULL, datetime('now'), datetime('now'))`,
+      [fieldKey, sourcePath],
+      err => {
+        if (err) {
+          console.error('Failed to seed placeholder data mapping', fieldKey, err);
+        }
+      }
+    );
   });
 }
 
@@ -1149,6 +1242,92 @@ function getMergeFieldBindingsByTemplate(template) {
       (err, rows) => {
         if (err) return reject(err);
         resolve(rows || []);
+      }
+    );
+  });
+}
+
+function getMergeFieldValueSources(fieldKeys) {
+  return new Promise((resolve, reject) => {
+    let sql = `SELECT field_key, source_type, source_path, literal_value FROM merge_field_value_sources`;
+    let params = [];
+
+    if (Array.isArray(fieldKeys) && fieldKeys.length) {
+      const placeholders = fieldKeys.map(() => '?').join(', ');
+      sql += ` WHERE field_key IN (${placeholders})`;
+      params = fieldKeys;
+    }
+
+    db.all(sql, params, (err, rows) => {
+      if (err) {
+        reject(err);
+        return;
+      }
+      const map = {};
+      (rows || []).forEach(row => {
+        map[row.field_key] = {
+          field_key: row.field_key,
+          source_type: row.source_type,
+          source_path: row.source_path || null,
+          literal_value: row.literal_value || null
+        };
+      });
+      resolve(map);
+    });
+  });
+}
+
+function setMergeFieldValueSource(fieldKey, source) {
+  return new Promise((resolve, reject) => {
+    if (!fieldKey || typeof fieldKey !== 'string') {
+      reject(new Error('field_key is required'));
+      return;
+    }
+
+    const sourceType = source?.source_type || source?.sourceType || null;
+    const sourcePath = source?.source_path || source?.sourcePath || null;
+    const literalValue = source?.literal_value || source?.literalValue || null;
+
+    if (!sourceType) {
+      reject(new Error('source_type is required'));
+      return;
+    }
+
+    if (sourceType === 'contextPath' && !sourcePath) {
+      reject(new Error('source_path is required for contextPath sources'));
+      return;
+    }
+
+    db.run(
+      `INSERT INTO merge_field_value_sources (field_key, source_type, source_path, literal_value, created_at, updated_at)
+       VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+       ON CONFLICT(field_key) DO UPDATE SET
+         source_type = excluded.source_type,
+         source_path = excluded.source_path,
+         literal_value = excluded.literal_value,
+         updated_at = datetime('now')`,
+      [fieldKey, sourceType, sourcePath, literalValue],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ field_key: fieldKey });
+      }
+    );
+  });
+}
+
+function clearMergeFieldValueSource(fieldKey) {
+  return new Promise((resolve, reject) => {
+    if (!fieldKey || typeof fieldKey !== 'string') {
+      reject(new Error('field_key is required'));
+      return;
+    }
+
+    db.run(
+      `DELETE FROM merge_field_value_sources WHERE field_key = ?`,
+      [fieldKey],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ removed: this.changes || 0 });
       }
     );
   });
@@ -2569,6 +2748,9 @@ module.exports = {
   deleteAhmenVenue,
   getMergeFields,
   getMergeFieldBindingsByTemplate,
+  getMergeFieldValueSources,
+  setMergeFieldValueSource,
+  clearMergeFieldValueSource,
   saveMergeField,
   deleteMergeField
 };

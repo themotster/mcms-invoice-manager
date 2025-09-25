@@ -26,6 +26,135 @@ const DATA_TYPES = [
 
 const STORAGE_KEY = 'mergeFieldManager:window';
 
+const DEFAULT_FIELD_MAPPING_LABELS = {
+  client_name: 'Client name (client record or jobsheet)',
+  client_email: 'Client email (client record or jobsheet)',
+  client_phone: 'Client phone (client record or jobsheet)',
+  client_address1: 'Client address line 1 (client record or jobsheet)',
+  client_address2: 'Client address line 2 (client record or jobsheet)',
+  client_address3: 'Client address line 3 (client record or jobsheet)',
+  client_town: 'Client town (client record or jobsheet)',
+  client_postcode: 'Client postcode (client record or jobsheet)',
+  event_type: 'Event type (event record or jobsheet)',
+  event_date: 'Event date (event record or jobsheet)',
+  event_start: 'Event start time (event record or jobsheet)',
+  event_end: 'Event end time (event record or jobsheet)',
+  venue_name: 'Venue name (event record or jobsheet)',
+  venue_address1: 'Venue address line 1 (event record or jobsheet)',
+  venue_address2: 'Venue address line 2 (event record or jobsheet)',
+  venue_address3: 'Venue address line 3 (event record or jobsheet)',
+  venue_town: 'Venue town (event record or jobsheet)',
+  venue_postcode: 'Venue postcode (event record or jobsheet)',
+  caterer_name: 'Caterer name (event record or jobsheet)',
+  ahmen_fee: 'AhMen fee (jobsheet or pricing)',
+  total_amount: 'Total fees (AhMen fee + extra fees + production fees)',
+  extra_fees: 'Extra fees (jobsheet custom fees or calculated)',
+  production_fees: 'Production fees (jobsheet or calculated)',
+  deposit_amount: 'Deposit amount (jobsheet or calculated)',
+  balance_amount: 'Balance amount (jobsheet or calculated)',
+  balance_due_date: 'Balance due date (jobsheet or calculated)',
+  balance_reminder_date: 'Balance reminder date (jobsheet or calculated)',
+  service_types: 'Service types (jobsheet)',
+  specialist_singers: 'Specialist singers (jobsheet)'
+};
+
+const SOURCE_OPTION_GROUPS = [
+  {
+    label: 'Document totals',
+    options: [
+      { value: 'context.totalAmount', label: 'Document total (calculated)' },
+      { value: 'context.extraFees', label: 'Extra fees (calculated)' },
+      { value: 'context.productionFees', label: 'Production fees (calculated)' },
+      { value: 'context.depositAmount', label: 'Deposit amount (calculated)' },
+      { value: 'context.balanceAmount', label: 'Balance amount (calculated)' },
+      { value: 'context.balanceDate', label: 'Balance due date (calculated)' },
+      { value: 'context.balanceRemind', label: 'Balance reminder date (calculated)' }
+    ]
+  },
+  {
+    label: 'Jobsheet fields',
+    options: [
+      { value: 'jobsheet.client_name', label: 'Client name' },
+      { value: 'jobsheet.client_email', label: 'Client email' },
+      { value: 'jobsheet.client_phone', label: 'Client phone' },
+      { value: 'jobsheet.client_address1', label: 'Client address 1' },
+      { value: 'jobsheet.client_address2', label: 'Client address 2' },
+      { value: 'jobsheet.client_address3', label: 'Client address 3' },
+      { value: 'jobsheet.client_town', label: 'Client town' },
+      { value: 'jobsheet.client_postcode', label: 'Client postcode' },
+      { value: 'jobsheet.event_type', label: 'Event type' },
+      { value: 'jobsheet.event_date', label: 'Event date' },
+      { value: 'jobsheet.event_start', label: 'Event start' },
+      { value: 'jobsheet.event_end', label: 'Event end' },
+      { value: 'jobsheet.venue_name', label: 'Venue name' },
+      { value: 'jobsheet.venue_address1', label: 'Venue address 1' },
+      { value: 'jobsheet.venue_address2', label: 'Venue address 2' },
+      { value: 'jobsheet.venue_address3', label: 'Venue address 3' },
+      { value: 'jobsheet.venue_town', label: 'Venue town' },
+      { value: 'jobsheet.venue_postcode', label: 'Venue postcode' },
+      { value: 'jobsheet.caterer_name', label: 'Caterer name' },
+      { value: 'jobsheet.ahmen_fee', label: 'AhMen fee' },
+      { value: 'jobsheet.pricing_total', label: 'Pricing total' },
+      { value: 'jobsheet.extra_fees', label: 'Extra fees (jobsheet)' },
+      { value: 'jobsheet.pricing_custom_fees', label: 'Custom fees' },
+      { value: 'jobsheet.pricing_production_total', label: 'Production total' },
+      { value: 'jobsheet.production_fees', label: 'Production fees (jobsheet)' },
+      { value: 'jobsheet.deposit_amount', label: 'Deposit amount' },
+      { value: 'jobsheet.balance_amount', label: 'Balance amount' },
+      { value: 'jobsheet.balance_due_date', label: 'Balance due date' },
+      { value: 'jobsheet.balance_reminder_date', label: 'Balance reminder date' },
+      { value: 'jobsheet.service_types', label: 'Service types' },
+      { value: 'jobsheet.specialist_singers', label: 'Specialist singers' }
+    ]
+  },
+  {
+    label: 'Client record',
+    options: [
+      { value: 'client.name', label: 'Client name' },
+      { value: 'client.email', label: 'Client email' },
+      { value: 'client.phone', label: 'Client phone' },
+      { value: 'client.address1', label: 'Client address 1' },
+      { value: 'client.address2', label: 'Client address 2' },
+      { value: 'client.address3', label: 'Client address 3' },
+      { value: 'client.town', label: 'Client town' },
+      { value: 'client.postcode', label: 'Client postcode' }
+    ]
+  },
+  {
+    label: 'Event record',
+    options: [
+      { value: 'event.event_name', label: 'Event name' },
+      { value: 'event.type', label: 'Event type' },
+      { value: 'event.event_date', label: 'Event date' },
+      { value: 'event.startTime', label: 'Event start' },
+      { value: 'event.endTime', label: 'Event end' },
+      { value: 'event.venue_name', label: 'Venue name' },
+      { value: 'event.venue_address1', label: 'Venue address 1' },
+      { value: 'event.venue_address2', label: 'Venue address 2' },
+      { value: 'event.venue_address3', label: 'Venue address 3' },
+      { value: 'event.town', label: 'Event town' },
+      { value: 'event.postcode', label: 'Event postcode' },
+      { value: 'event.caterer_name', label: 'Caterer name' }
+    ]
+  },
+  {
+    label: 'Pricing summary',
+    options: [
+      { value: 'pricing.total', label: 'Pricing total' },
+      { value: 'pricing.extraFees', label: 'Pricing extra fees' },
+      { value: 'pricing.productionTotal', label: 'Pricing production total' },
+      { value: 'pricing.deposit', label: 'Pricing deposit' },
+      { value: 'pricing.balance', label: 'Pricing balance' }
+    ]
+  },
+  {
+    label: 'Business record',
+    options: [
+      { value: 'business.business_name', label: 'Business name' }
+    ]
+  }
+];
+
 function MergeFieldsManager({ onClose, inline = false }) {
   const isInline = Boolean(inline);
   const [fields, setFields] = useState([]);
@@ -35,6 +164,9 @@ function MergeFieldsManager({ onClose, inline = false }) {
   const [editingField, setEditingField] = useState(null);
   const [formState, setFormState] = useState(EMPTY_FIELD);
   const [confirmDeleteKey, setConfirmDeleteKey] = useState('');
+  const [valueSources, setValueSources] = useState({});
+  const [sourceSavingKey, setSourceSavingKey] = useState('');
+  const [mappingError, setMappingError] = useState('');
   const initialWindowState = useMemo(() => {
     const fallback = {
       width: 860,
@@ -89,7 +221,36 @@ function MergeFieldsManager({ onClose, inline = false }) {
   const [resizing, setResizing] = useState(false);
   const overlayRef = useRef(null);
 
-  const loadFields = async () => {
+  const sourceOptionLookup = useMemo(() => {
+    const map = {};
+    SOURCE_OPTION_GROUPS.forEach(group => {
+      group.options.forEach(option => {
+        map[option.value] = option.label;
+      });
+    });
+    return map;
+  }, []);
+
+  const refreshValueSources = useCallback(async (fieldKeys) => {
+    if (!Array.isArray(fieldKeys) || !fieldKeys.length) {
+      setValueSources({});
+      return;
+    }
+    const api = window.api;
+    if (!api || typeof api.getMergeFieldValueSources !== 'function') {
+      return;
+    }
+    try {
+      const response = await api.getMergeFieldValueSources(fieldKeys);
+      setValueSources(response || {});
+      setMappingError('');
+    } catch (err) {
+      console.error('Failed to load placeholder mappings', err);
+      setMappingError(err?.message || 'Unable to load placeholder mappings');
+    }
+  }, []);
+
+  const loadFields = useCallback(async () => {
     try {
       setLoading(true);
       const api = window.api;
@@ -97,7 +258,9 @@ function MergeFieldsManager({ onClose, inline = false }) {
         throw new Error('Placeholder API unavailable');
       }
       const list = await api.getMergeFields();
-      setFields(Array.isArray(list) ? list : []);
+      const normalized = Array.isArray(list) ? list : [];
+      setFields(normalized);
+      await refreshValueSources(normalized.map(field => field.field_key));
       setError('');
     } catch (err) {
       console.error('Failed to load merge fields', err);
@@ -105,11 +268,11 @@ function MergeFieldsManager({ onClose, inline = false }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [refreshValueSources]);
 
   useEffect(() => {
     loadFields();
-  }, []);
+  }, [loadFields]);
 
   useEffect(() => {
     positionRef.current = position;
@@ -244,6 +407,68 @@ function MergeFieldsManager({ onClose, inline = false }) {
     }));
   };
 
+  const handleSelectSource = useCallback(async (fieldKey, selectedValue) => {
+    if (!fieldKey || !selectedValue) return;
+    const api = window.api;
+    if (!api) return;
+
+    try {
+      setSourceSavingKey(fieldKey);
+      setMappingError('');
+
+      if (selectedValue === '__DEFAULT__') {
+        if (typeof api.clearMergeFieldValueSource === 'function') {
+          await api.clearMergeFieldValueSource(fieldKey);
+        }
+        setValueSources(prev => {
+          const next = { ...prev };
+          delete next[fieldKey];
+          return next;
+        });
+        return;
+      }
+
+      let nextPath = selectedValue;
+      if (selectedValue === '__CUSTOM__') {
+        const existingPath = valueSources[fieldKey]?.source_path || '';
+        const input = window.prompt('Enter the context path to use (e.g. jobsheet.ahmen_fee):', existingPath);
+        if (!input) return;
+        nextPath = input.trim();
+      }
+
+      if (!nextPath || nextPath === '__DEFAULT__') {
+        return;
+      }
+
+      if (!nextPath.includes('.')) {
+        setMappingError('Enter a full context path such as jobsheet.ahmen_fee');
+        return;
+      }
+
+      if (typeof api.setMergeFieldValueSource !== 'function') return;
+
+      await api.setMergeFieldValueSource(fieldKey, {
+        source_type: 'contextPath',
+        source_path: nextPath
+      });
+
+      setValueSources(prev => ({
+        ...prev,
+        [fieldKey]: {
+          field_key: fieldKey,
+          source_type: 'contextPath',
+          source_path: nextPath,
+          literal_value: null
+        }
+      }));
+    } catch (err) {
+      console.error('Failed to update placeholder mapping', err);
+      setMappingError(err?.message || 'Unable to update placeholder mapping');
+    } finally {
+      setSourceSavingKey('');
+    }
+  }, [valueSources]);
+
   const validateForm = () => {
     if (!formState.field_key || !formState.field_key.trim()) {
       return 'Field key is required';
@@ -376,8 +601,103 @@ function MergeFieldsManager({ onClose, inline = false }) {
     ? 'space-y-6'
     : 'flex-1 overflow-y-auto px-6 py-4 space-y-6';
 
+  const mappingFields = useMemo(() => {
+    if (!Array.isArray(fields)) return [];
+    return [...fields]
+      .filter(field => field.active !== 0)
+      .sort((a, b) => {
+        const labelA = (a.label || a.field_key || '').toLowerCase();
+        const labelB = (b.label || b.field_key || '').toLowerCase();
+        if (labelA < labelB) return -1;
+        if (labelA > labelB) return 1;
+        return 0;
+      });
+  }, [fields]);
+
   const contentSections = (
     <div className={contentWrapperClass}>
+      <section className="rounded border border-slate-200 bg-white p-4 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700">Data mapping</h3>
+          <p className="text-xs text-slate-500">Choose which jobsheet, client, or event fields populate each placeholder when documents are generated.</p>
+        </div>
+        {mappingError ? (
+          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{mappingError}</div>
+        ) : null}
+        {loading ? (
+          <div className="text-sm text-slate-500">Loading placeholders…</div>
+        ) : !mappingFields.length ? (
+          <div className="text-sm text-slate-500">No placeholders available yet.</div>
+        ) : (
+          <div className="max-h-72 overflow-auto rounded border border-slate-200">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">Placeholder</th>
+                  <th className="px-3 py-2 text-left">Default data</th>
+                  <th className="px-3 py-2 text-left">Override</th>
+                </tr>
+              </thead>
+              <tbody>
+                {mappingFields.map(field => {
+                  const override = valueSources[field.field_key];
+                  let selectedValue = '__DEFAULT__';
+                  let overrideLabel = '';
+
+                  if (override && override.source_type === 'contextPath' && override.source_path) {
+                    selectedValue = override.source_path;
+                    overrideLabel = sourceOptionLookup[override.source_path] || override.source_path;
+                  } else if (override && override.source_type === 'literal') {
+                    overrideLabel = override.literal_value ? `Literal value: ${override.literal_value}` : 'Literal value';
+                  }
+
+                  const optionExists = selectedValue === '__DEFAULT__' || Boolean(sourceOptionLookup[selectedValue]);
+                  const defaultLabel = DEFAULT_FIELD_MAPPING_LABELS[field.field_key] || 'Calculated automatically from jobsheet, client, or event data';
+                  const isSavingSource = sourceSavingKey === field.field_key;
+
+                  return (
+                    <tr key={field.field_key} className="border-b border-slate-200 last:border-b-0">
+                      <td className="px-3 py-2 align-top">
+                        <div className="font-medium text-slate-700">{field.label || field.field_key}</div>
+                        <div className="text-xs text-slate-500">{field.placeholder ? `{{${field.placeholder}}}` : field.field_key}</div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-sm text-slate-600">{defaultLabel}</td>
+                      <td className="px-3 py-2 align-top">
+                        <div className="flex flex-col gap-1">
+                          <select
+                            value={selectedValue}
+                            onChange={(event) => handleSelectSource(field.field_key, event.target.value)}
+                            disabled={isSavingSource}
+                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <option value="__DEFAULT__">Default (calculated)</option>
+                            {!optionExists && selectedValue !== '__DEFAULT__' ? (
+                              <option value={selectedValue}>{overrideLabel || selectedValue}</option>
+                            ) : null}
+                            {SOURCE_OPTION_GROUPS.map(group => (
+                              <optgroup key={group.label} label={group.label}>
+                                {group.options.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </optgroup>
+                            ))}
+                            <option value="__CUSTOM__">Custom context path…</option>
+                          </select>
+                          {isSavingSource ? (
+                            <span className="text-xs text-slate-500">Saving…</span>
+                          ) : overrideLabel ? (
+                            <span className="text-xs text-indigo-600">Override: {overrideLabel}</span>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
       <section className="rounded border border-slate-200 bg-slate-50 p-4">
         <h3 className="text-sm font-semibold text-slate-700 mb-3">Existing placeholders</h3>
         {loading ? (

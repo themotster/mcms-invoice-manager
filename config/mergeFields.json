@@ -181,13 +181,23 @@
     ]
   },
   {
+    "field_key": "ahmen_fee",
+    "label": "AhMen Fee",
+    "placeholder": "AHMEN_FEE",
+    "category": "financial",
+    "show_in_jobsheet": true,
+    "bindings": [
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B27", "data_type": "number", "style": "12" }
+    ]
+  },
+  {
     "field_key": "total_amount",
     "label": "Total Amount",
-    "placeholder": "TOTAL",
+    "placeholder": "TOTAL_FEES",
     "category": "financial",
     "show_in_jobsheet": false,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B27", "data_type": "number", "style": "12" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B30", "data_type": "number", "style": "12" }
     ]
   },
   {
@@ -217,7 +227,7 @@
     "category": "financial",
     "show_in_jobsheet": false,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B30", "data_type": "number", "style": "12" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B31", "data_type": "number", "style": "12" }
     ]
   },
   {
@@ -227,7 +237,7 @@
     "category": "financial",
     "show_in_jobsheet": false,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B31", "data_type": "number", "style": "12" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B32", "data_type": "number", "style": "12" }
     ]
   },
   {
@@ -237,7 +247,7 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B32", "data_type": "string", "format": "date_human" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B33", "data_type": "string", "format": "date_human" }
     ]
   },
   {
@@ -247,7 +257,7 @@
     "category": "financial",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B33", "data_type": "string", "format": "date_human" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B34", "data_type": "string", "format": "date_human" }
     ]
   },
   {
@@ -257,7 +267,7 @@
     "category": "services",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B36", "data_type": "string" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B37", "data_type": "string" }
     ]
   },
   {
@@ -267,7 +277,7 @@
     "category": "services",
     "show_in_jobsheet": true,
     "bindings": [
-      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B37", "data_type": "string" }
+      { "template": "ahmen_excel", "sheet": "Client Data", "cell": "B38", "data_type": "string" }
     ]
   },
   {

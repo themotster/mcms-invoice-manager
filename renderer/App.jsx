@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import MergeFieldsManager from './components/MergeFieldsManager';
+import TemplatesManager from './components/TemplatesManager';
 import { createRoot } from 'react-dom/client';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
 import {
@@ -100,13 +100,15 @@ function getDocumentIcon(docType) {
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
   documents: '📁',
+  templates: '📄',
   settings: '⚙️'
 };
 
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
   { key: 'documents', label: 'Documents', description: 'Generated outputs and files', icon: WORKSPACE_ICON_MAP.documents },
-  { key: 'settings', label: 'Settings', description: 'Folders, templates, and placeholders', icon: WORKSPACE_ICON_MAP.settings }
+  { key: 'templates', label: 'Templates', description: 'Placeholders & imports', icon: WORKSPACE_ICON_MAP.templates },
+  { key: 'settings', label: 'Settings', description: 'Business preferences', icon: WORKSPACE_ICON_MAP.settings }
 ];
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
@@ -3850,7 +3852,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [inlineEditorTargetId, setInlineEditorTargetId] = useState(null);
   const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
-  const [settingsPanel, setSettingsPanel] = useState('overview');
   const [workspaceSection, setWorkspaceSection] = useState(() => {
     if (typeof window === 'undefined') return 'jobsheets';
     try {
@@ -4052,12 +4053,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       console.warn('Unable to persist workspace section', err);
     }
   }, [workspaceSection]);
-
-  useEffect(() => {
-    if (workspaceSection !== 'settings' && settingsPanel !== 'overview') {
-      setSettingsPanel('overview');
-    }
-  }, [workspaceSection, settingsPanel]);
 
   useEffect(() => {
     setError('');
@@ -4925,80 +4920,63 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
               </section>
             ) : null}
 
-            {workspaceSection === 'settings' ? (
-              <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-6">
-                {settingsPanel === 'overview' ? (
-                  <>
-                    <div>
-                      <h2 className="text-lg font-semibold text-slate-700">Documents settings</h2>
-                      <p className="text-sm text-slate-500">Configure output folders, templates, and placeholder registry.</p>
-                    </div>
-                    <div className="grid gap-4 md:grid-cols-2">
-                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
-                        <div>
-                          <h3 className="text-sm font-semibold text-slate-700">Documents folder</h3>
-                          <p className="text-xs text-slate-500 break-all" title={business.save_path || 'Not configured'}>
-                            {business.save_path || 'Not configured'}
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={handleChangeDocumentsFolder}
-                            disabled={updatingSavePath}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-                          >
-                            {updatingSavePath ? 'Updating…' : 'Change folder'}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleOpenDocumentsFolder}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                          >
-                            Open folder
-                          </button>
-                        </div>
-                      </div>
-                      <div className="rounded border border-slate-200 p-4 flex flex-col gap-3 md:col-span-2">
-                        <div>
-                          <h3 className="text-sm font-semibold text-slate-700">Placeholder registry</h3>
-                          <p className="text-xs text-slate-500">Add or edit merge fields used across templates.</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setWorkspaceSection('settings');
-                              setSettingsPanel('placeholders');
-                            }}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                          >
-                            Manage placeholders
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                ) : null}
+            {workspaceSection === 'templates' ? (
+              <TemplatesManager
+                business={business}
+                onTemplatesUpdated={() => {
+                  setMessage('Template settings updated');
+                  setTimeout(() => setMessage(''), 2500);
+                }}
+              />
+            ) : null}
 
-                {settingsPanel === 'placeholders' ? (
-                  <div className="space-y-5">
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <h2 className="text-lg font-semibold text-slate-700">Placeholder registry</h2>
-                        <p className="text-sm text-slate-500">Add or edit merge fields used across templates.</p>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setSettingsPanel('overview')}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                      >
-                        Back to settings
-                      </button>
-                    </div>
-                    <MergeFieldsManager inline onClose={() => setSettingsPanel('overview')} />
+            {workspaceSection === 'settings' ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+                <div>
+                  <h2 className="text-lg font-semibold text-slate-700">Business settings</h2>
+                  <p className="text-sm text-slate-500">Update folders and review business information.</p>
+                </div>
+
+                <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Documents folder</h3>
+                    <p className="text-xs text-slate-500 break-all" title={business.save_path || 'Not configured'}>
+                      {business.save_path || 'Not configured'}
+                    </p>
                   </div>
-                ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={handleChangeDocumentsFolder}
+                      disabled={updatingSavePath}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                    >
+                      {updatingSavePath ? 'Updating…' : 'Change folder'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleOpenDocumentsFolder}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      Open folder
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded border border-slate-200 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last invoice number</div>
+                    <div className="mt-1 text-sm text-slate-700">{business.last_invoice_number ?? '—'}</div>
+                  </div>
+                  <div className="rounded border border-slate-200 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last quote number</div>
+                    <div className="mt-1 text-sm text-slate-700">{business.last_quote_number ?? '—'}</div>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-500">
+                  Template management has moved to the “Templates” tab for a simpler workflow. Use it to copy placeholders and replace template files in one place.
+                </p>
               </section>
             ) : null}
           </div>
@@ -6089,6 +6067,18 @@ function JobsheetEditorWindow({
       event_override: eventOverride,
       line_items: lineItems
     };
+
+    try {
+      payload.jobsheet_snapshot = JSON.parse(JSON.stringify(current));
+    } catch (_err) {
+      payload.jobsheet_snapshot = current;
+    }
+
+    try {
+      payload.pricing_snapshot = pricingDerived ? JSON.parse(JSON.stringify(pricingDerived)) : null;
+    } catch (_err) {
+      payload.pricing_snapshot = pricingDerived || null;
+    }
 
     if (definition.file_suffix) payload.file_name_suffix = definition.file_suffix;
     if (definition.invoice_variant) payload.invoice_variant = definition.invoice_variant;

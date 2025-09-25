@@ -219,49 +219,191 @@ function formatBindingStringValue(rawValue, bindingFormat) {
   }
 }
 
-function buildMergeFieldValueMap(context) {
-  const map = {};
+function coalesceValue(...values) {
+  for (const raw of values) {
+    if (raw === undefined || raw === null) continue;
+    if (typeof raw === 'string') {
+      const trimmed = raw.trim();
+      if (trimmed) return trimmed;
+      continue;
+    }
+    if (Array.isArray(raw)) {
+      if (raw.length) return raw;
+      continue;
+    }
+    if (typeof raw === 'number') {
+      if (!Number.isNaN(raw)) return raw;
+      continue;
+    }
+    if (typeof raw === 'boolean') return raw;
+    if (raw) return raw;
+  }
+  return '';
+}
+
+function toNumeric(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function coalesceNumber(...values) {
+  for (const value of values) {
+    const numeric = toNumeric(value);
+    if (numeric !== null) return numeric;
+  }
+  return null;
+}
+
+function getValueFromContextPath(context, path) {
+  if (!path || typeof path !== 'string') return undefined;
+  const segments = path.split('.').map(segment => segment.trim()).filter(Boolean);
+  if (!segments.length) return undefined;
+
+  let currentContext = context;
+  let index = 0;
+  const first = segments[0];
+
+  if (first === 'context') {
+    currentContext = context;
+    index = 1;
+  } else if (Object.prototype.hasOwnProperty.call(context, first)) {
+    currentContext = context[first];
+    index = 1;
+  }
+
+  for (let i = index; i < segments.length; i += 1) {
+    if (currentContext === null || currentContext === undefined) return undefined;
+    const key = segments[i];
+    currentContext = currentContext[key];
+  }
+
+  return currentContext;
+}
+
+function resolveMergeFieldOverride(override, context) {
+  if (!override || !override.source_type) return undefined;
+  if (override.source_type === 'literal') {
+    return override.literal_value ?? '';
+  }
+  if (override.source_type === 'contextPath') {
+    return getValueFromContextPath(context, override.source_path);
+  }
+  return undefined;
+}
+
+const DEFAULT_MERGE_FIELD_RESOLVERS = {
+  ahmen_fee: (context) => coalesceNumber(context.jobsheet?.ahmen_fee, context.pricing?.ahmenFee),
+  client_name: ({ client = {}, jobsheet = {} }) => coalesceValue(client.name, jobsheet.client_name),
+  client_email: ({ client = {}, jobsheet = {} }) => coalesceValue(client.email, jobsheet.client_email),
+  client_phone: ({ client = {}, jobsheet = {} }) => coalesceValue(client.phone, jobsheet.client_phone),
+  client_address1: ({ client = {}, jobsheet = {} }) => coalesceValue(client.address1, client.address, jobsheet.client_address1),
+  client_address2: ({ client = {}, jobsheet = {} }) => coalesceValue(client.address2, jobsheet.client_address2),
+  client_address3: ({ client = {}, jobsheet = {} }) => coalesceValue(client.address3, jobsheet.client_address3),
+  client_town: ({ client = {}, jobsheet = {} }) => coalesceValue(client.town, jobsheet.client_town),
+  client_postcode: ({ client = {}, jobsheet = {} }) => coalesceValue(client.postcode, jobsheet.client_postcode),
+
+  event_type: ({ event = {}, jobsheet = {} }) => coalesceValue(event.event_name, event.type, jobsheet.event_type),
+  event_date: ({ event = {}, jobsheet = {}, documentDate }) => coalesceValue(event.event_date, jobsheet.event_date, documentDate),
+  event_start: ({ event = {}, jobsheet = {} }) => coalesceValue(event.startTime, event.event_start, jobsheet.event_start),
+  event_end: ({ event = {}, jobsheet = {} }) => coalesceValue(event.endTime, event.event_end, jobsheet.event_end),
+
+  venue_name: ({ event = {}, jobsheet = {} }) => coalesceValue(event.venue_name, jobsheet.venue_name),
+  venue_address1: ({ event = {}, jobsheet = {} }) => coalesceValue(event.venue_address1, jobsheet.venue_address1),
+  venue_address2: ({ event = {}, jobsheet = {} }) => coalesceValue(event.venue_address2, jobsheet.venue_address2),
+  venue_address3: ({ event = {}, jobsheet = {} }) => coalesceValue(event.venue_address3, jobsheet.venue_address3),
+  venue_town: ({ event = {}, jobsheet = {} }) => coalesceValue(event.venue_town, event.town, jobsheet.venue_town),
+  venue_postcode: ({ event = {}, jobsheet = {} }) => coalesceValue(event.venue_postcode, event.postcode, jobsheet.venue_postcode),
+  caterer_name: ({ event = {}, jobsheet = {} }) => coalesceValue(event.caterer_name, event.catererName, jobsheet.caterer_name),
+
+  total_amount: (context) => {
+    const ahmenFee = coalesceNumber(context.jobsheet?.ahmen_fee, context.pricing?.ahmenFee);
+    const otherFees = coalesceNumber(
+      context.extraFees,
+      context.jobsheet?.extra_fees,
+      context.jobsheet?.pricing_custom_fees,
+      context.pricing?.extraFees
+    );
+    const productionFees = coalesceNumber(
+      context.productionFees,
+      context.jobsheet?.production_fees,
+      context.jobsheet?.pricing_production_total,
+      context.pricing?.productionTotal
+    );
+
+    let computedTotal = null;
+    const parts = [ahmenFee, otherFees, productionFees].filter(value => value !== null);
+    if (parts.length) {
+      computedTotal = parts.reduce((sum, value) => sum + (value || 0), 0);
+    }
+
+    const explicitTotal = coalesceNumber(
+      context.totalAmount,
+      context.pricing?.total,
+      context.jobsheet?.pricing_total
+    );
+
+    if (computedTotal !== null) {
+      return computedTotal;
+    }
+
+    return explicitTotal;
+  },
+  extra_fees: (context) => coalesceNumber(context.extraFees, context.jobsheet?.pricing_custom_fees, context.jobsheet?.extra_fees, context.pricing?.extraFees),
+  production_fees: (context) => coalesceNumber(context.productionFees, context.jobsheet?.pricing_production_total, context.jobsheet?.production_fees, context.pricing?.productionTotal),
+  deposit_amount: (context) => coalesceNumber(context.depositAmount ?? context.deposit, context.jobsheet?.deposit_amount, context.pricing?.deposit),
+  balance_amount: (context) => coalesceNumber(context.balanceAmount, context.balanceDue, context.jobsheet?.balance_amount, context.pricing?.balance),
+
+  balance_due_date: ({ balanceDate, dueDate, jobsheet = {} }) => coalesceValue(balanceDate, dueDate, jobsheet.balance_due_date),
+  balance_reminder_date: ({ balanceRemind, jobsheet = {} }) => coalesceValue(balanceRemind, jobsheet.balance_reminder_date),
+
+  service_types: ({ serviceType, jobsheet = {} }) => coalesceValue(serviceType, jobsheet.service_types),
+  specialist_singers: ({ specialistSingers, jobsheet = {} }) => coalesceValue(specialistSingers, jobsheet.specialist_singers)
+};
+
+function buildMergeFieldValueMap(context, options = {}) {
+  const overrides = options.overrides || {};
   const business = context.business || {};
-  const client = context.client || {};
-  const event = context.event || {};
+  const fieldKeys = new Set([
+    'business_name',
+    ...Object.keys(DEFAULT_MERGE_FIELD_RESOLVERS),
+    ...Object.keys(overrides)
+  ]);
 
-  map.business_name = business.business_name || '';
+  const result = {};
 
-  map.client_name = client.name || '';
-  map.client_email = client.email || '';
-  map.client_phone = client.phone || '';
-  map.client_address1 = client.address1 || client.address || '';
-  map.client_address2 = client.address2 || '';
-  map.client_address3 = client.address3 || '';
-  map.client_town = client.town || '';
-  map.client_postcode = client.postcode || '';
+  fieldKeys.forEach(fieldKey => {
+    let value;
 
-  map.event_type = event.event_name || event.type || '';
-  map.event_date = event.event_date || context.documentDate || '';
-  map.event_start = event.startTime || event.event_start || '';
-  map.event_end = event.endTime || event.event_end || '';
+    if (fieldKey === 'business_name') {
+      value = business.business_name || '';
+    } else {
+      const resolver = DEFAULT_MERGE_FIELD_RESOLVERS[fieldKey];
+      value = resolver ? resolver(context) : '';
+    }
 
-  map.venue_name = event.venue_name || '';
-  map.venue_address1 = event.venue_address1 || '';
-  map.venue_address2 = event.venue_address2 || '';
-  map.venue_address3 = event.venue_address3 || '';
-  map.venue_town = event.venue_town || event.town || '';
-  map.venue_postcode = event.venue_postcode || event.postcode || '';
-  map.caterer_name = event.caterer_name || event.catererName || '';
+    const override = overrides[fieldKey];
+    if (override) {
+      const overrideValue = resolveMergeFieldOverride(override, context);
+      if (overrideValue !== undefined) {
+        value = overrideValue;
+      }
+    }
 
-  map.total_amount = context.totalAmount;
-  map.extra_fees = context.extraFees;
-  map.production_fees = context.productionFees;
-  map.deposit_amount = context.depositAmount ?? context.deposit;
-  map.balance_amount = context.balanceAmount;
+    if (value === undefined) value = '';
+    result[fieldKey] = value;
+  });
 
-  map.balance_due_date = context.balanceDate || context.dueDate || '';
-  map.balance_reminder_date = context.balanceRemind || '';
-
-  map.service_types = context.serviceType || '';
-  map.specialist_singers = context.specialistSingers || '';
-
-  return map;
+  return result;
 }
 
 async function applyAhmenTemplateWithZip({ templatePath, destinationPath, context }) {
@@ -302,20 +444,27 @@ async function applyAhmenTemplateWithZip({ templatePath, destinationPath, contex
   };
 
   const bindings = await db.getMergeFieldBindingsByTemplate(AHMEN_TEMPLATE_KEY);
-  const fieldValues = buildMergeFieldValueMap(context);
+  const bindingKeys = Array.from(new Set((bindings || []).map(binding => binding.field_key)));
+  const overrides = bindingKeys.length ? await db.getMergeFieldValueSources(bindingKeys) : {};
+  const fieldValues = buildMergeFieldValueMap(context, { overrides });
   const sharedReplacements = {};
 
   for (const binding of bindings) {
     const rawValue = fieldValues[binding.field_key];
 
     if (binding.placeholder) {
-      const token = `{${binding.placeholder}}`;
-      if (!(token in sharedReplacements)) {
-        const formatted = binding.data_type === 'number'
-          ? (normalizeNumericOutput(rawValue) ?? '')
-          : formatBindingStringValue(rawValue, binding.format);
-        sharedReplacements[token] = formatted;
-      }
+      const formatted = binding.data_type === 'number'
+        ? (normalizeNumericOutput(rawValue) ?? '')
+        : formatBindingStringValue(rawValue, binding.format);
+      const keys = new Set([
+        binding.placeholder,
+        `{${binding.placeholder}}`
+      ]);
+      keys.forEach(token => {
+        if (!(token in sharedReplacements)) {
+          sharedReplacements[token] = formatted;
+        }
+      });
     }
 
     if (!binding.sheet || !binding.cell) continue;
@@ -512,7 +661,7 @@ function buildCommonReplacements({
     '{QUOTE_DATE}': documentDateParts.human,
     '{DOCUMENT_DATE}': documentDateParts.human,
     '{DUE_DATE}': dueDateParts.human,
-    '{TOTAL}': totalAmount != null ? Number(totalAmount) : '',
+    '{TOTAL_FEES}': totalAmount != null ? Number(totalAmount) : '',
     '{BALANCE_DUE}': balanceDue != null ? Number(balanceDue) : ''
   };
 }
@@ -875,6 +1024,8 @@ async function createDocument(documentData) {
   const productionFees = documentData.production_fees;
   const serviceType = documentData.service_types;
   const specialistSingers = documentData.specialist_singers;
+  const jobsheetSnapshot = documentData.jobsheet_snapshot || null;
+  const pricingSnapshot = documentData.pricing_snapshot || null;
   const balanceAmountOverride = documentData.balance_amount;
   const balanceDateOverride = documentData.balance_due_date;
   const balanceRemindOverride = documentData.balance_reminder_date;
@@ -905,6 +1056,8 @@ async function createDocument(documentData) {
   delete insertPayload.document_definition_key;
   delete insertPayload.document_definition_id;
   delete insertPayload.template_path;
+  delete insertPayload.jobsheet_snapshot;
+  delete insertPayload.pricing_snapshot;
 
   const resolvedClientName = (clientOverride?.name || client?.name || documentData.client_name || '').trim();
   const resolvedEventName = (eventOverride?.event_name || eventOverride?.type || event?.event_name || documentData.event_name || '').trim();
@@ -969,6 +1122,8 @@ async function createDocument(documentData) {
     business,
     client: clientOverride ? { ...client, ...clientOverride } : client,
     event: eventOverride ? { ...event, ...eventOverride } : event,
+    jobsheet: jobsheetSnapshot,
+    pricing: pricingSnapshot,
     docType: documentData.doc_type,
     definitionKey,
     number: insertResult.number,
@@ -1116,6 +1271,7 @@ module.exports = {
     replaceAhmenNumericCell,
     replaceAhmenStringCell,
     buildNumericCell,
-    formatNumericForCell
+    formatNumericForCell,
+    buildMergeFieldValueMap
   }
 };
