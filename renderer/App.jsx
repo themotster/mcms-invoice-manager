@@ -4742,7 +4742,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         {message ? <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{message}</div> : null}
 
         <div className="flex flex-col gap-6 lg:flex-row">
-          <nav className="lg:w-64 lg:sticky lg:top-6 flex-shrink-0">
+          <nav className="sticky top-4 z-30 flex-shrink-0 self-start lg:w-64">
             <div className="space-y-2" role="tablist" aria-orientation="vertical">
               {WORKSPACE_SECTIONS.map(section => {
                 const isActive = workspaceSection === section.key;
