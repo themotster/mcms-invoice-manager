@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 const path = require('path');
 const db = require(path.join(__dirname, 'db.js'));
+const documentService = require(path.join(__dirname, 'documentService.js'));
 const ahmenCosting = require(path.join(__dirname, 'ahmenCosting.js'));
 
 const jobsheetListeners = new Set();
@@ -40,7 +41,7 @@ contextBridge.exposeInMainWorld('api', {
   setJobsheetTemplateOverride: async (jobsheetId, definitionKey, templatePath) => await db.setJobsheetTemplateOverride(jobsheetId, definitionKey, templatePath),
   clearJobsheetTemplateOverride: async (jobsheetId, definitionKey) => await db.clearJobsheetTemplateOverride(jobsheetId, definitionKey),
   addDocument: async (documentData) => await db.addDocument(documentData),
-  createDocument: async () => { throw new Error('Document generation is disabled.'); },
+  createDocument: async (payload) => await documentService.createDocument(payload),
   updateDocumentStatus: async (documentId, data) => await db.updateDocumentStatus(documentId, data),
   getMusiciansForEvent: async (eventId) => await db.getMusiciansForEvent(eventId),
   addMusicianToEvent: async (eventId, musicianData) => await db.addMusicianToEvent(eventId, musicianData),
@@ -50,7 +51,7 @@ contextBridge.exposeInMainWorld('api', {
   importTimekeeperSession: async (sessionData) => await db.importTimekeeperSession(sessionData),
   markSessionExported: async (sessionId, exported) => await db.markSessionExported(sessionId, exported),
   deleteTimekeeperSession: async (sessionId, options) => await db.deleteTimekeeperSession(sessionId, options),
-  deleteDocument: async () => { throw new Error('Document generation is disabled.'); },
+  deleteDocument: async (documentId, options) => await documentService.deleteDocument(documentId, options || {}),
   deleteEvent: async (eventId) => await db.deleteEvent(eventId),
   deleteClient: async (clientId) => await db.deleteClient(clientId),
   getAhmenJobsheets: async (options) => await db.getAhmenJobsheets(options),
@@ -74,7 +75,7 @@ contextBridge.exposeInMainWorld('api', {
   businessSettings: async () => await db.businessSettings(),
   updateBusinessSettings: async (businessId, updates) => await db.updateBusinessSettings(businessId, updates),
   relocateBusinessDocuments: async () => { throw new Error('Document generation is disabled.'); },
-  prepareJobsheetTemplateOverride: async () => { throw new Error('Document generation is disabled.'); },
+  prepareJobsheetTemplateOverride: async () => { throw new Error('Job-specific template overrides are not available yet.'); },
   listDocumentTree: async () => null,
   deleteDocumentFolder: async () => { throw new Error('Document generation is disabled.'); },
   deleteDocumentByPath: async () => { throw new Error('Document generation is disabled.'); },

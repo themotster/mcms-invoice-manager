@@ -83,6 +83,7 @@ const DOCUMENT_COLUMNS = [
 ];
 
 const DOCUMENT_FEATURES_ENABLED = false;
+const DOCUMENT_GENERATION_ENABLED = true;
 
 function getDocumentIcon(docType) {
   switch ((docType || '').toLowerCase()) {
@@ -4745,7 +4746,7 @@ function JobsheetEditorWindow({
   }, [jobsheetId, activeEditorSection, storeSection]);
 
   const refreshJobsheetDocuments = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocuments([]);
       setJobsheetDocumentsLoading(false);
       setJobsheetDocumentsError('');
@@ -4826,7 +4827,7 @@ function JobsheetEditorWindow({
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments]);
 
   const handleOpenDocumentFile = useCallback(async (filePath) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocumentsError('Document access is currently disabled.');
       return;
     }
@@ -4847,7 +4848,7 @@ function JobsheetEditorWindow({
   }, []);
 
   const handleRevealDocument = useCallback(async (filePath) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocumentsError('Document access is currently disabled.');
       return;
     }
@@ -4868,7 +4869,7 @@ function JobsheetEditorWindow({
   }, []);
 
   const handleDeleteJobsheetDocument = useCallback(async (doc) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocumentsError('Document access is currently disabled.');
       return;
     }
@@ -4974,12 +4975,12 @@ function JobsheetEditorWindow({
   }, []);
 
   useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
     loadDocumentDefinitions();
   }, [loadDocumentDefinitions]);
 
   useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobTemplateOverrides({});
       return;
     }
@@ -4996,7 +4997,7 @@ function JobsheetEditorWindow({
   }, []);
 
   const openNewDefinitionModal = useCallback(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
     setDefinitionModalMode('create');
     setDefinitionDraft(createDefinitionDraft());
     setDefinitionModalError('');
@@ -5006,7 +5007,7 @@ function JobsheetEditorWindow({
   }, []);
 
   const openEditDefinitionModal = useCallback((definition) => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
     if (!definition) return;
     setDefinitionModalMode('edit');
     setDefinitionDraft(createDefinitionDraft({
@@ -5090,7 +5091,7 @@ function JobsheetEditorWindow({
   }, [definitionKeyEdited]);
 
   const handlePickDefinitionDraftTemplate = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDefinitionModalError('Document generation features are disabled.');
       return;
     }
@@ -5121,7 +5122,7 @@ function JobsheetEditorWindow({
   }, [handleDefinitionDraftChange]);
 
   const handleOpenDraftTemplate = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDefinitionModalError('Document generation features are disabled.');
       return;
     }
@@ -5142,7 +5143,7 @@ function JobsheetEditorWindow({
   }, [definitionDraft.template_path]);
 
   const handleNormalizeDraftTemplate = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDefinitionModalError('Document generation features are disabled.');
       return;
     }
@@ -5166,7 +5167,7 @@ function JobsheetEditorWindow({
   }, [definitionDraft.template_path, setMessage]);
 
   const handleSaveDefinition = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDefinitionModalError('Document generation features are disabled.');
       return;
     }
@@ -5233,7 +5234,7 @@ function JobsheetEditorWindow({
   }, [definitionDraft, numericBusinessId, loadDocumentDefinitions, handleCloseDefinitionModal, selectDefinitionKey]);
 
   const handleDeleteDefinition = useCallback(async (definition) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDocumentDefinitionsError('Document generation features are disabled.');
       return;
     }
@@ -5283,7 +5284,7 @@ function JobsheetEditorWindow({
   }, []);
 
   const handleOpenJobTemplate = useCallback(async (definition) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setError('Document generation features are disabled.');
       return;
     }
@@ -5323,7 +5324,7 @@ function JobsheetEditorWindow({
   }, [jobsheetId, numericBusinessId, formStateRef, setError, openEditDefinitionModal]);
 
   const handleClearJobTemplate = useCallback(async (definition) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setError('Document generation features are disabled.');
       return;
     }
@@ -6041,7 +6042,7 @@ function JobsheetEditorWindow({
 
 
   const handleOpenOutputFolder = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setError('Document generation features are disabled.');
       return;
     }
@@ -6069,7 +6070,7 @@ function JobsheetEditorWindow({
   }, [resolvedBusiness, numericBusinessId, setBusiness]);
 
   const handleOpenOutputFile = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setError('Document generation features are disabled.');
       return;
     }
