@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const documentService = require('./documentService');
 
 const DEFAULT_WINDOW_STATE = {
   width: 1200,
@@ -306,10 +307,12 @@ ipcMain.handle('show-item-in-folder', async (_event, targetPath) => {
 });
 
 ipcMain.handle('normalize-template', async (_event, args = {}) => {
-  return {
-    ok: false,
-    message: 'Document generation features are disabled.'
-  };
+  try {
+    const result = await documentService.normalizeTemplate(args);
+    return result;
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
 });
 
 ipcMain.handle('open-template', async (_event, args = {}) => {

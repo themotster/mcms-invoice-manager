@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import TemplatesManager from './components/TemplatesManager';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
 import {
   normalizeProductionItems,
@@ -100,11 +101,13 @@ function getDocumentIcon(docType) {
 
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
+  templates: '📁',
   settings: '⚙️'
 };
 
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
+  { key: 'templates', label: 'Templates', description: 'Manage document templates', icon: WORKSPACE_ICON_MAP.templates },
   { key: 'settings', label: 'Settings', description: 'Business preferences', icon: WORKSPACE_ICON_MAP.settings }
 ];
 
@@ -4590,6 +4593,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
               </section>
             ) : null}
 
+            {workspaceSection === 'templates' ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-6">
+                <TemplatesManager business={business} onTemplatesUpdated={refreshDocuments} />
+              </section>
+            ) : null}
+
             {workspaceSection === 'settings' ? (
               <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
                 <div>
@@ -4690,13 +4699,8 @@ function JobsheetEditorWindow({
   const [definitionModalError, setDefinitionModalError] = useState('');
   const [definitionKeyEdited, setDefinitionKeyEdited] = useState(false);
   const [definitionSaving, setDefinitionSaving] = useState(false);
-  const [pendingDefinitionAction, setPendingDefinitionAction] = useState(null);
   const [jobTemplateOverrides, setJobTemplateOverrides] = useState({});
   const [jobTemplateLoadingKey, setJobTemplateLoadingKey] = useState(null);
-  const [workbookSheets, setWorkbookSheets] = useState([]);
-  const [workbookSheetsLoading, setWorkbookSheetsLoading] = useState(false);
-  const [workbookSheetsError, setWorkbookSheetsError] = useState('');
-  const [workbookSheetSelection, setWorkbookSheetSelection] = useState('__workbook__');
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
   const [activeEditorSection, setActiveEditorSection] = useState('client');
 
@@ -4795,129 +4799,13 @@ function JobsheetEditorWindow({
     refreshJobsheetDocuments();
   }, [jobsheetId, refreshJobsheetDocuments]);
 
-  const slugifySheetName = useCallback((value) => (
-    (value || '')
-      .toString()
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-+|-+$/g, '')
-      .replace(/-+/g, '-')
-  ), []);
-
   const findDefinitionByKey = useCallback((key) => {
     if (!key) return null;
-    const exact = documentDefinitions.find(definition => definition.key === key);
-    if (exact) return exact;
-
-    if (typeof key === 'string' && key.includes('::sheet::')) {
-      const [parentKey, rawSheetPart] = key.split('::sheet::');
-      const normalizedSheetPart = (rawSheetPart || '').toLowerCase();
-      const parent = documentDefinitions.find(definition => definition.key === parentKey);
-      if (!parent) return null;
-
-      const sheetExports = Array.isArray(parent.sheet_exports) ? parent.sheet_exports : [];
-      const sheetEntry = sheetExports.find(entry => {
-        const entryKey = entry?.key ? String(entry.key).toLowerCase() : '';
-        const entrySheet = entry?.sheet ? String(entry.sheet).toLowerCase() : '';
-        return entryKey === normalizedSheetPart || entrySheet === normalizedSheetPart;
-      });
-      if (!sheetEntry) return null;
-
-      const parentClone = { ...parent };
-      return {
-        ...parentClone,
-        key: parent.key,
-        selection_key: key,
-        description: sheetEntry.sheet || sheetEntry.label || parent.description || '',
-        is_sheet_export: true,
-        parent_key: parent.key,
-        sheet_export: { ...sheetEntry },
-        sheet_display_label: sheetEntry.label || sheetEntry.sheet || startCaseKey(sheetEntry.key || 'Sheet')
-      };
-    }
-
-    return null;
+    return documentDefinitions.find(definition => definition.key === key) || null;
   }, [documentDefinitions]);
-
-  const handleWorkbookSheetSelectionChange = useCallback((rawValue) => {
-    const nextValue = rawValue && rawValue !== '__workbook__'
-      ? String(rawValue).toLowerCase()
-      : '__workbook__';
-    setWorkbookSheetSelection(nextValue);
-  }, []);
 
   const activeDocumentDefinition = useMemo(() => findDefinitionByKey(selectedDefinitionKey), [selectedDefinitionKey, findDefinitionByKey]);
 
-  useEffect(() => {
-    const definition = activeDocumentDefinition;
-    const docType = (definition?.doc_type || '').toLowerCase();
-    if (docType !== 'workbook') {
-      setWorkbookSheets([]);
-      setWorkbookSheetSelection('__workbook__');
-      setWorkbookSheetsError('');
-      setWorkbookSheetsLoading(false);
-      return;
-    }
-
-    const templatePath = jobTemplateOverrides?.[definition.key] || definition.template_path || '';
-    if (!templatePath) {
-      setWorkbookSheets([]);
-      setWorkbookSheetSelection('__workbook__');
-      setWorkbookSheetsError('Set a template before exporting individual sheets.');
-      setWorkbookSheetsLoading(false);
-      return;
-    }
-
-    let isActive = true;
-    setWorkbookSheetsLoading(true);
-    setWorkbookSheetsError('');
-
-    const loadSheets = async () => {
-      try {
-        const list = await window.api?.inspectWorkbookSheets?.(templatePath);
-        if (!isActive) return;
-        const sheetExports = Array.isArray(definition.sheet_exports) ? definition.sheet_exports : [];
-        const normalized = Array.isArray(list)
-          ? list
-              .map(name => {
-                const trimmed = (name || '').toString().trim();
-                if (!trimmed) return null;
-                const lower = trimmed.toLowerCase();
-                const matched = sheetExports.find(entry => {
-                  const entryKey = entry?.key ? String(entry.key).toLowerCase() : '';
-                  const entrySheet = entry?.sheet ? String(entry.sheet).toLowerCase() : '';
-                  return entryKey === lower || entrySheet === lower;
-                });
-                const fallbackKey = `${definition.key}_${slugifySheetName(trimmed) || 'sheet'}`;
-                return {
-                  sheet: trimmed,
-                  label: matched?.label || trimmed,
-                  key: (matched?.key ? String(matched.key).toLowerCase() : fallbackKey.toLowerCase())
-                };
-              })
-              .filter(Boolean)
-          : [];
-        setWorkbookSheets(normalized);
-        setWorkbookSheetSelection(prev => (
-          normalized.some(item => item.key === prev) ? prev : '__workbook__'
-        ));
-      } catch (err) {
-        if (!isActive) return;
-        console.error('Failed to load workbook sheets', err);
-        setWorkbookSheets([]);
-        setWorkbookSheetsError(err?.message || 'Unable to load workbook sheets');
-        setWorkbookSheetSelection('__workbook__');
-      } finally {
-        if (isActive) setWorkbookSheetsLoading(false);
-      }
-    };
-
-    loadSheets();
-    return () => {
-      isActive = false;
-    };
-  }, [activeDocumentDefinition, jobTemplateOverrides, slugifySheetName]);
 
   useEffect(() => {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
@@ -5106,18 +4994,6 @@ function JobsheetEditorWindow({
     setDocumentDefinitionsError('');
     setSelectedDefinitionKey(key);
   }, []);
-
-  useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
-    if (!selectedDefinitionKey || typeof selectedDefinitionKey !== 'string') return;
-    if (!selectedDefinitionKey.includes('::sheet::')) return;
-    const [parentKey, sheetKeyPart = ''] = selectedDefinitionKey.split('::sheet::');
-    if (parentKey) {
-      selectDefinitionKey(parentKey);
-    }
-    const normalizedSheetKey = sheetKeyPart ? sheetKeyPart.toLowerCase() : '';
-    setWorkbookSheetSelection(normalizedSheetKey || '__workbook__');
-  }, [selectedDefinitionKey, selectDefinitionKey, setWorkbookSheetSelection]);
 
   const openNewDefinitionModal = useCallback(() => {
     if (!DOCUMENT_FEATURES_ENABLED) return;
@@ -5418,7 +5294,7 @@ function JobsheetEditorWindow({
     }
 
     if (!definition.template_path) {
-      setPendingDefinitionAction({ type: 'open-job-template', key: definition.key });
+      setError('Set a workbook template before customising overrides.');
       openEditDefinitionModal(definition);
       return;
     }
@@ -6058,6 +5934,7 @@ function JobsheetEditorWindow({
     if (jobsheetId != null && previousSection) {
       storeSection(jobsheetId, previousSection);
     }
+
     const targetKey = requestedDefinitionKey || selectedDefinitionKey;
     if (!targetKey) {
       setError('Select a document type to generate.');
@@ -6070,36 +5947,16 @@ function JobsheetEditorWindow({
       return;
     }
 
-    let effectiveDefinition = definition;
-    let selectedSheetKey = workbookSheetSelection;
-    let selectedSheetMeta = null;
-
-    if (definition?.is_sheet_export) {
-      const forcedSheetKey = definition.sheet_export?.key ? String(definition.sheet_export.key).toLowerCase() : '';
-      if (forcedSheetKey) {
-        selectedSheetKey = forcedSheetKey;
-        selectedSheetMeta = {
-          sheet: definition.sheet_export?.sheet || '',
-          label: definition.sheet_display_label || definition.sheet_export?.label || definition.sheet_export?.sheet || ''
-        };
-        if (workbookSheetSelection !== forcedSheetKey) {
-          handleWorkbookSheetSelectionChange(forcedSheetKey);
-        }
-      }
-    }
-
-    const overridePath = jobTemplateOverrides?.[effectiveDefinition.key] || null;
-    const baseTemplatePath = effectiveDefinition.template_path || '';
+    const overridePath = jobTemplateOverrides?.[definition.key] || null;
+    const baseTemplatePath = definition.template_path || '';
     const templatePath = overridePath || baseTemplatePath;
-
     if (!templatePath) {
-      setPendingDefinitionAction({ type: 'generate', key: effectiveDefinition.key });
-      setDefinitionModalError('Choose a template before generating this document.');
-      openEditDefinitionModal(effectiveDefinition);
+      setError('Choose the workbook template before generating.');
+      openEditDefinitionModal(definition);
       return;
     }
 
-    const errors = validateDocumentRequest(effectiveDefinition);
+    const errors = validateDocumentRequest(definition);
     if (errors.length) {
       setError(errors.join(' '));
       return;
@@ -6111,7 +5968,7 @@ function JobsheetEditorWindow({
       return;
     }
 
-    const payload = buildDocumentPayload(effectiveDefinition);
+    const payload = buildDocumentPayload(definition);
     if (!payload) {
       setError('Unable to build document payload');
       return;
@@ -6122,9 +5979,9 @@ function JobsheetEditorWindow({
       payload.jobsheet_id = Number(jobsheetId);
     }
 
-    const meta = DOC_TYPE_META[effectiveDefinition.doc_type] || null;
+    const meta = DOC_TYPE_META[definition.doc_type] || null;
 
-    setDocumentGeneratingKey(effectiveDefinition.key);
+    setDocumentGeneratingKey(definition.key);
     setError('');
     try {
       if (templatePath && meta?.supportsNormalize && templatePath.toLowerCase().endsWith('.xlsx')) {
@@ -6135,42 +5992,28 @@ function JobsheetEditorWindow({
         }
       }
 
-      if ((effectiveDefinition.doc_type || '').toLowerCase() === 'workbook') {
-        if (selectedSheetKey && selectedSheetKey !== '__workbook__') {
-          const resolvedSheetMeta = selectedSheetMeta || workbookSheets.find(item => item.key === selectedSheetKey) || null;
-          const exportName = resolvedSheetMeta?.sheet || resolvedSheetMeta?.label || selectedSheetKey;
-          payload.sheet_export_key = selectedSheetKey;
-          payload.sheet_export_name = exportName;
-          payload.generate_sheet_only = true;
-          selectedSheetMeta = resolvedSheetMeta || { sheet: exportName, label: exportName };
-        }
-      }
-
       const result = await api.createDocument(payload);
       if (result?.file_path) {
         setLastOutputPath(result.file_path);
       }
+
       const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
-      const baseLabel = effectiveDefinition.label || startCaseKey(effectiveDefinition.key);
-      const sheetLabel = selectedSheetMeta && (selectedSheetMeta.label || selectedSheetMeta.sheet)
-        ? (selectedSheetMeta.label || selectedSheetMeta.sheet)
-        : '';
-      const messageLabel = sheetLabel ? `${baseLabel} – ${sheetLabel}` : baseLabel;
-      setMessage(`${messageLabel}${suffix}`.trim());
+      const baseLabel = definition.label || startCaseKey(definition.key);
+      setMessage(`${baseLabel}${suffix}`.trim());
 
       if (Array.isArray(result?.additional_outputs) && result.additional_outputs.length) {
         const successes = result.additional_outputs.filter(item => item && item.success);
         if (successes.length) {
-          const labels = successes.map(item => item.label || item.sheet || 'PDF').join(', ');
+          const labels = successes.map(item => item.label || item.sheet || 'File').join(', ');
           setMessage(prev => `${prev ? `${prev}. ` : ''}Generated ${labels}.`);
-          const pdf = successes.find(item => item.file_path);
-          if (pdf && pdf.file_path) {
-            setLastOutputPath(pdf.file_path);
+          const firstPath = successes.find(item => item.file_path)?.file_path;
+          if (firstPath) {
+            setLastOutputPath(firstPath);
           }
         }
         const failures = result.additional_outputs.filter(item => !item?.success);
         if (failures.length) {
-          const reasons = failures.map(item => `${item.sheet || 'Sheet'}: ${item.error || 'Unable to export'}`).join(' ');
+          const reasons = failures.map(item => `${item.sheet || 'Output'}: ${item.error || 'Unable to export'}`).join(' ');
           setError(reasons);
         }
       }
@@ -6194,24 +6037,8 @@ function JobsheetEditorWindow({
         setActiveEditorSection(previousSection);
       }
     }
-  }, [selectedDefinitionKey, findDefinitionByKey, jobTemplateOverrides, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection, workbookSheetSelection, workbookSheets, handleWorkbookSheetSelectionChange]);
+  }, [selectedDefinitionKey, findDefinitionByKey, jobTemplateOverrides, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection]);
 
-  useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
-    if (!pendingDefinitionAction) return;
-    const definition = findDefinitionByKey(pendingDefinitionAction.key);
-    if (!definition) return;
-    const templatePath = jobTemplateOverrides?.[definition.key] || definition.template_path;
-    if (!templatePath) return;
-
-    const action = pendingDefinitionAction;
-    setPendingDefinitionAction(null);
-    if (action.type === 'generate') {
-      handlePopulateExcel(definition.key);
-    } else if (action.type === 'open-job-template') {
-      handleOpenJobTemplate(definition);
-    }
-  }, [pendingDefinitionAction, findDefinitionByKey, jobTemplateOverrides, handlePopulateExcel, handleOpenJobTemplate]);
 
   const handleOpenOutputFolder = useCallback(async () => {
     if (!DOCUMENT_FEATURES_ENABLED) {
@@ -6535,10 +6362,7 @@ function JobsheetEditorWindow({
             </div>
             <button
               type="button"
-              onClick={() => {
-                setPendingDefinitionAction(null);
-                handleCloseDefinitionModal();
-              }}
+              onClick={handleCloseDefinitionModal}
               className="text-slate-400 transition hover:text-slate-600"
               aria-label="Close"
             >
@@ -6720,10 +6544,7 @@ function JobsheetEditorWindow({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setPendingDefinitionAction(null);
-                  handleCloseDefinitionModal();
-                }}
+                onClick={handleCloseDefinitionModal}
                 className="inline-flex items-center rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
               >
                 Cancel
