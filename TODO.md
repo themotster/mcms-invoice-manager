@@ -7,3 +7,6 @@
 - [ ] Hook up external AppleScript trigger for PDF export from Excel.
 - [ ] Build business-level "All files" view with search/grouping.
 - [ ] Update documentation to describe the new hybrid process.
+- [ ] Add calendar of upcoming deadlines/reminders with background macOS notifications while the app is closed.
+- [ ] Integrate outbound email for sending generated documents directly to clients.
+- [ ] Add WhatsApp workflow for AhMen enquiries, gig sheets, and personnel follow-ups.

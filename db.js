@@ -1,5 +1,6 @@
 const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
+const fsp = fs.promises;
 const path = require('path');
 
 const settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json')));
@@ -134,6 +135,10 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   service_types: 'jobsheet.service_types',
   specialist_singers: 'jobsheet.specialist_singers'
 };
+
+const TRASH_DIR_NAME = '.trash';
+const MAX_TREE_DEPTH = 6;
+const MAX_TREE_ENTRIES = 4000;
 
 const BUSINESS_SETTINGS_MUTABLE_FIELDS = new Set([
   'save_path',
@@ -1191,6 +1196,507 @@ function deleteDocumentByFilePath(businessId, absolutePath) {
       }
     );
   });
+}
+
+function fetchBusinessRecord(businessId) {
+  return new Promise((resolve, reject) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid business id'));
+      return;
+    }
+    db.get(
+      'SELECT * FROM business_settings WHERE id = ?',
+      [id],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve(row || null);
+      }
+    );
+  });
+}
+
+async function pathExists(targetPath) {
+  if (!targetPath) return false;
+  try {
+    await fsp.access(targetPath);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function resolveRelativePath(rootPath, relativePath) {
+  if (!relativePath) {
+    return path.resolve(rootPath);
+  }
+  const segments = relativePath.split(/[\\/]+/).filter(Boolean);
+  return path.resolve(path.join(rootPath, ...segments));
+}
+
+function isSubPath(parentPath, childPath) {
+  const parentResolved = path.resolve(parentPath);
+  const childResolved = path.resolve(childPath);
+  const relative = path.relative(parentResolved, childResolved);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+async function ensureDirectoryExists(targetPath) {
+  if (!targetPath) return;
+  await fsp.mkdir(targetPath, { recursive: true });
+}
+
+function appendSuffix(name, counter) {
+  if (!counter) return name;
+  const ext = path.extname(name);
+  const base = ext ? name.slice(0, -ext.length) : name;
+  return `${base} (${counter})${ext}`;
+}
+
+async function ensureUniquePath(directory, name) {
+  const baseName = name || 'item';
+  let attempt = 0;
+  while (attempt < 1000) {
+    const candidateName = attempt === 0 ? baseName : appendSuffix(baseName, attempt);
+    const candidatePath = path.join(directory, candidateName);
+    if (!(await pathExists(candidatePath))) {
+      return candidatePath;
+    }
+    attempt += 1;
+  }
+  return path.join(directory, `${baseName}-${Date.now()}`);
+}
+
+async function copyRecursive(source, destination) {
+  const stats = await fsp.lstat(source);
+  if (stats.isSymbolicLink()) {
+    try {
+      const target = await fsp.readlink(source);
+      await ensureDirectoryExists(path.dirname(destination));
+      await fsp.symlink(target, destination);
+    } catch (err) {
+      await ensureDirectoryExists(path.dirname(destination));
+      await fsp.copyFile(source, destination);
+    }
+    return;
+  }
+
+  if (stats.isDirectory()) {
+    await fsp.mkdir(destination, { recursive: true });
+    const entries = await fsp.readdir(source);
+    for (const entry of entries) {
+      const fromChild = path.join(source, entry);
+      const toChild = path.join(destination, entry);
+      await copyRecursive(fromChild, toChild);
+    }
+    return;
+  }
+
+  await ensureDirectoryExists(path.dirname(destination));
+  await fsp.copyFile(source, destination);
+}
+
+async function removeRecursive(targetPath) {
+  await fsp.rm(targetPath, { recursive: true, force: true });
+}
+
+async function moveEntryToTrash(rootPath, targetPath) {
+  const rootResolved = path.resolve(rootPath);
+  const targetResolved = path.resolve(targetPath);
+  if (!isSubPath(rootResolved, targetResolved) || targetResolved === rootResolved) {
+    throw new Error('Target must be within the documents folder.');
+  }
+
+  const trashRoot = path.join(rootResolved, TRASH_DIR_NAME);
+  await ensureDirectoryExists(trashRoot);
+  const destination = await ensureUniquePath(trashRoot, path.basename(targetResolved) || 'item');
+
+  try {
+    await fsp.rename(targetResolved, destination);
+  } catch (err) {
+    if (err && err.code === 'EXDEV') {
+      await copyRecursive(targetResolved, destination);
+      await removeRecursive(targetResolved);
+    } else if (err && err.code === 'ENOENT') {
+      throw new Error('Path not found.');
+    } else {
+      throw err;
+    }
+  }
+
+  return destination;
+}
+
+async function summarizeDirectory(targetPath) {
+  const stats = await fsp.lstat(targetPath);
+  if (!stats.isDirectory()) {
+    return {
+      itemCount: 1,
+      totalSize: stats.size || 0
+    };
+  }
+
+  const entries = await fsp.readdir(targetPath);
+  let totalSize = 0;
+  let itemCount = 0;
+  for (const entry of entries) {
+    const childPath = path.join(targetPath, entry);
+    try {
+      const summary = await summarizeDirectory(childPath);
+      totalSize += summary.totalSize;
+      itemCount += summary.itemCount;
+    } catch (err) {
+      // ignore inaccessible entries
+    }
+  }
+  return { itemCount, totalSize };
+}
+
+async function buildDirectoryTree(currentPath, relativePath = '', depth = 0) {
+  const stats = await fsp.lstat(currentPath);
+  const isDirectory = stats.isDirectory();
+  const baseName = path.basename(currentPath) || (relativePath ? relativePath.split('/').pop() : 'Documents');
+  const node = {
+    name: baseName || 'Documents',
+    path: relativePath,
+    absolutePath: currentPath,
+    isDirectory,
+    size: stats.size || 0,
+    modified: stats.mtime ? stats.mtime.toISOString() : null
+  };
+
+  if (!isDirectory || depth >= MAX_TREE_DEPTH) {
+    node.children = [];
+    node.itemCount = isDirectory ? 0 : 1;
+    node.totalSize = stats.size || 0;
+    return node;
+  }
+
+  let entries = [];
+  try {
+    entries = await fsp.readdir(currentPath, { withFileTypes: true });
+  } catch (err) {
+    node.children = [];
+    node.itemCount = 0;
+    node.totalSize = stats.size || 0;
+    return node;
+  }
+
+  const children = [];
+  let totalSize = 0;
+  let totalItems = 0;
+  let processed = 0;
+
+  for (const entry of entries) {
+    if (entry.name === '.' || entry.name === '..') continue;
+    if (entry.name === TRASH_DIR_NAME) continue;
+    if (processed >= MAX_TREE_ENTRIES) break;
+    processed += 1;
+
+    const childAbsolute = path.join(currentPath, entry.name);
+    const childRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+
+    try {
+      const childNode = await buildDirectoryTree(childAbsolute, childRelative, depth + 1);
+      children.push(childNode);
+      totalSize += childNode.totalSize != null ? childNode.totalSize : (childNode.size || 0);
+      totalItems += childNode.isDirectory ? (childNode.itemCount || 0) : 1;
+    } catch (err) {
+      // skip problematic entries
+    }
+  }
+
+  children.sort((a, b) => {
+    if (a.isDirectory && !b.isDirectory) return -1;
+    if (!a.isDirectory && b.isDirectory) return 1;
+    return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
+  });
+
+  node.children = children;
+  node.itemCount = totalItems;
+  node.totalSize = totalSize;
+  node.size = totalSize;
+  return node;
+}
+
+async function summarizeTrashDirectory(trashPath) {
+  const exists = await pathExists(trashPath);
+  if (!exists) {
+    return {
+      path: TRASH_DIR_NAME,
+      absolutePath: trashPath,
+      itemCount: 0,
+      size: 0
+    };
+  }
+
+  const summary = await summarizeDirectory(trashPath);
+  return {
+    path: TRASH_DIR_NAME,
+    absolutePath: trashPath,
+    itemCount: summary.itemCount,
+    size: summary.totalSize
+  };
+}
+
+function setDocumentFilePath(documentId, filePath) {
+  return new Promise((resolve, reject) => {
+    const id = Number(documentId);
+    if (!Number.isInteger(id)) {
+      resolve();
+      return;
+    }
+    db.run(
+      `UPDATE documents SET file_path = ?, updated_at = datetime('now') WHERE document_id = ?`,
+      [filePath || null, id],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+async function updateDocumentPathsUnder(businessId, sourceBase, targetBase) {
+  const id = Number(businessId);
+  if (!Number.isInteger(id)) return;
+  if (!sourceBase || !targetBase) return;
+
+  const normalizedSource = path.resolve(sourceBase);
+  const normalizedTarget = path.resolve(targetBase);
+  const escaped = escapeLikePattern(normalizedSource);
+  const likeValue = `${escaped}%`;
+
+  const rows = await new Promise((resolve, reject) => {
+    db.all(
+      "SELECT document_id, file_path FROM documents WHERE business_id = ? AND file_path LIKE ? ESCAPE '\\'",
+      [id, likeValue],
+      (err, data) => {
+        if (err) reject(err);
+        else resolve(data || []);
+      }
+    );
+  });
+
+  await Promise.all(rows.map(row => {
+    if (!row.file_path || typeof row.file_path !== 'string') return null;
+    const remainder = row.file_path.slice(normalizedSource.length).replace(/^[\\/]+/, '');
+    const nextPath = path.join(normalizedTarget, remainder);
+    return setDocumentFilePath(row.document_id, nextPath);
+  }));
+}
+
+async function clearDocumentPath(businessId, absolutePath) {
+  const id = Number(businessId);
+  if (!Number.isInteger(id) || !absolutePath) return;
+  const normalized = path.resolve(absolutePath);
+  await new Promise((resolve, reject) => {
+    db.run(
+      `UPDATE documents SET file_path = NULL, updated_at = datetime('now') WHERE business_id = ? AND file_path = ?`,
+      [id, normalized],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+async function clearDocumentPathsByPrefix(businessId, absolutePath) {
+  const id = Number(businessId);
+  if (!Number.isInteger(id) || !absolutePath) return;
+  const normalized = path.resolve(absolutePath);
+  const escaped = escapeLikePattern(normalized);
+  const likeValue = `${escaped}%`;
+  await new Promise((resolve, reject) => {
+    db.run(
+      "UPDATE documents SET file_path = NULL, updated_at = datetime('now') WHERE business_id = ? AND file_path LIKE ? ESCAPE '\\'",
+      [id, likeValue],
+      function (err) {
+        if (err) reject(err);
+        else resolve();
+      }
+    );
+  });
+}
+
+async function relocateBusinessDocuments(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required');
+  }
+
+  const targetPathRaw = options.targetPath || options.destinationPath;
+  if (!targetPathRaw) {
+    throw new Error('targetPath is required');
+  }
+  const targetPath = path.resolve(targetPathRaw);
+  await ensureDirectoryExists(targetPath);
+
+  const summary = { moved: [], skipped: [], errors: [] };
+  const sourcePathRaw = options.sourcePath || options.originPath || null;
+  if (!sourcePathRaw) {
+    await ensureDirectoryExists(path.join(targetPath, TRASH_DIR_NAME));
+    return summary;
+  }
+
+  const sourcePath = path.resolve(sourcePathRaw);
+  if (sourcePath === targetPath) {
+    await ensureDirectoryExists(path.join(targetPath, TRASH_DIR_NAME));
+    return summary;
+  }
+
+  if (!(await pathExists(sourcePath))) {
+    await ensureDirectoryExists(path.join(targetPath, TRASH_DIR_NAME));
+    return summary;
+  }
+
+  const entries = await fsp.readdir(sourcePath);
+  for (const entry of entries) {
+    const fromPath = path.join(sourcePath, entry);
+    const toPath = path.join(targetPath, entry);
+    if (await pathExists(toPath)) {
+      summary.skipped.push({ name: entry, reason: 'exists' });
+      continue;
+    }
+
+    try {
+      await ensureDirectoryExists(path.dirname(toPath));
+      await fsp.rename(fromPath, toPath);
+      summary.moved.push({ from: fromPath, to: toPath });
+      await updateDocumentPathsUnder(businessId, fromPath, toPath);
+    } catch (err) {
+      if (err && err.code === 'EXDEV') {
+        try {
+          await copyRecursive(fromPath, toPath);
+          await removeRecursive(fromPath);
+          summary.moved.push({ from: fromPath, to: toPath, copied: true });
+          await updateDocumentPathsUnder(businessId, fromPath, toPath);
+        } catch (copyErr) {
+          summary.errors.push({ name: entry, message: copyErr.message || String(copyErr) });
+        }
+      } else {
+        summary.errors.push({ name: entry, message: err?.message || String(err) });
+      }
+    }
+  }
+
+  await ensureDirectoryExists(path.join(targetPath, TRASH_DIR_NAME));
+  return summary;
+}
+
+async function listDocumentTree(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required');
+  }
+
+  const business = await fetchBusinessRecord(businessId);
+  if (!business || !business.save_path) {
+    throw new Error('Documents folder not configured');
+  }
+
+  const rootPath = path.resolve(business.save_path);
+  await ensureDirectoryExists(rootPath);
+  const rootNode = await buildDirectoryTree(rootPath);
+  const trashSummary = await summarizeTrashDirectory(path.join(rootPath, TRASH_DIR_NAME));
+
+  return {
+    rootPath,
+    root: rootNode,
+    trash: trashSummary
+  };
+}
+
+async function deleteDocumentFolder(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required');
+  }
+
+  const relativePath = options.relativePath || options.path;
+  if (!relativePath) {
+    throw new Error('relativePath is required');
+  }
+
+  const business = await fetchBusinessRecord(businessId);
+  if (!business || !business.save_path) {
+    throw new Error('Documents folder not configured');
+  }
+
+  const rootPath = path.resolve(business.save_path);
+  const targetPath = resolveRelativePath(rootPath, relativePath);
+  if (!(await pathExists(targetPath))) {
+    throw new Error('Folder not found');
+  }
+  const stats = await fsp.lstat(targetPath);
+  if (!stats.isDirectory()) {
+    throw new Error('Target is not a folder');
+  }
+
+  const trashedPath = await moveEntryToTrash(rootPath, targetPath);
+  await clearDocumentPathsByPrefix(businessId, targetPath);
+  return { ok: true, trashedPath };
+}
+
+async function deleteDocumentByPath(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required');
+  }
+
+  const absolutePathRaw = options.absolutePath || options.path;
+  if (!absolutePathRaw) {
+    throw new Error('absolutePath is required');
+  }
+
+  const business = await fetchBusinessRecord(businessId);
+  if (!business || !business.save_path) {
+    throw new Error('Documents folder not configured');
+  }
+
+  const rootPath = path.resolve(business.save_path);
+  const targetPath = path.resolve(absolutePathRaw);
+  if (!isSubPath(rootPath, targetPath)) {
+    throw new Error('Path must be inside the documents folder');
+  }
+  if (!(await pathExists(targetPath))) {
+    throw new Error('File not found');
+  }
+
+  const stats = await fsp.lstat(targetPath);
+  if (stats.isDirectory()) {
+    const relative = path.relative(rootPath, targetPath);
+    return deleteDocumentFolder({ businessId, relativePath: relative });
+  }
+
+  const trashedPath = await moveEntryToTrash(rootPath, targetPath);
+  await clearDocumentPath(businessId, targetPath);
+  return { ok: true, trashedPath };
+}
+
+async function emptyDocumentsTrash(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required');
+  }
+
+  const business = await fetchBusinessRecord(businessId);
+  if (!business || !business.save_path) {
+    throw new Error('Documents folder not configured');
+  }
+
+  const rootPath = path.resolve(business.save_path);
+  const trashPath = path.join(rootPath, TRASH_DIR_NAME);
+  if (!(await pathExists(trashPath))) {
+    await ensureDirectoryExists(trashPath);
+    return { ok: true, removed: 0 };
+  }
+
+  const summary = await summarizeTrashDirectory(trashPath);
+  await removeRecursive(trashPath);
+  await ensureDirectoryExists(trashPath);
+  return { ok: true, removed: summary?.itemCount || 0 };
 }
 
 function reorderDocumentDefinitions(businessId, orderedKeys) {
@@ -2675,18 +3181,7 @@ module.exports = {
     });
   },
 
-  getBusinessById: (businessId) => {
-    return new Promise((resolve, reject) => {
-      db.get(
-        `SELECT * FROM business_settings WHERE id = ?`,
-        [businessId],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
-  },
+  getBusinessById: (businessId) => fetchBusinessRecord(businessId),
 
   getDocumentById: (documentId) => {
     return new Promise((resolve, reject) => {
@@ -2904,5 +3399,10 @@ module.exports = {
   deleteMergeField,
   deleteDocumentsByDefinition,
   deleteDocumentsByPathPrefix,
-  deleteDocumentByFilePath
+  deleteDocumentByFilePath,
+  relocateBusinessDocuments,
+  listDocumentTree,
+  deleteDocumentFolder,
+  deleteDocumentByPath,
+  emptyDocumentsTrash
 };

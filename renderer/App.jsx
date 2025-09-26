@@ -82,7 +82,7 @@ const DOCUMENT_COLUMNS = [
   { key: 'actions', label: 'Actions', align: 'right', always: true }
 ];
 
-const DOCUMENT_FEATURES_ENABLED = false;
+const DOCUMENT_FEATURES_ENABLED = true;
 const DOCUMENT_GENERATION_ENABLED = true;
 
 function getDocumentIcon(docType) {
@@ -102,12 +102,14 @@ function getDocumentIcon(docType) {
 
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
+  documents: '🗃️',
   templates: '📁',
   settings: '⚙️'
 };
 
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
+  { key: 'documents', label: 'Documents', description: 'Browse and manage files', icon: WORKSPACE_ICON_MAP.documents },
   { key: 'templates', label: 'Templates', description: 'Manage document templates', icon: WORKSPACE_ICON_MAP.templates },
   { key: 'settings', label: 'Settings', description: 'Business preferences', icon: WORKSPACE_ICON_MAP.settings }
 ];
@@ -669,6 +671,21 @@ function formatTimestampDisplay(value) {
   return `${datePart} ${timePart}`;
 }
 
+function formatFileSize(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  if (bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = bytes;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const precision = size >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${size.toFixed(precision)} ${units[unitIndex]}`;
+}
+
 function normalizeLookupString(value) {
   return (value || '')
     .toString()
@@ -829,6 +846,28 @@ function IconButton({ label, onClick, disabled, className = '', children }) {
   );
 }
 
+function TreeActionButton({ title, onClick, disabled, children }) {
+  const handleClick = (event) => {
+    event.stopPropagation();
+    if (!disabled) {
+      onClick?.(event);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={disabled}
+      className="rounded p-1 text-slate-400 transition hover:bg-indigo-50 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+      title={title}
+      aria-label={title}
+    >
+      {children}
+    </button>
+  );
+}
+
 function OpenIcon({ className = 'h-4 w-4' }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -858,6 +897,158 @@ function DeleteIcon({ className = 'h-4 w-4' }) {
       <path d="M10 11v5" />
       <path d="M14 11v5" />
     </svg>
+  );
+}
+
+function DocumentTreeView({
+  root,
+  trash,
+  rootPath,
+  loading,
+  error,
+  onRefresh,
+  onOpen,
+  onReveal,
+  onDeleteFolder,
+  onDeleteFile,
+  onEmptyTrash,
+  emptyingTrash,
+  isConfigured
+}) {
+  const safeRootPath = rootPath || '';
+  const rootLabel = safeRootPath ? (safeRootPath.split(/[\\/]+/).filter(Boolean).pop() || 'Documents') : 'Documents';
+
+  const renderNode = (node, depth = 0, isRoot = false) => {
+    if (!node) return null;
+    const isDirectory = node.isDirectory !== false;
+    const absolutePath = node.absolutePath || '';
+    const nodeName = node.name || (isRoot ? rootLabel : '(unnamed)');
+    const paddingLeft = depth * 16;
+    const itemCount = Number.isFinite(node.itemCount) ? node.itemCount : null;
+    const sizeLabel = !isDirectory && Number.isFinite(node.size) ? formatFileSize(node.size) : null;
+    const modifiedLabel = node.modified ? formatTimestampDisplay(node.modified) : '';
+
+    const metaPieces = [];
+    if (isDirectory && itemCount != null) {
+      metaPieces.push(`${itemCount} item${itemCount === 1 ? '' : 's'}`);
+    }
+    if (sizeLabel) metaPieces.push(sizeLabel);
+    if (modifiedLabel) metaPieces.push(modifiedLabel);
+    const metaLabel = metaPieces.join(' · ');
+
+    return (
+      <div key={absolutePath || `${nodeName}-${depth}`} className="border-b border-slate-100 last:border-b-0">
+        <div
+          className="group flex items-center justify-between gap-2 px-2 py-1.5 text-sm"
+          style={{ paddingLeft: `${paddingLeft}px` }}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="text-base" role="img" aria-hidden="true">{isDirectory ? '📁' : '📄'}</span>
+            <div className="min-w-0">
+              <div className="truncate font-medium text-slate-700" title={absolutePath || nodeName}>{nodeName}</div>
+              {metaLabel ? <div className="text-xs text-slate-400">{metaLabel}</div> : null}
+            </div>
+          </div>
+          <div className="flex flex-shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
+            <TreeActionButton title="Open" onClick={() => onOpen?.(node)} disabled={!onOpen || !absolutePath}>
+              <OpenIcon className="h-3.5 w-3.5" />
+            </TreeActionButton>
+            <TreeActionButton title="Reveal in Finder" onClick={() => onReveal?.(node)} disabled={!onReveal || !absolutePath}>
+              <RevealIcon className="h-3.5 w-3.5" />
+            </TreeActionButton>
+            {!isRoot ? (
+              <TreeActionButton
+                title="Move to trash"
+                onClick={() => {
+                  if (isDirectory) {
+                    onDeleteFolder?.(node);
+                  } else {
+                    onDeleteFile?.(node);
+                  }
+                }}
+                disabled={(isDirectory && !onDeleteFolder) || (!isDirectory && !onDeleteFile)}
+              >
+                <DeleteIcon className="h-3.5 w-3.5" />
+              </TreeActionButton>
+            ) : null}
+          </div>
+        </div>
+        {isDirectory && Array.isArray(node.children) && node.children.length > 0 ? (
+          <div>
+            {node.children.map(child => renderNode(child, depth + 1, false))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  let content = null;
+  if (!isConfigured) {
+    content = (
+      <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        Choose a documents folder in Settings to enable file management.
+      </div>
+    );
+  } else if (error) {
+    content = (
+      <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" role="alert">
+        {error}
+      </div>
+    );
+  } else if (loading) {
+    content = <div className="text-xs text-slate-500">Loading tree…</div>;
+  } else if (!root || !Array.isArray(root.children) || root.children.length === 0) {
+    content = <div className="text-xs text-slate-500">No documents found in this folder yet.</div>;
+  } else {
+    content = (
+      <div className="max-h-[420px] overflow-y-auto rounded border border-slate-200">
+        {renderNode(root, 0, true)}
+      </div>
+    );
+  }
+
+  const trashSummary = trash && typeof trash === 'object' ? trash : null;
+  const trashItems = Number.isFinite(trashSummary?.itemCount) ? trashSummary.itemCount : 0;
+  const trashSizeLabel = Number.isFinite(trashSummary?.size) ? formatFileSize(trashSummary.size) : null;
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-slate-700">Documents tree</h3>
+          <p className="text-xs text-slate-500 break-all">{safeRootPath || 'Not configured'}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => onRefresh?.()}
+          disabled={loading || !isConfigured}
+          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {loading ? 'Loading…' : 'Refresh'}
+        </button>
+      </div>
+      {content}
+      {isConfigured ? (
+        <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold text-slate-600">Trash</div>
+              <div className="text-xs text-slate-500">
+                {trashItems ? `${trashItems} item${trashItems === 1 ? '' : 's'}${trashSizeLabel ? ` · ${trashSizeLabel}` : ''}` : 'Trash is empty'}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onEmptyTrash?.()}
+              disabled={!trashItems || emptyingTrash}
+              className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {emptyingTrash ? 'Emptying…' : 'Empty trash'}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -1395,7 +1586,7 @@ function InlineJobsheetEditorPanel({
 }) {
   const headerTitle = jobsheetId ? 'Edit jobsheet' : 'New jobsheet';
   const hint = jobsheetId
-    ? `Jobsheet #${jobsheetId} · changes save automatically.`
+    ? 'Changes save automatically.'
     : 'Changes save automatically. Fill in the details below.';
 
   if (!visible) {
@@ -3562,7 +3753,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.id]);
 
   const refreshDocuments = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDocuments([]);
       setDocumentsLoading(false);
       setDocumentsError('');
@@ -3571,13 +3762,19 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     setDocumentsLoading(true);
     setDocumentsError('');
     try {
-      const api = window.api;
-      if (!api || typeof api.getDocuments !== 'function') {
-        throw new Error('Unable to load documents: API unavailable');
+      if (DOCUMENT_FEATURES_ENABLED || DOCUMENT_GENERATION_ENABLED) {
+        const api = window.api;
+        if (!api || typeof api.getDocuments !== 'function') {
+          throw new Error('Unable to load documents: API unavailable');
+        }
+        const data = await api.getDocuments({ businessId: business.id });
+        setDocuments(Array.isArray(data) ? data : []);
       }
-      const data = await api.getDocuments({ businessId: business.id });
-      setDocuments(Array.isArray(data) ? data : []);
-      await loadDocumentTree();
+      if (DOCUMENT_FEATURES_ENABLED) {
+        await loadDocumentTree();
+      } else {
+        setDocumentTree(null);
+      }
     } catch (err) {
       console.error('Failed to refresh documents', err);
       setDocumentsError(err?.message || 'Unable to load documents');
@@ -3587,7 +3784,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.id, loadDocumentTree]);
 
   const handleRefreshDocuments = useCallback(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
     refreshDocuments();
   }, [refreshDocuments]);
 
@@ -4396,6 +4593,11 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     ));
   }, [documentsGroup, filteredDocuments, groupedDocuments, renderDocumentTable, emptyStateMessage]);
 
+  const documentTreeRoot = documentTree?.root || null;
+  const documentTreeTrash = documentTree?.trash || null;
+  const documentTreePath = documentTree?.rootPath || business.save_path || '';
+  const documentsConfigured = Boolean((business.save_path || '').trim());
+
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
     if (!api || !api.openJobsheetWindow) {
@@ -4540,7 +4742,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         {message ? <div className="rounded border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-700">{message}</div> : null}
 
         <div className="flex flex-col gap-6 lg:flex-row">
-          <nav className="lg:w-64 flex-shrink-0">
+          <nav className="lg:w-64 lg:sticky lg:top-6 flex-shrink-0">
             <div className="space-y-2" role="tablist" aria-orientation="vertical">
               {WORKSPACE_SECTIONS.map(section => {
                 const isActive = workspaceSection === section.key;
@@ -4591,6 +4793,150 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                   onClose={handleCloseInlineEditor}
                   onOpenInWindow={handlePopoutEditor}
                 />
+              </section>
+            ) : null}
+
+            {workspaceSection === 'documents' ? (
+              <section className="space-y-4">
+                <div className="grid gap-4 lg:grid-cols-[320px,1fr]">
+                  <DocumentTreeView
+                    root={documentTreeRoot}
+                    trash={documentTreeTrash}
+                    rootPath={documentTreePath}
+                    loading={documentTreeLoading}
+                    error={documentTreeError}
+                    onRefresh={loadDocumentTree}
+                    onOpen={handleOpenTreeNode}
+                    onReveal={handleRevealTreeNode}
+                    onDeleteFolder={handleDeleteTreeFolder}
+                    onDeleteFile={handleDeleteTreeFile}
+                    onEmptyTrash={handleEmptyTrash}
+                    emptyingTrash={emptyingTrash}
+                    isConfigured={documentsConfigured}
+                  />
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-4">
+                      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
+                          <p className="text-sm text-slate-500">
+                            {headerSubtitle}
+                            {documentsLoading ? <span className="ml-2 text-xs text-slate-400">Loading…</span> : null}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={handleRefreshDocuments}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            Refresh list
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleOpenDocumentsFolder}
+                            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            Open folder
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleDeleteSelected}
+                            disabled={!canDeleteSelected}
+                            className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Delete selected
+                          </button>
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),200px,auto]">
+                        <div className="flex items-center gap-2">
+                          <label className="sr-only" htmlFor="documents-search">Search documents</label>
+                          <input
+                            id="documents-search"
+                            type="search"
+                            value={documentsSearch}
+                            onChange={event => setDocumentsSearch(event.target.value)}
+                            placeholder="Search documents"
+                            className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                          {documentsSearchValue ? (
+                            <button
+                              type="button"
+                              onClick={() => setDocumentsSearch('')}
+                              className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                            >
+                              Clear
+                            </button>
+                          ) : null}
+                        </div>
+                        <div>
+                          <label className="sr-only" htmlFor="documents-group">Group documents</label>
+                          <select
+                            id="documents-group"
+                            value={documentsGroup}
+                            onChange={event => setDocumentsGroup(event.target.value)}
+                            className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          >
+                            {DOCUMENT_GROUP_OPTIONS.map(option => (
+                              <option key={option.value} value={option.value}>{option.label}</option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="relative" ref={columnsMenuRef}>
+                          <button
+                            type="button"
+                            onClick={() => setColumnsMenuOpen(prev => !prev)}
+                            className="inline-flex w-full items-center justify-between gap-2 rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          >
+                            Columns
+                            <span aria-hidden="true">▾</span>
+                          </button>
+                          {columnsMenuOpen ? (
+                            <div
+                              ref={columnsMenuContentRef}
+                              className={`absolute right-0 z-20 w-52 rounded border border-slate-200 bg-white p-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+                            >
+                              <div className="space-y-1">
+                                {DOCUMENT_COLUMNS.filter(column => !column.always).map(column => {
+                                  const checked = documentColumnsState[column.key] !== false;
+                                  return (
+                                    <label
+                                      key={column.key}
+                                      className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-100"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                        checked={checked}
+                                        onChange={() => handleToggleColumn(column.key)}
+                                      />
+                                      <span>{column.label}</span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                      {selectedCount ? (
+                        <div className="text-xs text-slate-500">{selectedCount} selected</div>
+                      ) : null}
+                    </div>
+                    <div className="space-y-3">
+                      {documentsError ? (
+                        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                          {documentsError}
+                        </div>
+                      ) : null}
+                      {documentsLoading && !documentsError ? (
+                        <div className="text-sm text-slate-500">Loading documents…</div>
+                      ) : null}
+                      {documentsContent}
+                    </div>
+                  </div>
+                </div>
               </section>
             ) : null}
 
@@ -4657,6 +5003,192 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   );
 }
 
+function JobsheetDocumentsPanel({
+  jobsheetId,
+  documents,
+  loading,
+  definitionsLoading,
+  error,
+  onRefresh,
+  onGenerate,
+  generatingKey,
+  workbookDefinition,
+  onOpenTemplate,
+  onEditTemplate,
+  onOpenOutputFolder,
+  onOpenOutputFile,
+  onOpenFile,
+  onRevealFile,
+  onDelete,
+  lastOutputPath
+}) {
+  if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return null;
+
+  const list = Array.isArray(documents) ? documents : [];
+  const workbookKey = workbookDefinition?.key || 'workbook';
+  const hasTemplate = Boolean(workbookDefinition?.template_path);
+  const isGenerating = generatingKey === workbookKey;
+  const disableGenerate = !jobsheetId || !hasTemplate || isGenerating || definitionsLoading;
+
+  const documentLabel = (doc) => {
+    return doc?.definition_label
+      || (doc?.definition_key ? startCaseKey(doc.definition_key) : 'Document');
+  };
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
+          <p className="text-sm text-slate-500">Generate the master workbook for this jobsheet and open the latest exports.</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Refresh list
+          </button>
+          <button
+            type="button"
+            onClick={onOpenOutputFolder}
+            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Open documents folder
+          </button>
+          <button
+            type="button"
+            onClick={onOpenOutputFile}
+            disabled={!lastOutputPath}
+            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            Open latest export
+          </button>
+        </div>
+      </div>
+
+      {error ? (
+        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>
+      ) : null}
+
+      <div className="rounded border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
+        {definitionsLoading ? (
+          <div>Loading template details…</div>
+        ) : workbookDefinition ? (
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <div className="font-medium text-slate-700">Workbook template</div>
+              <p className="text-xs text-slate-500 break-all">
+                {workbookDefinition.template_path || 'No template selected yet. Use the Templates tab to choose a file.'}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => onEditTemplate?.(workbookDefinition)}
+                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Edit template settings
+              </button>
+              <button
+                type="button"
+                disabled={!hasTemplate}
+                onClick={() => onOpenTemplate?.(workbookDefinition)}
+                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Open template file
+              </button>
+              <button
+                type="button"
+                onClick={() => onGenerate(workbookKey)}
+                disabled={disableGenerate}
+                className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {isGenerating ? 'Generating…' : 'Generate workbook'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            Configure the workbook template in the Templates tab before generating documents.
+          </div>
+        )}
+        {!jobsheetId ? (
+          <p className="mt-2 text-xs text-slate-500">Save the jobsheet before generating the workbook.</p>
+        ) : null}
+      </div>
+
+      <div className="space-y-3">
+        <div className="flex items-center justify-between text-sm">
+          <div className="font-medium text-slate-700">Generated files</div>
+          {loading ? <span className="text-xs text-slate-500">Loading…</span> : null}
+        </div>
+        {list.length === 0 && !loading ? (
+          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+            No documents generated yet.
+          </div>
+        ) : null}
+        {list.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2 text-left">Document</th>
+                  <th className="px-3 py-2 text-left">Created</th>
+                  <th className="px-3 py-2 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {list.map(doc => {
+                  const title = documentLabel(doc);
+                  const createdDisplay = doc?.created_at ? formatTimestampDisplay(doc.created_at) : '—';
+                  return (
+                    <tr key={doc.document_id}>
+                      <td className="px-3 py-2 align-top">
+                        <div className="font-medium text-slate-700" title={title}>{title}</div>
+                        <div className="text-xs text-slate-500 break-all">{doc.file_path || 'File path unavailable'}</div>
+                      </td>
+                      <td className="px-3 py-2 align-top text-sm text-slate-600">{createdDisplay}</td>
+                      <td className="px-3 py-2 align-top">
+                        <div className="flex flex-wrap justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => onOpenFile?.(doc.file_path)}
+                            disabled={!doc.file_path}
+                            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Open
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onRevealFile?.(doc.file_path)}
+                            disabled={!doc.file_path}
+                            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Reveal in Finder
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDelete?.(doc)}
+                            className="inline-flex items-center rounded border border-rose-200 px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function JobsheetEditorWindow({
   businessId,
   businessName,
@@ -4700,8 +5232,6 @@ function JobsheetEditorWindow({
   const [definitionModalError, setDefinitionModalError] = useState('');
   const [definitionKeyEdited, setDefinitionKeyEdited] = useState(false);
   const [definitionSaving, setDefinitionSaving] = useState(false);
-  const [jobTemplateOverrides, setJobTemplateOverrides] = useState({});
-  const [jobTemplateLoadingKey, setJobTemplateLoadingKey] = useState(null);
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
   const [activeEditorSection, setActiveEditorSection] = useState('client');
 
@@ -4744,6 +5274,53 @@ function JobsheetEditorWindow({
     if (!id || !activeEditorSection) return;
     storeSection(id, activeEditorSection);
   }, [jobsheetId, activeEditorSection, storeSection]);
+
+  const loadDocumentDefinitions = useCallback(async () => {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
+      setDocumentDefinitions([]);
+      setDocumentDefinitionsLoading(false);
+      setDocumentDefinitionsError('');
+      return;
+    }
+    setDocumentDefinitionsLoading(true);
+    setDocumentDefinitionsError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.getDocumentDefinitions !== 'function') {
+        throw new Error('Unable to load document definitions: API unavailable');
+      }
+      const data = await api.getDocumentDefinitions(numericBusinessId, { includeInactive: true });
+      const list = Array.isArray(data) ? data.map(def => ({ ...def })) : [];
+      setDocumentDefinitions(list);
+
+      if (!list.length) {
+        setSelectedDefinitionKey(null);
+        return;
+      }
+
+      const hasSelection = list.some(def => def.key === selectedDefinitionKey);
+      if (!hasSelection) {
+        const primary = list.find(def => def.is_primary);
+        const fallback = primary || list[0];
+        setSelectedDefinitionKey(fallback ? fallback.key : null);
+      }
+    } catch (err) {
+      console.error('Failed to load document definitions', err);
+      setDocumentDefinitions([]);
+      setDocumentDefinitionsError(err?.message || 'Unable to load document definitions');
+    } finally {
+      setDocumentDefinitionsLoading(false);
+    }
+  }, [numericBusinessId, selectedDefinitionKey]);
+
+  const selectDefinitionKey = useCallback((key) => {
+    setDocumentDefinitionsError('');
+    setSelectedDefinitionKey(key);
+  }, []);
+
+  useEffect(() => {
+    loadDocumentDefinitions();
+  }, [loadDocumentDefinitions]);
 
   const refreshJobsheetDocuments = useCallback(async () => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
@@ -4903,98 +5480,6 @@ function JobsheetEditorWindow({
       setJobsheetDocumentsError(err?.message || 'Unable to delete document');
     }
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
-
-  const loadDocumentDefinitions = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentDefinitions([]);
-      setDocumentDefinitionsLoading(false);
-      setDocumentDefinitionsError('');
-      return;
-    }
-    if (!numericBusinessId) {
-      setDocumentDefinitions([]);
-      selectDefinitionKey(null);
-      return;
-    }
-    setDocumentDefinitionsLoading(true);
-    setDocumentDefinitionsError('');
-    try {
-      const api = window.api;
-      if (!api || typeof api.getDocumentDefinitions !== 'function') {
-        throw new Error('Unable to load document definitions: API unavailable');
-      }
-      const data = await api.getDocumentDefinitions(numericBusinessId, { includeInactive: true });
-      const list = Array.isArray(data) ? data.map(def => ({ ...def })) : [];
-      setDocumentDefinitions(list);
-
-      if (!list.length) {
-        selectDefinitionKey(null);
-        return;
-      }
-
-      const hasSelection = list.some(def => def.key === selectedDefinitionKey);
-      if (!hasSelection) {
-        const primary = list.find(def => def.is_primary);
-        const fallback = primary || list[0];
-        selectDefinitionKey(fallback ? fallback.key : null);
-      }
-    } catch (err) {
-      console.error('Failed to load document definitions', err);
-      setDocumentDefinitions([]);
-      setDocumentDefinitionsError(err?.message || 'Unable to load document definitions');
-    } finally {
-      setDocumentDefinitionsLoading(false);
-    }
-  }, [numericBusinessId, selectedDefinitionKey, selectDefinitionKey]);
-
-  const loadJobsheetTemplateOverrides = useCallback(async (jobsheetValue) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setJobTemplateOverrides({});
-      return;
-    }
-    const id = Number(jobsheetValue);
-    if (!Number.isInteger(id)) {
-      setJobTemplateOverrides({});
-      return;
-    }
-    try {
-      const api = window.api;
-      if (!api || typeof api.getJobsheetTemplateOverrides !== 'function') return;
-      const rows = await api.getJobsheetTemplateOverrides(id);
-      const map = {};
-      (rows || []).forEach(row => {
-        if (row?.definition_key && row?.template_path) {
-          map[row.definition_key] = row.template_path;
-        }
-      });
-      setJobTemplateOverrides(map);
-    } catch (err) {
-      console.error('Failed to load jobsheet template overrides', err);
-      setJobTemplateOverrides({});
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
-    loadDocumentDefinitions();
-  }, [loadDocumentDefinitions]);
-
-  useEffect(() => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setJobTemplateOverrides({});
-      return;
-    }
-    if (!jobsheetId) {
-      setJobTemplateOverrides({});
-      return;
-    }
-    loadJobsheetTemplateOverrides(jobsheetId);
-  }, [jobsheetId, loadJobsheetTemplateOverrides]);
-
-  const selectDefinitionKey = useCallback((key) => {
-    setDocumentDefinitionsError('');
-    setSelectedDefinitionKey(key);
-  }, []);
 
   const openNewDefinitionModal = useCallback(() => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
@@ -5282,72 +5767,6 @@ function JobsheetEditorWindow({
       setDocumentDefinitionsError(err?.message || 'Unable to open definition template');
     }
   }, []);
-
-  const handleOpenJobTemplate = useCallback(async (definition) => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setError('Document generation features are disabled.');
-      return;
-    }
-    if (!definition) return;
-    if (!jobsheetId) {
-      setError('Save the jobsheet before customising templates.');
-      return;
-    }
-
-    if (!definition.template_path) {
-      setError('Set a workbook template before customising overrides.');
-      openEditDefinitionModal(definition);
-      return;
-    }
-
-    try {
-      setJobTemplateLoadingKey(definition.key);
-      const result = await window.api?.prepareJobsheetTemplateOverride?.({
-        businessId: numericBusinessId,
-        jobsheetId,
-        definitionKey: definition.key,
-        definitionLabel: definition.label,
-        sourceTemplatePath: definition.template_path,
-        clientName: formStateRef.current?.client_name,
-        eventDate: formStateRef.current?.event_date
-      });
-      if (result?.template_path) {
-        setJobTemplateOverrides(prev => ({ ...prev, [definition.key]: result.template_path }));
-        await window.api?.openPath?.(result.template_path);
-      }
-    } catch (err) {
-      console.error('Failed to prepare template override', err);
-      setError(err?.message || 'Unable to prepare template override');
-    } finally {
-      setJobTemplateLoadingKey(null);
-    }
-  }, [jobsheetId, numericBusinessId, formStateRef, setError, openEditDefinitionModal]);
-
-  const handleClearJobTemplate = useCallback(async (definition) => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setError('Document generation features are disabled.');
-      return;
-    }
-    if (!definition || !jobsheetId) return;
-    const api = window.api;
-    if (!api || typeof api.clearJobsheetTemplateOverride !== 'function') {
-      setError('Unable to clear job template override: API unavailable');
-      return;
-    }
-    try {
-      await api.clearJobsheetTemplateOverride(jobsheetId, definition.key);
-      setJobTemplateOverrides(prev => {
-        const next = { ...prev };
-        delete next[definition.key];
-        return next;
-      });
-      setMessage('Job template override cleared');
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to clear job template override', err);
-      setError(err?.message || 'Unable to clear job template override');
-    }
-  }, [jobsheetId, setError, setMessage]);
 
   const definitionModalTitle = definitionModalMode === 'edit'
     ? 'Edit document type'
@@ -5927,7 +6346,7 @@ function JobsheetEditorWindow({
   }, [numericBusinessId, parseAmount, pricingDerived]);
 
   const handlePopulateExcel = useCallback(async (requestedDefinitionKey) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setError('Document generation features are disabled.');
       return;
     }
@@ -5948,9 +6367,7 @@ function JobsheetEditorWindow({
       return;
     }
 
-    const overridePath = jobTemplateOverrides?.[definition.key] || null;
-    const baseTemplatePath = definition.template_path || '';
-    const templatePath = overridePath || baseTemplatePath;
+    const templatePath = definition.template_path || '';
     if (!templatePath) {
       setError('Choose the workbook template before generating.');
       openEditDefinitionModal(definition);
@@ -6038,7 +6455,7 @@ function JobsheetEditorWindow({
         setActiveEditorSection(previousSection);
       }
     }
-  }, [selectedDefinitionKey, findDefinitionByKey, jobTemplateOverrides, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection]);
+  }, [selectedDefinitionKey, findDefinitionByKey, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection]);
 
 
   const handleOpenOutputFolder = useCallback(async () => {
@@ -6310,6 +6727,10 @@ function JobsheetEditorWindow({
     </div>
   );
 
+  const workbookDefinition = useMemo(() => (
+    (documentDefinitions || []).find(def => (def.doc_type || '').toLowerCase() === 'workbook') || null
+  ), [documentDefinitions]);
+
   const editorContent = loading ? (
     <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading jobsheet…</div>
   ) : (
@@ -6342,6 +6763,25 @@ function JobsheetEditorWindow({
         activeGroupKey={activeEditorSection}
         onActiveGroupChange={setActiveEditorSection}
         groups={fieldGroups}
+      />
+      <JobsheetDocumentsPanel
+        jobsheetId={jobsheetId}
+        documents={jobsheetDocuments}
+        loading={jobsheetDocumentsLoading}
+        definitionsLoading={documentDefinitionsLoading}
+        error={jobsheetDocumentsError}
+        onRefresh={refreshJobsheetDocuments}
+        onGenerate={handlePopulateExcel}
+        generatingKey={documentGeneratingKey}
+        workbookDefinition={workbookDefinition}
+        onOpenTemplate={handleOpenDefinitionTemplate}
+        onEditTemplate={openEditDefinitionModal}
+        onOpenOutputFolder={handleOpenOutputFolder}
+        onOpenOutputFile={handleOpenOutputFile}
+        onOpenFile={handleOpenDocumentFile}
+        onRevealFile={handleRevealDocument}
+        onDelete={handleDeleteJobsheetDocument}
+        lastOutputPath={lastOutputPath}
       />
     </>
   );

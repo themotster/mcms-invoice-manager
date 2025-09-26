@@ -198,7 +198,18 @@ async function fillWorkbook(workbook, bindings, valueSources, context) {
   });
 }
 
-function buildOutputDirectory(business, context, payload) {
+function formatDisplayDate(dateInput) {
+  if (!dateInput) return '';
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).format(date);
+}
+
+function buildOutputDirectory(business, context, payload, fileLabel) {
   const baseSavePath = business?.save_path;
   if (!baseSavePath) {
     throw new Error('Configure a documents folder for this business before generating documents.');
@@ -206,17 +217,14 @@ function buildOutputDirectory(business, context, payload) {
 
   const eventDate = context.event?.event_date || context.jobsheet?.event_date || '';
   const formattedDate = formatDateISO(eventDate);
-  const yearSegment = formattedDate ? formattedDate.slice(0, 4) : null;
   const clientName = sanitizeFilenameSegment(context.client?.name || context.jobsheet?.client_name || '');
-  const eventLabel = sanitizeFilenameSegment(context.event?.event_name || context.jobsheet?.event_type || '');
-  const jobsheetIdSegment = payload.jobsheet_id ? `Jobsheet ${payload.jobsheet_id}` : '';
+  const displayDate = sanitizeFilenameSegment(formatDisplayDate(eventDate));
 
-  const folderParts = [formattedDate, clientName || eventLabel || jobsheetIdSegment].filter(Boolean);
-  const folderName = sanitizeFilenameSegment(folderParts.join(' - ') || jobsheetIdSegment || 'Jobsheet');
+  const folderParts = [formattedDate, clientName, displayDate].filter(Boolean);
+  const folderBase = sanitizeFilenameSegment(folderParts.join(' - ') || fileLabel || 'Jobsheet');
 
   const segments = [baseSavePath];
-  if (yearSegment) segments.push(yearSegment);
-  segments.push(folderName);
+  segments.push(folderBase);
 
   return path.join(...segments);
 }
@@ -225,16 +233,24 @@ function buildFileName(context, payload, definition) {
   const eventDate = context.event?.event_date || context.jobsheet?.event_date || '';
   const formattedDate = formatDateISO(eventDate);
   const clientName = sanitizeFilenameSegment(context.client?.name || context.jobsheet?.client_name || '');
-  const suffix = sanitizeFilenameSegment(payload.file_name_suffix || definition?.file_suffix || '');
+  const displayDate = sanitizeFilenameSegment(formatDisplayDate(eventDate));
   const definitionLabel = sanitizeFilenameSegment(definition?.label || definition?.key || 'Workbook');
+  const ext = '.xlsx';
 
-  const parts = [formattedDate, clientName, definitionLabel].filter(Boolean);
-  if (suffix && !parts.includes(suffix)) {
-    parts.push(suffix);
-  }
+  const folderBase = [formattedDate, clientName, displayDate]
+    .map(part => sanitizeFilenameSegment(part))
+    .filter(Boolean)
+    .join(' - ') || sanitizeFilenameSegment(definitionLabel) || 'Document';
 
-  const baseName = sanitizeFilenameSegment(parts.join(' - ') || definitionLabel || 'Document');
-  return `${baseName || 'Document'}.xlsx`;
+  const baseWithLabel = [folderBase, definitionLabel]
+    .map(part => sanitizeFilenameSegment(part))
+    .filter(Boolean)
+    .join(' - ');
+
+  return {
+    folderName: folderBase,
+    fileName: `${baseWithLabel}${ext}`
+  };
 }
 
 async function ensureUniquePath(directory, fileName) {
@@ -272,15 +288,13 @@ async function createWorkbookDocument(payload = {}) {
 
   const context = buildContext(payload, business);
 
-  const directory = buildOutputDirectory(business, context, payload);
+  const definitionKey = payload.definition_key || 'workbook';
+  const definition = await db.getDocumentDefinition(businessId, definitionKey);
+  const naming = buildFileName(context, payload, definition);
+  const directory = buildOutputDirectory(business, context, payload, naming.folderName);
   await fs.promises.mkdir(directory, { recursive: true });
 
-  const definition = payload.definition_key
-    ? await db.getDocumentDefinition(businessId, payload.definition_key)
-    : null;
-
-  const fileName = buildFileName(context, payload, definition);
-  const targetPath = await ensureUniquePath(directory, fileName);
+  const targetPath = await ensureUniquePath(directory, naming.fileName);
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(templatePath);
