@@ -1,32 +1,27 @@
 const fs = require('fs');
 const path = require('path');
-const ExcelJS = require('exceljs');
+const appSettings = (() => {
+  try {
+    const raw = fs.readFileSync(path.resolve(__dirname, 'settings.json'), 'utf-8');
+    return JSON.parse(raw) || {};
+  } catch (_err) {
+    return {};
+  }
+})();
+
+const costingSettings = appSettings.costing || {};
 
 const COSTING_CONFIG = {
-  worksheet: 'Costing',
-  templatePath: path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx'),
-  serviceTypes: [
-    {
-      id: 'service',
-      label: 'Service',
-      columns: { name: 'B', availability: 'C', fee: 'D', cost: 'E', comments: 'F' },
-      totalCell: null
-    },
-    {
-      id: 'dinner',
-      label: 'Dinner',
-      columns: { name: 'G', availability: 'H', fee: 'I', cost: 'J', comments: 'K' },
-      totalCell: null
-    },
-    {
-      id: 'service_plus_dinner',
-      label: 'Service + Dinner',
-      columns: { name: 'M', availability: 'N', fee: 'O', cost: 'P', comments: null },
-      totalCell: null
-    }
-  ],
-  dataRowStart: 6,
-  dataRowEnd: 20
+  defaultServiceTypes: Array.isArray(costingSettings.service_types) && costingSettings.service_types.length
+    ? costingSettings.service_types.map(item => ({
+        id: item.id || item.key || item.name,
+        label: item.label || item.name || item.id
+      })).filter(item => item.id)
+    : [
+        { id: 'service', label: 'Service' },
+        { id: 'dinner', label: 'Dinner' },
+        { id: 'service_plus_dinner', label: 'Service + Dinner' }
+      ]
 };
 
 const PRICING_OVERRIDE_PATH = path.resolve(__dirname, 'ahmenPricingOverrides.json');
@@ -76,66 +71,12 @@ function writePricingOverrides(overrides) {
 
 let cachedPricing = null;
 
-function decodeValue(cell) {
-  if (!cell) return '';
-  let { value } = cell;
-  if (value && typeof value === 'object') {
-    if (value.result !== undefined) return value.result;
-    if (value.text) return value.text;
-    if (value.richText) return value.richText.map(rt => rt.text).join('');
-    if (value.formula) return value.result;
-    return '';
-  }
-  return value;
-}
-
-function parseCostingSheet(sheet) {
-  const serviceTypes = COSTING_CONFIG.serviceTypes.map(typeConfig => {
-    const singers = [];
-    for (let row = COSTING_CONFIG.dataRowStart; row <= COSTING_CONFIG.dataRowEnd; row++) {
-      const nameCell = sheet.getCell(`${typeConfig.columns.name}${row}`);
-      const name = (decodeValue(nameCell) || '').toString().trim();
-      if (!name) continue;
-      if (name.toLowerCase() === 'quote') continue;
-
-      const availability = (decodeValue(sheet.getCell(`${typeConfig.columns.availability}${row}`)) || '').toString().trim();
-      const fee = Number(decodeValue(sheet.getCell(`${typeConfig.columns.fee}${row}`))) || 0;
-      const cost = Number(decodeValue(sheet.getCell(`${typeConfig.columns.cost}${row}`))) || 0;
-      const comments = typeConfig.columns.comments
-        ? (decodeValue(sheet.getCell(`${typeConfig.columns.comments}${row}`)) || '').toString().trim()
-        : '';
-
-      singers.push({
-        id: `${typeConfig.id}__${name.replace(/\s+/g, '_').toLowerCase()}`,
-        name,
-        fee,
-        defaultIncluded: availability.toLowerCase() === 'yes',
-        availability: availability || '',
-        comments,
-        defaultCost: cost
-      });
-    }
-
-    return {
-      id: typeConfig.id,
-      label: typeConfig.label,
-      totalSuggested: 0,
-      singers
-    };
-  });
-
-  return {
-    serviceTypes,
-    updatedAt: new Date().toISOString()
-  };
-}
-
 async function loadPricingConfig() {
   if (cachedPricing) return cachedPricing;
 
   const overrides = readPricingOverrides();
   let base = {
-    serviceTypes: COSTING_CONFIG.serviceTypes.map(config => ({
+    serviceTypes: COSTING_CONFIG.defaultServiceTypes.map(config => ({
       id: config.id,
       label: config.label,
       totalSuggested: 0,
@@ -143,23 +84,6 @@ async function loadPricingConfig() {
     })),
     updatedAt: new Date().toISOString()
   };
-
-  if (fs.existsSync(COSTING_CONFIG.templatePath)) {
-    try {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(COSTING_CONFIG.templatePath);
-      const sheet = workbook.getWorksheet(COSTING_CONFIG.worksheet);
-      if (sheet) {
-        base = parseCostingSheet(sheet);
-      } else {
-        console.warn('Costing worksheet not found in AhMen template, using overrides only');
-      }
-    } catch (err) {
-      console.warn('Unable to read AhMen costing template, using overrides only:', err?.message || err);
-    }
-  } else {
-    console.warn('AhMen costing template missing, using overrides only:', COSTING_CONFIG.templatePath);
-  }
 
   const mergedServiceTypes = base.serviceTypes.map(service => {
     const overrideList = overrides?.[service.id];

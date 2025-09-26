@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import TemplatesManager from './components/TemplatesManager';
 import { createRoot } from 'react-dom/client';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
 import {
@@ -82,6 +81,8 @@ const DOCUMENT_COLUMNS = [
   { key: 'actions', label: 'Actions', align: 'right', always: true }
 ];
 
+const DOCUMENT_FEATURES_ENABLED = false;
+
 function getDocumentIcon(docType) {
   switch ((docType || '').toLowerCase()) {
     case 'invoice':
@@ -99,15 +100,11 @@ function getDocumentIcon(docType) {
 
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
-  documents: '📁',
-  templates: '📄',
   settings: '⚙️'
 };
 
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
-  { key: 'documents', label: 'Documents', description: 'Generated outputs and files', icon: WORKSPACE_ICON_MAP.documents },
-  { key: 'templates', label: 'Templates', description: 'Placeholders & imports', icon: WORKSPACE_ICON_MAP.templates },
   { key: 'settings', label: 'Settings', description: 'Business preferences', icon: WORKSPACE_ICON_MAP.settings }
 ];
 
@@ -307,10 +304,6 @@ const FIELD_META = {
     component: 'productionPanel',
     always: true
   },
-  documents_panel: {
-    component: 'documentsPanel',
-    always: true
-  },
   notes: {
     label: 'Internal Notes',
     type: 'textarea',
@@ -475,12 +468,6 @@ const GROUP_CONFIG = {
     category: 'services',
     order: ['service_types', 'specialist_singers'],
     append: ['notes']
-  },
-  documents: {
-    title: 'Documents',
-    description: 'Generate and manage files created from this jobsheet.',
-    staticOnly: true,
-    fields: ['documents_panel']
   }
 };
 
@@ -491,8 +478,7 @@ const GROUP_ICON_MAP = {
   pricing: '🎶',
   production: '🎛️',
   billing: '💷',
-  services: '📝',
-  documents: '📁'
+  services: '📝'
 };
 
 function startCaseKey(key) {
@@ -2948,464 +2934,6 @@ function SavedVenueSelector({
   );
 }
 
-function DocumentsPanel({
-  hasExisting,
-  documents,
-  documentsLoading,
-  documentsError,
-  onClearDocumentsError,
-  onRefreshDocuments,
-  onGenerateDocument,
-  documentGeneratingKey,
-  documentDefinitions,
-  definitionsLoading,
-  documentDefinitionsError,
-  selectedDefinitionKey,
-  onSelectDefinition,
-  onNewDefinition,
-  onEditDefinition,
-  onOpenDefinitionTemplate,
-  jobTemplateOverrides,
-  onOpenJobTemplate,
-  onClearJobTemplate,
-  jobTemplateLoadingKey,
-  onOpenDocumentFile,
-  onRevealDocument,
-  onDeleteDocument,
-  onOpenOutputFolder,
-  onOpenOutputFile,
-  lastGeneratedPath
-}) {
-  const sortedDefinitions = useMemo(() => (
-    Array.isArray(documentDefinitions)
-      ? [...documentDefinitions].sort((a, b) => {
-          const orderA = Number.isFinite(a.sort_order) ? a.sort_order : 0;
-          const orderB = Number.isFinite(b.sort_order) ? b.sort_order : 0;
-          if (orderA !== orderB) return orderA - orderB;
-          return (a.label || a.key || '').localeCompare(b.label || b.key || '', 'en', { sensitivity: 'base' });
-        })
-      : []
-  ), [documentDefinitions]);
-
-  useEffect(() => {
-    if (definitionsLoading) return;
-    if (!sortedDefinitions.length) {
-      if (selectedDefinitionKey) onSelectDefinition?.(null);
-      return;
-    }
-    const hasSelection = sortedDefinitions.some(def => def.key === selectedDefinitionKey);
-    if (!hasSelection) {
-      onSelectDefinition?.(sortedDefinitions[0].key);
-    }
-  }, [definitionsLoading, sortedDefinitions, selectedDefinitionKey, onSelectDefinition]);
-
-  const activeDefinition = useMemo(() => (
-    sortedDefinitions.find(def => def.key === selectedDefinitionKey) || sortedDefinitions[0] || null
-  ), [sortedDefinitions, selectedDefinitionKey]);
-
-  const normalizedDocuments = useMemo(() => (
-    (documents || []).map(doc => {
-      const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
-      const numberLabel = doc.number != null ? ` #${doc.number}` : '';
-      const createdDisplay = formatCompactDate(doc.created_at);
-      const createdFull = formatTimestampDisplay(doc.created_at);
-      const amountDisplay = doc.total_amount != null ? toCurrency(doc.total_amount) : '—';
-      const documentDateDisplay = formatCompactDate(doc.document_date);
-      return {
-        ...doc,
-        typeLabel,
-        documentTitle: `${typeLabel}${numberLabel}`,
-        createdDisplay,
-        createdFull,
-        documentDateDisplay,
-        amountDisplay,
-        fileAvailable: Boolean(doc.file_path)
-      };
-    })
-  ), [documents]);
-
-  const jobTemplatePath = activeDefinition ? jobTemplateOverrides?.[activeDefinition.key] : null;
-  const defaultTemplatePath = activeDefinition?.template_path || '';
-  const docTypeMeta = activeDefinition ? DOC_TYPE_META[activeDefinition.doc_type] : null;
-  const generating = documentGeneratingKey != null;
-
-  const handleGenerateClick = useCallback(() => {
-    if (!hasExisting || !activeDefinition || generating) return;
-    onGenerateDocument?.(activeDefinition.key);
-  }, [hasExisting, activeDefinition, generating, onGenerateDocument]);
-
-  const handleDefinitionChange = useCallback((event) => {
-    const nextKey = event.target.value || null;
-    onSelectDefinition?.(nextKey);
-  }, [onSelectDefinition]);
-
-  const renderDocumentTable = () => {
-    if (documentsLoading) {
-      return (
-        <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-          Loading documents…
-        </div>
-      );
-    }
-
-    if (!normalizedDocuments.length) {
-      return (
-        <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-          No documents generated yet.
-        </div>
-      );
-    }
-
-    return (
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="w-full table-auto text-sm">
-          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
-            <tr>
-              <th className="px-3 py-3 text-left">Document</th>
-              <th className="px-3 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100 bg-white">
-            {normalizedDocuments.map(doc => (
-              <tr key={doc.document_id || `${doc.doc_type}-${doc.created_at || Math.random()}`} className="align-top">
-                <td className="px-3 py-3 text-sm text-slate-700">
-                  <div className="flex items-start gap-3">
-                    <span className="mt-0.5 text-lg" role="img" aria-label={doc.typeLabel}>{getDocumentIcon(doc.doc_type)}</span>
-                    <div>
-                      <div className="font-semibold">{doc.documentTitle}</div>
-                      {doc.documentDateDisplay && doc.documentDateDisplay !== '—' ? (
-                        <div className="text-xs text-slate-500">Document date {doc.documentDateDisplay}</div>
-                      ) : null}
-                      {doc.fileAvailable ? null : (
-                        <div className="text-xs text-red-500">File not found</div>
-                      )}
-                    </div>
-                  </div>
-                </td>
-                <td className="px-3 py-3">
-                  <div className="flex flex-wrap justify-end gap-1.5">
-                    <IconButton
-                      label="Open document"
-                      onClick={() => onOpenDocumentFile?.(doc.file_path)}
-                      disabled={!doc.fileAvailable}
-                    >
-                      <OpenIcon />
-                    </IconButton>
-                    <IconButton
-                      label="Reveal document in Finder"
-                      onClick={() => onRevealDocument?.(doc.file_path)}
-                      disabled={!doc.fileAvailable}
-                    >
-                      <RevealIcon />
-                    </IconButton>
-                    <IconButton
-                      label="Delete document"
-                      onClick={() => onDeleteDocument?.(doc)}
-                      className="border-red-200 text-red-600 hover:bg-red-50"
-                    >
-                      <DeleteIcon />
-                    </IconButton>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  };
-
-  return (
-    <div className="space-y-6">
-      <div className="space-y-3">
-        <div>
-          <h4 className="text-sm font-semibold text-slate-700">Generate documents</h4>
-          <p className="text-xs text-slate-500">Choose a template, tweak it for this jobsheet, and create the output without leaving the editor.</p>
-        </div>
-
-        {documentDefinitionsError ? (
-          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">
-            {documentDefinitionsError}
-          </div>
-        ) : null}
-
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,280px)_auto] lg:items-end">
-          <label className="block text-sm font-medium text-slate-600">
-            Document type
-            <select
-              disabled={definitionsLoading || !sortedDefinitions.length}
-              value={activeDefinition ? activeDefinition.key : ''}
-              onChange={handleDefinitionChange}
-              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {sortedDefinitions.length ? null : <option value="">No document types configured</option>}
-              {sortedDefinitions.map(definition => (
-                <option key={definition.key} value={definition.key}>
-                  {definition.label || startCaseKey(definition.key)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={handleGenerateClick}
-              disabled={!hasExisting || !activeDefinition || generating}
-              className="inline-flex items-center rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {generating && documentGeneratingKey === (activeDefinition?.key || '') ? 'Generating…' : 'Generate'}
-            </button>
-            <button
-              type="button"
-              onClick={() => activeDefinition && onOpenJobTemplate?.(activeDefinition)}
-              disabled={!hasExisting || !activeDefinition || jobTemplateLoadingKey === activeDefinition.key}
-              className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {jobTemplateLoadingKey === (activeDefinition?.key || '') ? 'Preparing…' : 'Edit for this job'}
-            </button>
-            <button
-              type="button"
-              onClick={() => activeDefinition && onClearJobTemplate?.(activeDefinition)}
-              disabled={!jobTemplatePath}
-              className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Clear job template
-            </button>
-          </div>
-        </div>
-
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
-            <div className="font-medium text-slate-700">Default template</div>
-            <p className="mt-1 break-all">{defaultTemplatePath || 'Not set. Set a template before generating.'}</p>
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => activeDefinition && onEditDefinition?.(activeDefinition)}
-                disabled={!activeDefinition}
-                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Manage definition
-              </button>
-              <button
-                type="button"
-                onClick={() => activeDefinition && onOpenDefinitionTemplate?.(activeDefinition)}
-                disabled={!defaultTemplatePath}
-                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Open default template
-              </button>
-            </div>
-          </div>
-
-          <div className="rounded border border-slate-200 bg-white p-3 text-xs text-slate-600">
-            <div className="font-medium text-slate-700">Job template override</div>
-            {jobTemplatePath ? (
-              <p className="mt-1 break-all">{jobTemplatePath}</p>
-            ) : (
-              <p className="mt-1 text-slate-500">No job-specific template. The default above will be used.</p>
-            )}
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={onRefreshDocuments}
-            disabled={documentsLoading}
-            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {documentsLoading ? 'Refreshing…' : 'Refresh list'}
-          </button>
-          {onOpenOutputFolder ? (
-            <button
-              type="button"
-              onClick={onOpenOutputFolder}
-              disabled={!hasExisting}
-              className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Open folder
-            </button>
-          ) : null}
-          {onOpenOutputFile ? (
-            <button
-              type="button"
-              onClick={onOpenOutputFile}
-              disabled={!lastGeneratedPath}
-              className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Open latest file
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={onNewDefinition}
-            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-          >
-            New document type
-          </button>
-        </div>
-
-        {documentsError ? (
-          <div className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            <span>{documentsError}</span>
-            {onClearDocumentsError ? (
-              <button
-                type="button"
-                onClick={onClearDocumentsError}
-                className="text-xs font-medium text-red-600 hover:text-red-500"
-              >
-                Dismiss
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-semibold text-slate-700">Generated documents</h4>
-          {normalizedDocuments.length ? (
-            <button
-              type="button"
-              onClick={onRefreshDocuments}
-              disabled={documentsLoading}
-              className="text-xs font-medium text-indigo-600 hover:text-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {documentsLoading ? 'Refreshing…' : 'Refresh'}
-            </button>
-          ) : null}
-        </div>
-        {renderDocumentTable()}
-      </div>
-    </div>
-  );
-}
-
-function DocumentTreeNode({ node, depth = 0, onOpen, onReveal, onDeleteFolder, onDeleteFile }) {
-  const isDirectory = node?.type === 'directory';
-  const hasChildren = Array.isArray(node?.children) && node.children.length > 0;
-  const [expanded, setExpanded] = useState(depth === 0);
-
-  const handleToggle = () => {
-    if (isDirectory && hasChildren) {
-      setExpanded(prev => !prev);
-    }
-  };
-
-  const indentStyle = { marginLeft: depth * 16 };
-  const handleOpen = () => onOpen?.(node);
-  const handleReveal = () => onReveal?.(node);
-  const handleDelete = () => {
-    if (isDirectory) onDeleteFolder?.(node);
-    else onDeleteFile?.(node);
-  };
-
-  return (
-    <div key={node?.absolutePath || node?.path || node?.name} className="space-y-1">
-      <div className="flex items-center justify-between gap-2 text-sm" style={indentStyle}>
-        <div className="flex items-center gap-2">
-          {isDirectory ? (
-            <button
-              type="button"
-              onClick={handleToggle}
-              className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-300 text-xs text-slate-600 hover:bg-slate-100"
-              aria-label={expanded ? 'Collapse folder' : 'Expand folder'}
-            >
-              {hasChildren ? (expanded ? '▾' : '▸') : '▸'}
-            </button>
-          ) : (
-            <span className="inline-flex h-6 w-6 items-center justify-center text-slate-400">•</span>
-          )}
-          <span className={`break-all ${isDirectory ? 'font-semibold text-slate-700' : 'text-slate-600'}`}>
-            {node?.name || node?.path || 'Documents'}
-          </span>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={handleOpen}
-            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
-          >
-            Open
-          </button>
-          <button
-            type="button"
-            onClick={handleReveal}
-            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
-          >
-            Reveal
-          </button>
-          {(isDirectory && node?.path) || (!isDirectory) ? (
-            <button
-              type="button"
-              onClick={handleDelete}
-              className="inline-flex items-center rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50"
-            >
-              Delete
-            </button>
-          ) : null}
-        </div>
-      </div>
-      {isDirectory && hasChildren && expanded ? (
-        <div className="space-y-1">
-          {node.children.map(child => (
-            <DocumentTreeNode
-              key={child?.absolutePath || child?.path || child?.name}
-              node={child}
-              depth={depth + 1}
-              onOpen={onOpen}
-              onReveal={onReveal}
-              onDeleteFolder={onDeleteFolder}
-              onDeleteFile={onDeleteFile}
-            />
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function DocumentTreeView({ tree, loading, error, onRefresh, onOpen, onReveal, onDeleteFolder, onDeleteFile }) {
-  return (
-    <div className="rounded border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700">Document folders</h3>
-          <p className="text-xs text-slate-500">Browse and manage generated files on disk.</p>
-        </div>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-        >
-          Refresh tree
-        </button>
-      </div>
-      {error ? (
-        <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-xs text-red-600">{error}</div>
-      ) : null}
-      <div className="max-h-80 overflow-auto px-4 py-3 text-sm">
-        {loading ? (
-          <div className="text-slate-500">Loading folders…</div>
-        ) : tree ? (
-          <DocumentTreeNode
-            node={tree}
-            depth={0}
-            onOpen={onOpen}
-            onReveal={onReveal}
-            onDeleteFolder={onDeleteFolder}
-            onDeleteFile={onDeleteFile}
-          />
-        ) : (
-          <div className="text-slate-500">No documents found yet.</div>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function JobsheetEditor({
   business,
   businessId,
@@ -3426,32 +2954,7 @@ function JobsheetEditor({
   onUpdateSingerPool,
   activeGroupKey: activeGroupKeyProp,
   onActiveGroupChange,
-  onGenerateDocument,
-  documentGeneratingKey,
-  documents,
-  documentsLoading,
-  documentsError,
-  onClearDocumentsError,
-  onRefreshDocuments,
-  onOpenDocumentFile,
-  onRevealDocument,
-  onDeleteDocument,
-  onOpenOutputFolder,
-  onOpenOutputFile,
-  lastGeneratedPath,
-  groups,
-  documentDefinitions,
-  documentDefinitionsLoading,
-  selectedDefinitionKey,
-  onSelectDefinition,
-  onNewDefinition,
-  onEditDefinition,
-  onOpenDefinitionTemplate,
-  jobTemplateOverrides,
-  onOpenJobTemplate,
-  onClearJobTemplate,
-  jobTemplateLoadingKey,
-  documentDefinitionsError
+  groups
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -3463,10 +2966,6 @@ function JobsheetEditor({
   const resolvedGroups = useMemo(() => (
     Array.isArray(groups) && groups.length ? groups : FALLBACK_JOBSHEET_GROUPS
   ), [groups]);
-
-  const hasDocumentsGroup = useMemo(() => (
-    resolvedGroups.some(group => group.key === 'documents')
-  ), [resolvedGroups]);
 
   const [savedVenueId, setSavedVenueId] = useState(() => (
     formState.venue_id ? String(formState.venue_id) : ''
@@ -3635,17 +3134,6 @@ function JobsheetEditor({
             <p className="text-sm text-slate-500">Business: {business.business_name}</p>
           </div>
           <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:gap-3">
-            {hasDocumentsGroup ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setGroupKey('documents')}
-                  className="inline-flex items-center justify-center rounded border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-700 hover:bg-indigo-100"
-                >
-                  Documents tab
-                </button>
-              </div>
-            ) : null}
             {hasExisting ? (
               <button
                 onClick={onDelete}
@@ -3724,39 +3212,6 @@ function JobsheetEditor({
                         formState={formState}
                         onChange={handleFieldChange}
                         totals={pricingTotals}
-                      />
-                    );
-                  }
-                  if (field.component === 'documentsPanel') {
-                    return (
-                      <DocumentsPanel
-                        key={field.name}
-                        hasExisting={hasExisting}
-                        documents={documents}
-                        documentsLoading={documentsLoading}
-                        documentsError={documentsError}
-                        onClearDocumentsError={onClearDocumentsError}
-                        onRefreshDocuments={onRefreshDocuments}
-                        onGenerateDocument={onGenerateDocument}
-                        documentGeneratingKey={documentGeneratingKey}
-                        documentDefinitions={documentDefinitions}
-                        definitionsLoading={documentDefinitionsLoading}
-                        documentDefinitionsError={documentDefinitionsError}
-                        selectedDefinitionKey={selectedDefinitionKey}
-                        onSelectDefinition={onSelectDefinition}
-                        onNewDefinition={onNewDefinition}
-                        onEditDefinition={onEditDefinition}
-                        onOpenDefinitionTemplate={onOpenDefinitionTemplate}
-                        jobTemplateOverrides={jobTemplateOverrides}
-                        onOpenJobTemplate={onOpenJobTemplate}
-                        onClearJobTemplate={onClearJobTemplate}
-                        jobTemplateLoadingKey={jobTemplateLoadingKey}
-                        onOpenDocumentFile={onOpenDocumentFile}
-                        onRevealDocument={onRevealDocument}
-                        onDeleteDocument={onDeleteDocument}
-                        onOpenOutputFolder={onOpenOutputFolder}
-                        onOpenOutputFile={onOpenOutputFile}
-                        lastGeneratedPath={lastGeneratedPath}
                       />
                     );
                   }
@@ -3992,6 +3447,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [documentTree, setDocumentTree] = useState(null);
   const [documentTreeLoading, setDocumentTreeLoading] = useState(false);
   const [documentTreeError, setDocumentTreeError] = useState('');
+  const [emptyingTrash, setEmptyingTrash] = useState(false);
   const [documentsGroup, setDocumentsGroup] = useState('none');
   const [documentsSearch, setDocumentsSearch] = useState('');
   const [documentColumnsState, setDocumentColumnsState] = useState(() => {
@@ -4023,6 +3479,11 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     status: normalizeStatus(item.status) || 'enquiry'
   }), []);
 
+  const activeJobsheetIdRef = useRef(null);
+  useEffect(() => {
+    activeJobsheetIdRef.current = activeJobsheetId != null ? Number(activeJobsheetId) : null;
+  }, [activeJobsheetId]);
+
   const mergeJobsheetSnapshot = useCallback((snapshot) => {
     if (!snapshot || snapshot.jobsheet_id == null) return;
     setJobsheets(prev => {
@@ -4051,7 +3512,18 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         return;
       }
       const data = await api.getAhmenJobsheets({ businessId: business.id });
-      setJobsheets((data || []).map(normalizeJobsheet));
+      const mapped = (data || []).map(normalizeJobsheet);
+      setJobsheets(mapped);
+
+      const currentActive = activeJobsheetIdRef.current;
+      if (currentActive != null) {
+        const exists = mapped.some(job => job?.jobsheet_id != null && Number(job.jobsheet_id) === currentActive);
+        if (exists) {
+          setActiveJobsheetId(currentActive);
+          setInlineEditorTargetId(currentActive);
+          setInlineEditorVisible(true);
+        }
+      }
     } catch (err) {
       console.error('Failed to refresh jobsheets', err);
       setError(err?.message || 'Unable to refresh jobsheets');
@@ -4061,6 +3533,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.id, normalizeJobsheet]);
 
   const loadDocumentTree = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentTree(null);
+      setDocumentTreeLoading(false);
+      setDocumentTreeError('');
+      return;
+    }
     setDocumentTreeLoading(true);
     setDocumentTreeError('');
     try {
@@ -4080,6 +3558,12 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.id]);
 
   const refreshDocuments = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocuments([]);
+      setDocumentsLoading(false);
+      setDocumentsError('');
+      return;
+    }
     setDocumentsLoading(true);
     setDocumentsError('');
     try {
@@ -4099,10 +3583,15 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.id, loadDocumentTree]);
 
   const handleRefreshDocuments = useCallback(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     refreshDocuments();
   }, [refreshDocuments]);
 
   const handleOpenDocumentsFolder = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     setDocumentsError('');
     if (!business.save_path) {
       setDocumentsError('Documents folder not configured');
@@ -4120,6 +3609,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.save_path]);
 
   const handleOpenDocumentFile = useCallback(async (filePath) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     setDocumentsError('');
     if (!filePath) {
       setDocumentsError('Document file not available');
@@ -4137,6 +3630,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, []);
 
   const handleOpenTreeNode = useCallback(async (node) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     if (!node?.absolutePath) return;
     try {
       setDocumentsError('');
@@ -4151,6 +3648,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, []);
 
   const handleRevealTreeNode = useCallback(async (node) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     if (!node?.absolutePath) return;
     try {
       setDocumentsError('');
@@ -4165,6 +3666,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, []);
 
   const handleDeleteTreeFolder = useCallback(async (node) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     if (!node?.path) {
       setDocumentsError('Cannot delete the root documents folder.');
       return;
@@ -4185,6 +3690,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [business.id, refreshDocuments, loadDocumentTree]);
 
   const handleDeleteTreeFile = useCallback(async (node) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     if (!node?.absolutePath) return;
     const confirmed = window.confirm(`Move file "${node.name}" to trash?`);
     if (!confirmed) return;
@@ -4201,7 +3710,34 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     }
   }, [business.id, refreshDocuments, loadDocumentTree]);
 
+  const handleEmptyTrash = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
+    const confirmed = window.confirm('Empty all trash folders? This cannot be undone.');
+    if (!confirmed) return;
+    try {
+      setDocumentsError('');
+      setEmptyingTrash(true);
+      await window.api?.emptyDocumentsTrash?.({ businessId: business.id });
+      setMessage('Trash emptied');
+      await refreshDocuments();
+      await loadDocumentTree();
+      setTimeout(() => setMessage(''), 2000);
+    } catch (err) {
+      console.error('Failed to empty trash', err);
+      setDocumentsError(err?.message || 'Unable to empty trash');
+    } finally {
+      setEmptyingTrash(false);
+    }
+  }, [business.id, refreshDocuments, loadDocumentTree]);
+
   const handleRevealDocument = useCallback(async (filePath) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     setDocumentsError('');
     if (!filePath) {
       setDocumentsError('Document file not available');
@@ -4219,6 +3755,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, []);
 
   const handleDeleteDocumentRecord = useCallback(async (doc) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
     if (!doc || doc.document_id == null) return;
     const title = doc.typeLabel
       ? `${doc.typeLabel}${doc.number ? ` #${doc.number}` : ''}`
@@ -4272,16 +3812,19 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [refreshJobsheets]);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     refreshDocuments();
   }, [refreshDocuments]);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     if (workspaceSection === 'documents') {
       loadDocumentTree();
     }
   }, [workspaceSection, loadDocumentTree]);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     if (typeof window === 'undefined') return;
     try {
       window.localStorage.setItem(DOCUMENT_COLUMNS_STORAGE_KEY, JSON.stringify(documentColumnsState));
@@ -4291,6 +3834,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [documentColumnsState]);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return undefined;
     if (!columnsMenuOpen) return undefined;
     const handleClick = (event) => {
       if (columnsMenuRef.current && !columnsMenuRef.current.contains(event.target)) {
@@ -4302,6 +3846,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   }, [columnsMenuOpen]);
 
   useLayoutEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     if (!columnsMenuOpen) return;
     const buttonEl = columnsMenuRef.current;
     const menuEl = columnsMenuContentRef.current;
@@ -4939,6 +4484,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
 
   const handleCloseInlineEditor = useCallback(() => {
     setInlineEditorVisible(false);
+    activeJobsheetIdRef.current = null;
     setInlineEditorTargetId(null);
     setActiveJobsheetId(null);
   }, []);
@@ -5044,133 +4590,6 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
               </section>
             ) : null}
 
-            {workspaceSection === 'documents' ? (
-              <section className="rounded-lg border border-slate-200 bg-white overflow-hidden">
-                <div className="max-h-[65vh] overflow-auto">
-                  <div className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur px-4 py-3">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                      <div className="space-y-1">
-                        <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-                        <p className="text-sm text-slate-500">{headerSubtitle}</p>
-                      </div>
-                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-                        <div className="relative flex-1 sm:flex-none sm:w-56">
-                          <input
-                            type="search"
-                            value={documentsSearch}
-                            onChange={event => setDocumentsSearch(event.target.value)}
-                            placeholder="Search documents"
-                            className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                        </div>
-                        <label className="flex items-center gap-2 text-xs font-medium text-slate-500">
-                          <span>Group by</span>
-                          <select
-                            value={documentsGroup}
-                            onChange={event => setDocumentsGroup(event.target.value)}
-                            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          >
-                            {DOCUMENT_GROUP_OPTIONS.map(option => (
-                              <option key={option.value} value={option.value}>{option.label}</option>
-                            ))}
-                          </select>
-                        </label>
-                        <div className="relative" ref={columnsMenuRef}>
-                          <button
-                            type="button"
-                            onClick={() => setColumnsMenuOpen(prev => !prev)}
-                            className="inline-flex items-center rounded border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-600 shadow-sm hover:bg-slate-50"
-                          >
-                            Columns
-                          </button>
-                          {columnsMenuOpen ? (
-                            <div
-                              ref={columnsMenuContentRef}
-                              className={`absolute right-0 z-30 w-48 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white py-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
-                            >
-                              <p className="px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Visible columns</p>
-                              {DOCUMENT_COLUMNS.filter(column => !column.always).map(column => {
-                                const visible = documentColumnsState[column.key] !== false;
-                                return (
-                                  <label
-                                    key={column.key}
-                                    className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                      checked={visible}
-                                      onChange={() => handleToggleColumn(column.key)}
-                                    />
-                                    <span>{column.label}</span>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          ) : null}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={handleRefreshDocuments}
-                          disabled={documentsLoading}
-                          className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          {documentsLoading ? 'Refreshing…' : 'Refresh'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleOpenDocumentsFolder}
-                          className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                        >
-                          Open folder
-                        </button>
-                        {selectedCount > 0 ? (
-                          <button
-                            type="button"
-                            onClick={handleDeleteSelected}
-                            disabled={!canDeleteSelected}
-                            className="inline-flex items-center rounded border border-red-200 px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            Delete selected ({selectedCount})
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="px-4 py-4 space-y-4">
-                    <DocumentTreeView
-                      tree={documentTree}
-                      loading={documentTreeLoading}
-                      error={documentTreeError}
-                      onRefresh={loadDocumentTree}
-                      onOpen={handleOpenTreeNode}
-                      onReveal={handleRevealTreeNode}
-                      onDeleteFolder={handleDeleteTreeFolder}
-                      onDeleteFile={handleDeleteTreeFile}
-                    />
-                    {documentsError ? (
-                      <div className="rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{documentsError}</div>
-                    ) : null}
-                    {documentsLoading ? (
-                      <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">Loading documents…</div>
-                    ) : (
-                      documentsContent
-                    )}
-                  </div>
-                </div>
-              </section>
-            ) : null}
-
-            {workspaceSection === 'templates' ? (
-              <TemplatesManager
-                business={business}
-                onTemplatesUpdated={() => {
-                  setMessage('Template settings updated');
-                  setTimeout(() => setMessage(''), 2500);
-                }}
-              />
-            ) : null}
-
             {workspaceSection === 'settings' ? (
               <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
                 <div>
@@ -5256,8 +4675,6 @@ function JobsheetEditorWindow({
   const [venueSaving, setVenueSaving] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
-  const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
-  const [activeEditorSection, setActiveEditorSection] = useState('client');
   const [documentGeneratingKey, setDocumentGeneratingKey] = useState(null);
   const [lastOutputPath, setLastOutputPath] = useState('');
   const [jobsheetDocuments, setJobsheetDocuments] = useState([]);
@@ -5276,12 +4693,60 @@ function JobsheetEditorWindow({
   const [pendingDefinitionAction, setPendingDefinitionAction] = useState(null);
   const [jobTemplateOverrides, setJobTemplateOverrides] = useState({});
   const [jobTemplateLoadingKey, setJobTemplateLoadingKey] = useState(null);
+  const [workbookSheets, setWorkbookSheets] = useState([]);
+  const [workbookSheetsLoading, setWorkbookSheetsLoading] = useState(false);
+  const [workbookSheetsError, setWorkbookSheetsError] = useState('');
+  const [workbookSheetSelection, setWorkbookSheetSelection] = useState('__workbook__');
+  const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
+  const [activeEditorSection, setActiveEditorSection] = useState('client');
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
   const creatingRef = useRef(initialResolvedJobsheetId == null);
+  const previousJobsheetIdRef = useRef(initialResolvedJobsheetId);
+
+  const storagePrefix = useMemo(() => (
+    `jobsheetEditor:${isInline ? 'inline' : 'window'}:${numericBusinessId}:`
+  ), [isInline, numericBusinessId]);
+
+  const getStoredSection = useCallback((jobsheetValue) => {
+    const id = jobsheetValue != null ? Number(jobsheetValue) : null;
+    if (!id || Number.isNaN(id)) return null;
+    try {
+      return window.sessionStorage.getItem(`${storagePrefix}${id}`) || null;
+    } catch (_err) {
+      return null;
+    }
+  }, [storagePrefix]);
+
+  const storeSection = useCallback((jobsheetValue, section) => {
+    const id = jobsheetValue != null ? Number(jobsheetValue) : null;
+    if (!id || Number.isNaN(id)) return;
+    if (!section) return;
+    try {
+      window.sessionStorage.setItem(`${storagePrefix}${id}`, section);
+    } catch (_err) {
+      // ignore storage errors
+    }
+  }, [storagePrefix]);
+
+  useEffect(() => {
+    previousJobsheetIdRef.current = jobsheetId != null ? Number(jobsheetId) : null;
+  }, [jobsheetId]);
+
+  useEffect(() => {
+    const id = jobsheetId != null ? Number(jobsheetId) : null;
+    if (!id || !activeEditorSection) return;
+    storeSection(id, activeEditorSection);
+  }, [jobsheetId, activeEditorSection, storeSection]);
 
   const refreshJobsheetDocuments = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setJobsheetDocuments([]);
+      setJobsheetDocumentsLoading(false);
+      setJobsheetDocumentsError('');
+      return;
+    }
     if (!jobsheetId) {
       setJobsheetDocuments([]);
       setJobsheetDocumentsLoading(false);
@@ -5330,6 +4795,130 @@ function JobsheetEditorWindow({
     refreshJobsheetDocuments();
   }, [jobsheetId, refreshJobsheetDocuments]);
 
+  const slugifySheetName = useCallback((value) => (
+    (value || '')
+      .toString()
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .replace(/-+/g, '-')
+  ), []);
+
+  const findDefinitionByKey = useCallback((key) => {
+    if (!key) return null;
+    const exact = documentDefinitions.find(definition => definition.key === key);
+    if (exact) return exact;
+
+    if (typeof key === 'string' && key.includes('::sheet::')) {
+      const [parentKey, rawSheetPart] = key.split('::sheet::');
+      const normalizedSheetPart = (rawSheetPart || '').toLowerCase();
+      const parent = documentDefinitions.find(definition => definition.key === parentKey);
+      if (!parent) return null;
+
+      const sheetExports = Array.isArray(parent.sheet_exports) ? parent.sheet_exports : [];
+      const sheetEntry = sheetExports.find(entry => {
+        const entryKey = entry?.key ? String(entry.key).toLowerCase() : '';
+        const entrySheet = entry?.sheet ? String(entry.sheet).toLowerCase() : '';
+        return entryKey === normalizedSheetPart || entrySheet === normalizedSheetPart;
+      });
+      if (!sheetEntry) return null;
+
+      const parentClone = { ...parent };
+      return {
+        ...parentClone,
+        key: parent.key,
+        selection_key: key,
+        description: sheetEntry.sheet || sheetEntry.label || parent.description || '',
+        is_sheet_export: true,
+        parent_key: parent.key,
+        sheet_export: { ...sheetEntry },
+        sheet_display_label: sheetEntry.label || sheetEntry.sheet || startCaseKey(sheetEntry.key || 'Sheet')
+      };
+    }
+
+    return null;
+  }, [documentDefinitions]);
+
+  const handleWorkbookSheetSelectionChange = useCallback((rawValue) => {
+    const nextValue = rawValue && rawValue !== '__workbook__'
+      ? String(rawValue).toLowerCase()
+      : '__workbook__';
+    setWorkbookSheetSelection(nextValue);
+  }, []);
+
+  const activeDocumentDefinition = useMemo(() => findDefinitionByKey(selectedDefinitionKey), [selectedDefinitionKey, findDefinitionByKey]);
+
+  useEffect(() => {
+    const definition = activeDocumentDefinition;
+    const docType = (definition?.doc_type || '').toLowerCase();
+    if (docType !== 'workbook') {
+      setWorkbookSheets([]);
+      setWorkbookSheetSelection('__workbook__');
+      setWorkbookSheetsError('');
+      setWorkbookSheetsLoading(false);
+      return;
+    }
+
+    const templatePath = jobTemplateOverrides?.[definition.key] || definition.template_path || '';
+    if (!templatePath) {
+      setWorkbookSheets([]);
+      setWorkbookSheetSelection('__workbook__');
+      setWorkbookSheetsError('Set a template before exporting individual sheets.');
+      setWorkbookSheetsLoading(false);
+      return;
+    }
+
+    let isActive = true;
+    setWorkbookSheetsLoading(true);
+    setWorkbookSheetsError('');
+
+    const loadSheets = async () => {
+      try {
+        const list = await window.api?.inspectWorkbookSheets?.(templatePath);
+        if (!isActive) return;
+        const sheetExports = Array.isArray(definition.sheet_exports) ? definition.sheet_exports : [];
+        const normalized = Array.isArray(list)
+          ? list
+              .map(name => {
+                const trimmed = (name || '').toString().trim();
+                if (!trimmed) return null;
+                const lower = trimmed.toLowerCase();
+                const matched = sheetExports.find(entry => {
+                  const entryKey = entry?.key ? String(entry.key).toLowerCase() : '';
+                  const entrySheet = entry?.sheet ? String(entry.sheet).toLowerCase() : '';
+                  return entryKey === lower || entrySheet === lower;
+                });
+                const fallbackKey = `${definition.key}_${slugifySheetName(trimmed) || 'sheet'}`;
+                return {
+                  sheet: trimmed,
+                  label: matched?.label || trimmed,
+                  key: (matched?.key ? String(matched.key).toLowerCase() : fallbackKey.toLowerCase())
+                };
+              })
+              .filter(Boolean)
+          : [];
+        setWorkbookSheets(normalized);
+        setWorkbookSheetSelection(prev => (
+          normalized.some(item => item.key === prev) ? prev : '__workbook__'
+        ));
+      } catch (err) {
+        if (!isActive) return;
+        console.error('Failed to load workbook sheets', err);
+        setWorkbookSheets([]);
+        setWorkbookSheetsError(err?.message || 'Unable to load workbook sheets');
+        setWorkbookSheetSelection('__workbook__');
+      } finally {
+        if (isActive) setWorkbookSheetsLoading(false);
+      }
+    };
+
+    loadSheets();
+    return () => {
+      isActive = false;
+    };
+  }, [activeDocumentDefinition, jobTemplateOverrides, slugifySheetName]);
+
   useEffect(() => {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
@@ -5349,6 +4938,10 @@ function JobsheetEditorWindow({
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments]);
 
   const handleOpenDocumentFile = useCallback(async (filePath) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setJobsheetDocumentsError('Document access is currently disabled.');
+      return;
+    }
     if (!filePath) {
       setJobsheetDocumentsError('Document file not available');
       return;
@@ -5366,6 +4959,10 @@ function JobsheetEditorWindow({
   }, []);
 
   const handleRevealDocument = useCallback(async (filePath) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setJobsheetDocumentsError('Document access is currently disabled.');
+      return;
+    }
     if (!filePath) {
       setJobsheetDocumentsError('Document file not available');
       return;
@@ -5383,6 +4980,10 @@ function JobsheetEditorWindow({
   }, []);
 
   const handleDeleteJobsheetDocument = useCallback(async (doc) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setJobsheetDocumentsError('Document access is currently disabled.');
+      return;
+    }
     if (!doc || doc.document_id == null) return;
     const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
     const title = typeLabel
@@ -5414,12 +5015,13 @@ function JobsheetEditorWindow({
     }
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
 
-  const findDefinitionByKey = useCallback((key) => {
-    if (!key) return null;
-    return documentDefinitions.find(definition => definition.key === key) || null;
-  }, [documentDefinitions]);
-
   const loadDocumentDefinitions = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentDefinitions([]);
+      setDocumentDefinitionsLoading(false);
+      setDocumentDefinitionsError('');
+      return;
+    }
     if (!numericBusinessId) {
       setDocumentDefinitions([]);
       selectDefinitionKey(null);
@@ -5433,20 +5035,18 @@ function JobsheetEditorWindow({
         throw new Error('Unable to load document definitions: API unavailable');
       }
       const data = await api.getDocumentDefinitions(numericBusinessId, { includeInactive: true });
-      const list = Array.isArray(data) ? data : [];
-      const workbookDefinitions = list.filter(item => (item?.doc_type || '').toLowerCase() === 'workbook');
-      const nextList = workbookDefinitions.length ? workbookDefinitions : list;
-      setDocumentDefinitions(nextList);
+      const list = Array.isArray(data) ? data.map(def => ({ ...def })) : [];
+      setDocumentDefinitions(list);
 
-      if (!nextList.length) {
+      if (!list.length) {
         selectDefinitionKey(null);
         return;
       }
 
-      const hasSelection = nextList.some(def => def.key === selectedDefinitionKey);
+      const hasSelection = list.some(def => def.key === selectedDefinitionKey);
       if (!hasSelection) {
-        const primary = nextList.find(def => def.is_primary);
-        const fallback = primary || nextList[0];
+        const primary = list.find(def => def.is_primary);
+        const fallback = primary || list[0];
         selectDefinitionKey(fallback ? fallback.key : null);
       }
     } catch (err) {
@@ -5459,6 +5059,10 @@ function JobsheetEditorWindow({
   }, [numericBusinessId, selectedDefinitionKey, selectDefinitionKey]);
 
   const loadJobsheetTemplateOverrides = useCallback(async (jobsheetValue) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setJobTemplateOverrides({});
+      return;
+    }
     const id = Number(jobsheetValue);
     if (!Number.isInteger(id)) {
       setJobTemplateOverrides({});
@@ -5482,10 +5086,15 @@ function JobsheetEditorWindow({
   }, []);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     loadDocumentDefinitions();
   }, [loadDocumentDefinitions]);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setJobTemplateOverrides({});
+      return;
+    }
     if (!jobsheetId) {
       setJobTemplateOverrides({});
       return;
@@ -5498,7 +5107,20 @@ function JobsheetEditorWindow({
     setSelectedDefinitionKey(key);
   }, []);
 
+  useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
+    if (!selectedDefinitionKey || typeof selectedDefinitionKey !== 'string') return;
+    if (!selectedDefinitionKey.includes('::sheet::')) return;
+    const [parentKey, sheetKeyPart = ''] = selectedDefinitionKey.split('::sheet::');
+    if (parentKey) {
+      selectDefinitionKey(parentKey);
+    }
+    const normalizedSheetKey = sheetKeyPart ? sheetKeyPart.toLowerCase() : '';
+    setWorkbookSheetSelection(normalizedSheetKey || '__workbook__');
+  }, [selectedDefinitionKey, selectDefinitionKey, setWorkbookSheetSelection]);
+
   const openNewDefinitionModal = useCallback(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     setDefinitionModalMode('create');
     setDefinitionDraft(createDefinitionDraft());
     setDefinitionModalError('');
@@ -5508,6 +5130,7 @@ function JobsheetEditorWindow({
   }, []);
 
   const openEditDefinitionModal = useCallback((definition) => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     if (!definition) return;
     setDefinitionModalMode('edit');
     setDefinitionDraft(createDefinitionDraft({
@@ -5591,6 +5214,10 @@ function JobsheetEditorWindow({
   }, [definitionKeyEdited]);
 
   const handlePickDefinitionDraftTemplate = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDefinitionModalError('Document generation features are disabled.');
+      return;
+    }
     const api = window.api;
     if (!api || typeof api.chooseFile !== 'function') {
       setDefinitionModalError('Unable to select template: API unavailable');
@@ -5618,6 +5245,10 @@ function JobsheetEditorWindow({
   }, [handleDefinitionDraftChange]);
 
   const handleOpenDraftTemplate = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDefinitionModalError('Document generation features are disabled.');
+      return;
+    }
     const templatePath = definitionDraft.template_path;
     if (!templatePath) {
       setDefinitionModalError('Select a template before opening it.');
@@ -5635,6 +5266,10 @@ function JobsheetEditorWindow({
   }, [definitionDraft.template_path]);
 
   const handleNormalizeDraftTemplate = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDefinitionModalError('Document generation features are disabled.');
+      return;
+    }
     const templatePath = definitionDraft.template_path;
     if (!templatePath) {
       setDefinitionModalError('Select a template before normalizing it.');
@@ -5655,6 +5290,10 @@ function JobsheetEditorWindow({
   }, [definitionDraft.template_path, setMessage]);
 
   const handleSaveDefinition = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDefinitionModalError('Document generation features are disabled.');
+      return;
+    }
     const api = window.api;
     if (!api || typeof api.saveDocumentDefinition !== 'function') {
       setDefinitionModalError('Unable to save definition: API unavailable');
@@ -5718,6 +5357,10 @@ function JobsheetEditorWindow({
   }, [definitionDraft, numericBusinessId, loadDocumentDefinitions, handleCloseDefinitionModal, selectDefinitionKey]);
 
   const handleDeleteDefinition = useCallback(async (definition) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentDefinitionsError('Document generation features are disabled.');
+      return;
+    }
     if (!definition) return;
     if (definition.is_locked) {
       setDefinitionModalError('This definition is locked and cannot be deleted.');
@@ -5764,6 +5407,10 @@ function JobsheetEditorWindow({
   }, []);
 
   const handleOpenJobTemplate = useCallback(async (definition) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setError('Document generation features are disabled.');
+      return;
+    }
     if (!definition) return;
     if (!jobsheetId) {
       setError('Save the jobsheet before customising templates.');
@@ -5800,6 +5447,10 @@ function JobsheetEditorWindow({
   }, [jobsheetId, numericBusinessId, formStateRef, setError, openEditDefinitionModal]);
 
   const handleClearJobTemplate = useCallback(async (definition) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setError('Document generation features are disabled.');
+      return;
+    }
     if (!definition || !jobsheetId) return;
     const api = window.api;
     if (!api || typeof api.clearJobsheetTemplateOverride !== 'function') {
@@ -5865,7 +5516,13 @@ function JobsheetEditorWindow({
     creatingRef.current = nextTarget == null;
     setError('');
     setMessage('');
-    setActiveEditorSection('client');
+    if (nextTarget != null) {
+      const storedSection = getStoredSection(nextTarget);
+      const fallbackSection = storedSection || activeEditorSection || 'client';
+      setActiveEditorSection(fallbackSection);
+    } else {
+      setActiveEditorSection('client');
+    }
     setLastOutputPath('');
 
     if (nextTarget != null) {
@@ -5878,7 +5535,7 @@ function JobsheetEditorWindow({
       formStateRef.current = resetState;
       setLoading(false);
     }
-  }, [isInline, targetJobsheetId, jobsheetId, numericBusinessId]);
+  }, [isInline, targetJobsheetId, jobsheetId, numericBusinessId, getStoredSection, activeEditorSection]);
 
   useEffect(() => {
     if (isInline) return () => {};
@@ -5895,7 +5552,13 @@ function JobsheetEditorWindow({
       creatingRef.current = false;
       setError('');
       setMessage('');
-      setActiveEditorSection('client');
+      if (requestedId != null) {
+        const storedSection = getStoredSection(requestedId);
+        const fallbackSection = storedSection || activeEditorSection || 'client';
+        setActiveEditorSection(fallbackSection);
+      } else {
+        setActiveEditorSection('client');
+      }
       if (payload.businessName) {
         setBusiness(prev => prev || { id: numericBusinessId, business_name: payload.businessName });
       }
@@ -5917,7 +5580,7 @@ function JobsheetEditorWindow({
       }
     });
     return () => unsubscribe();
-  }, [isInline, numericBusinessId, jobsheetId]);
+  }, [isInline, numericBusinessId, jobsheetId, getStoredSection, activeEditorSection]);
 
   const buildSnapshot = useCallback((state, id) => ({
     jobsheet_id: id ?? state.jobsheet_id ?? null,
@@ -5986,9 +5649,16 @@ function JobsheetEditorWindow({
           if (!mounted) return;
           if (sheet) {
             setFormState(mapApiToForm(sheet, numericBusinessId));
+            const storedSection = getStoredSection(effectiveJobsheetId);
+            if (storedSection) {
+              setActiveEditorSection(storedSection);
+            } else if (initialLoadRef.current) {
+              setActiveEditorSection(prev => prev || 'client');
+            }
           }
         } else {
           setFormState(DEFAULT_JOBSHEET(numericBusinessId));
+          setActiveEditorSection('client');
         }
         initialLoadRef.current = true;
       } catch (err) {
@@ -6003,7 +5673,7 @@ function JobsheetEditorWindow({
     return () => {
       mounted = false;
     };
-  }, [numericBusinessId, initialJobsheetId, jobsheetId, isInline]);
+  }, [numericBusinessId, initialJobsheetId, jobsheetId, isInline, getStoredSection, activeEditorSection]);
 
   useEffect(() => {
     formStateRef.current = formState;
@@ -6380,6 +6050,14 @@ function JobsheetEditorWindow({
   }, [numericBusinessId, parseAmount, pricingDerived]);
 
   const handlePopulateExcel = useCallback(async (requestedDefinitionKey) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setError('Document generation features are disabled.');
+      return;
+    }
+    const previousSection = activeEditorSection || 'documents';
+    if (jobsheetId != null && previousSection) {
+      storeSection(jobsheetId, previousSection);
+    }
     const targetKey = requestedDefinitionKey || selectedDefinitionKey;
     if (!targetKey) {
       setError('Select a document type to generate.');
@@ -6392,18 +6070,36 @@ function JobsheetEditorWindow({
       return;
     }
 
-    const overridePath = jobTemplateOverrides?.[definition.key] || null;
-    const baseTemplatePath = definition.template_path || '';
+    let effectiveDefinition = definition;
+    let selectedSheetKey = workbookSheetSelection;
+    let selectedSheetMeta = null;
+
+    if (definition?.is_sheet_export) {
+      const forcedSheetKey = definition.sheet_export?.key ? String(definition.sheet_export.key).toLowerCase() : '';
+      if (forcedSheetKey) {
+        selectedSheetKey = forcedSheetKey;
+        selectedSheetMeta = {
+          sheet: definition.sheet_export?.sheet || '',
+          label: definition.sheet_display_label || definition.sheet_export?.label || definition.sheet_export?.sheet || ''
+        };
+        if (workbookSheetSelection !== forcedSheetKey) {
+          handleWorkbookSheetSelectionChange(forcedSheetKey);
+        }
+      }
+    }
+
+    const overridePath = jobTemplateOverrides?.[effectiveDefinition.key] || null;
+    const baseTemplatePath = effectiveDefinition.template_path || '';
     const templatePath = overridePath || baseTemplatePath;
 
     if (!templatePath) {
-      setPendingDefinitionAction({ type: 'generate', key: definition.key });
+      setPendingDefinitionAction({ type: 'generate', key: effectiveDefinition.key });
       setDefinitionModalError('Choose a template before generating this document.');
-      openEditDefinitionModal(definition);
+      openEditDefinitionModal(effectiveDefinition);
       return;
     }
 
-    const errors = validateDocumentRequest(definition);
+    const errors = validateDocumentRequest(effectiveDefinition);
     if (errors.length) {
       setError(errors.join(' '));
       return;
@@ -6415,7 +6111,7 @@ function JobsheetEditorWindow({
       return;
     }
 
-    const payload = buildDocumentPayload(definition);
+    const payload = buildDocumentPayload(effectiveDefinition);
     if (!payload) {
       setError('Unable to build document payload');
       return;
@@ -6426,9 +6122,9 @@ function JobsheetEditorWindow({
       payload.jobsheet_id = Number(jobsheetId);
     }
 
-    const meta = DOC_TYPE_META[definition.doc_type] || null;
+    const meta = DOC_TYPE_META[effectiveDefinition.doc_type] || null;
 
-    setDocumentGeneratingKey(definition.key);
+    setDocumentGeneratingKey(effectiveDefinition.key);
     setError('');
     try {
       if (templatePath && meta?.supportsNormalize && templatePath.toLowerCase().endsWith('.xlsx')) {
@@ -6439,12 +6135,28 @@ function JobsheetEditorWindow({
         }
       }
 
+      if ((effectiveDefinition.doc_type || '').toLowerCase() === 'workbook') {
+        if (selectedSheetKey && selectedSheetKey !== '__workbook__') {
+          const resolvedSheetMeta = selectedSheetMeta || workbookSheets.find(item => item.key === selectedSheetKey) || null;
+          const exportName = resolvedSheetMeta?.sheet || resolvedSheetMeta?.label || selectedSheetKey;
+          payload.sheet_export_key = selectedSheetKey;
+          payload.sheet_export_name = exportName;
+          payload.generate_sheet_only = true;
+          selectedSheetMeta = resolvedSheetMeta || { sheet: exportName, label: exportName };
+        }
+      }
+
       const result = await api.createDocument(payload);
       if (result?.file_path) {
         setLastOutputPath(result.file_path);
       }
       const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
-      setMessage(`${definition.label || startCaseKey(definition.key)}${suffix}`.trim());
+      const baseLabel = effectiveDefinition.label || startCaseKey(effectiveDefinition.key);
+      const sheetLabel = selectedSheetMeta && (selectedSheetMeta.label || selectedSheetMeta.sheet)
+        ? (selectedSheetMeta.label || selectedSheetMeta.sheet)
+        : '';
+      const messageLabel = sheetLabel ? `${baseLabel} – ${sheetLabel}` : baseLabel;
+      setMessage(`${messageLabel}${suffix}`.trim());
 
       if (Array.isArray(result?.additional_outputs) && result.additional_outputs.length) {
         const successes = result.additional_outputs.filter(item => item && item.success);
@@ -6478,10 +6190,14 @@ function JobsheetEditorWindow({
       return null;
     } finally {
       setDocumentGeneratingKey(null);
+      if (previousSection) {
+        setActiveEditorSection(previousSection);
+      }
     }
-  }, [selectedDefinitionKey, findDefinitionByKey, jobTemplateOverrides, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal]);
+  }, [selectedDefinitionKey, findDefinitionByKey, jobTemplateOverrides, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection, workbookSheetSelection, workbookSheets, handleWorkbookSheetSelectionChange]);
 
   useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return;
     if (!pendingDefinitionAction) return;
     const definition = findDefinitionByKey(pendingDefinitionAction.key);
     if (!definition) return;
@@ -6498,6 +6214,10 @@ function JobsheetEditorWindow({
   }, [pendingDefinitionAction, findDefinitionByKey, jobTemplateOverrides, handlePopulateExcel, handleOpenJobTemplate]);
 
   const handleOpenOutputFolder = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setError('Document generation features are disabled.');
+      return;
+    }
     let folderPath = resolvedBusiness?.save_path;
     if (!folderPath) {
       try {
@@ -6522,6 +6242,10 @@ function JobsheetEditorWindow({
   }, [resolvedBusiness, numericBusinessId, setBusiness]);
 
   const handleOpenOutputFile = useCallback(async () => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setError('Document generation features are disabled.');
+      return;
+    }
     if (!lastOutputPath) {
       setError('Generate the workbook before opening the file.');
       return;
@@ -6789,32 +6513,7 @@ function JobsheetEditorWindow({
         onUpdateSingerPool={handleUpdateSingerPool}
         activeGroupKey={activeEditorSection}
         onActiveGroupChange={setActiveEditorSection}
-        onGenerateDocument={handlePopulateExcel}
-        documentGeneratingKey={documentGeneratingKey}
-        documents={jobsheetDocuments}
-        documentsLoading={jobsheetDocumentsLoading}
-        documentsError={jobsheetDocumentsError}
-        onRefreshDocuments={refreshJobsheetDocuments}
-        onOpenDocumentFile={handleOpenDocumentFile}
-        onRevealDocument={handleRevealDocument}
-        onDeleteDocument={handleDeleteJobsheetDocument}
-        onClearDocumentsError={() => setJobsheetDocumentsError('')}
-        onOpenOutputFolder={handleOpenOutputFolder}
-        onOpenOutputFile={handleOpenOutputFile}
-        lastGeneratedPath={lastOutputPath}
         groups={fieldGroups}
-        documentDefinitions={documentDefinitions}
-        documentDefinitionsLoading={documentDefinitionsLoading}
-        selectedDefinitionKey={selectedDefinitionKey}
-        onSelectDefinition={selectDefinitionKey}
-        onNewDefinition={openNewDefinitionModal}
-        onEditDefinition={openEditDefinitionModal}
-        onOpenDefinitionTemplate={handleOpenDefinitionTemplate}
-        jobTemplateOverrides={jobTemplateOverrides}
-        onOpenJobTemplate={handleOpenJobTemplate}
-        onClearJobTemplate={handleClearJobTemplate}
-        jobTemplateLoadingKey={jobTemplateLoadingKey}
-        documentDefinitionsError={documentDefinitionsError}
       />
     </>
   );

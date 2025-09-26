@@ -1,7 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
-const documentService = require('./documentService');
 
 const DEFAULT_WINDOW_STATE = {
   width: 1200,
@@ -307,18 +306,10 @@ ipcMain.handle('show-item-in-folder', async (_event, targetPath) => {
 });
 
 ipcMain.handle('normalize-template', async (_event, args = {}) => {
-  try {
-    const providedPath = typeof args?.templatePath === 'string' && args.templatePath.trim()
-      ? args.templatePath.trim()
-      : null;
-    const templatePath = providedPath
-      ? path.resolve(providedPath)
-      : path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx');
-    await documentService.normalizeTemplateFile(templatePath);
-    return { ok: true, templatePath };
-  } catch (err) {
-    return { ok: false, message: err?.message || String(err) };
-  }
+  return {
+    ok: false,
+    message: 'Document generation features are disabled.'
+  };
 });
 
 ipcMain.handle('open-template', async (_event, args = {}) => {
