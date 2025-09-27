@@ -5569,7 +5569,6 @@ function JobsheetEditorWindow({
       if (!api || typeof api.getDocuments !== 'function') {
         throw new Error('Unable to load documents: API unavailable');
       }
-
       const fetchDocuments = async () => {
         const data = await api.getDocuments({ businessId: numericBusinessId });
         return Array.isArray(data) ? data : [];

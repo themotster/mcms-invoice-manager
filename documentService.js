@@ -344,20 +344,6 @@ function buildFileName(context, payload, definition) {
   };
 }
 
-async function ensureUniquePath(directory, fileName) {
-  let candidate = path.join(directory, fileName);
-  if (!fs.existsSync(candidate)) return candidate;
-
-  const ext = path.extname(fileName);
-  const name = path.basename(fileName, ext);
-  let counter = 1;
-  while (true) {
-    const attempt = path.join(directory, `${name} (${counter})${ext}`);
-    if (!fs.existsSync(attempt)) return attempt;
-    counter += 1;
-  }
-}
-
 async function createWorkbookDocument(payload = {}) {
   const docType = (payload.doc_type || '').toLowerCase();
   if (docType !== 'workbook') {
@@ -385,7 +371,8 @@ async function createWorkbookDocument(payload = {}) {
   const directory = buildOutputDirectory(business, context, payload, naming.folderName);
   await fs.promises.mkdir(directory, { recursive: true });
 
-  const targetPath = await ensureUniquePath(directory, naming.fileName);
+  const targetPath = path.join(directory, naming.fileName);
+  await fs.promises.rm(targetPath, { force: true });
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(templatePath);
@@ -512,6 +499,22 @@ function unwatchDocumentsFolder(options = {}) {
   watcherCallbacks.delete(businessId);
 
   return { ok: true, watching: false };
+}
+
+async function filterDocumentsByExistingFiles(documents, options = {}) {
+  if (!Array.isArray(documents)) return [];
+  const includeMissing = options.includeMissing !== false;
+
+  const enriched = await Promise.all(documents.map(async (doc) => {
+    const filePath = doc?.file_path || doc?.filePath;
+    const fileAvailable = filePath ? await pathExists(filePath) : false;
+    return { ...doc, file_available: fileAvailable };
+  }));
+
+  if (includeMissing) {
+    return enriched;
+  }
+  return enriched.filter(doc => doc.file_available);
 }
 
 
@@ -704,5 +707,6 @@ module.exports = {
   deleteDocument,
   syncJobsheetOutputs,
   watchDocumentsFolder,
-  unwatchDocumentsFolder
+  unwatchDocumentsFolder,
+  filterDocumentsByExistingFiles
 };

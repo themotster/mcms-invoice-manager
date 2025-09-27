@@ -63,6 +63,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteDocument: async (documentId, options) => await documentService.deleteDocument(documentId, options || {}),
   watchDocuments: async (options) => await ipcRenderer.invoke('watch-documents', options || {}),
   unwatchDocuments: async (options) => await ipcRenderer.invoke('unwatch-documents', options || {}),
+  filterDocumentsByExistingFiles: async (documents, options) => await documentService.filterDocumentsByExistingFiles(documents || [], options || {}),
   deleteEvent: async (eventId) => await db.deleteEvent(eventId),
   deleteClient: async (clientId) => await db.deleteClient(clientId),
   getAhmenJobsheets: async (options) => await db.getAhmenJobsheets(options),
