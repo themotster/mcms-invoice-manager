@@ -3196,6 +3196,25 @@ module.exports = {
     });
   },
 
+  getDocumentByFilePath: (businessId, filePath) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      if (!Number.isInteger(id) || !filePath) {
+        resolve(null);
+        return;
+      }
+
+      db.get(
+        `SELECT * FROM documents WHERE business_id = ? AND file_path = ? LIMIT 1`,
+        [id, filePath],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row || null);
+        }
+      );
+    });
+  },
+
   deleteDocument: (documentId) => {
     return new Promise((resolve, reject) => {
       const id = Number(documentId);

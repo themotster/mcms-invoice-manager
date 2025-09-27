@@ -35,7 +35,8 @@ const DOCUMENT_TYPE_LABELS = {
   invoice: 'Invoice',
   quote: 'Quote',
   contract: 'Contract',
-  workbook: 'Excel Workbook'
+  workbook: 'Excel Workbook',
+  pdf_export: 'PDF Export'
 };
 
 const DOC_TYPE_META = {
@@ -95,6 +96,8 @@ function getDocumentIcon(docType) {
       return '🖋️';
     case 'workbook':
       return '📊';
+    case 'pdf_export':
+      return '🖨️';
     default:
       return '📄';
   }
@@ -116,6 +119,7 @@ const WORKSPACE_SECTIONS = [
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
 const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
+const DOCUMENT_TREE_COLLAPSE_KEY = 'invoiceMaster:documentTreeCollapsed';
 const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => {
   if (!column.always) {
     acc[column.key] = true;
@@ -496,10 +500,29 @@ function startCaseKey(key) {
     .replace(/\w\S*/g, word => word.charAt(0).toUpperCase() + word.slice(1));
 }
 
+function parseDateValue(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.valueOf()) ? null : value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    const sqlDateTimePattern = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+    if (sqlDateTimePattern.test(trimmed)) {
+      const parsed = new Date(`${trimmed.replace(' ', 'T')}Z`);
+      return Number.isNaN(parsed.valueOf()) ? null : parsed;
+    }
+    const parsed = new Date(trimmed);
+    return Number.isNaN(parsed.valueOf()) ? null : parsed;
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? null : parsed;
+}
+
 function formatCompactDate(value) {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return '—';
+  const date = parseDateValue(value);
+  if (!date) return '—';
   return date.toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'short',
@@ -636,18 +659,14 @@ const FALLBACK_JOBSHEET_GROUPS = buildJobsheetGroups([]);
 
 function formatDateInput(value) {
   if (!value) return '';
-  if (value instanceof Date && !Number.isNaN(value.valueOf())) {
-    return value.toISOString().slice(0, 10);
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf())) return '';
-  return date.toISOString().slice(0, 10);
+  const parsed = parseDateValue(value);
+  if (!parsed) return '';
+  return parsed.toISOString().slice(0, 10);
 }
 
 function formatDateDisplay(value) {
-  if (!value) return 'Date tbc';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return 'Date tbc';
+  const parsed = parseDateValue(value);
+  if (!parsed) return 'Date tbc';
   return parsed.toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'long',
@@ -657,8 +676,8 @@ function formatDateDisplay(value) {
 
 function formatTimestampDisplay(value) {
   if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.valueOf())) return value;
+  const parsed = parseDateValue(value);
+  if (!parsed) return typeof value === 'string' ? value : '—';
   const datePart = parsed.toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'short',
@@ -859,7 +878,7 @@ function TreeActionButton({ title, onClick, disabled, children }) {
       type="button"
       onClick={handleClick}
       disabled={disabled}
-      className="rounded p-1 text-slate-400 transition hover:bg-indigo-50 hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40"
+      className="rounded border border-transparent p-1 text-indigo-500 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
       title={title}
       aria-label={title}
     >
@@ -900,6 +919,36 @@ function DeleteIcon({ className = 'h-4 w-4' }) {
   );
 }
 
+function FolderGlyph({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6.25A2.25 2.25 0 0 1 6.25 4h4.086c.414 0 .812.165 1.105.459L13.5 6.5H19A2 2 0 0 1 21 8.5V9H4V6.25Z" fill="currentColor" opacity="0.5" />
+      <path d="M3 9.75A1.75 1.75 0 0 1 4.75 8h15.5A1.75 1.75 0 0 1 22 9.75v7.5A2.75 2.75 0 0 1 19.25 20H6A3 3 0 0 1 3 17V9.75Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function FileGlyph({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 3a2 2 0 0 1 2-2h4.172a2 2 0 0 1 1.414.586l4.828 4.828A2 2 0 0 1 20 7.828V20a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V3Z" fill="currentColor" opacity="0.35" />
+      <path d="M13 3.5v2.75A1.75 1.75 0 0 0 14.75 8h2.75" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.75 12h6.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M8.75 15.5h6.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function DocumentNodeIcon({ isDirectory }) {
+  const iconClasses = isDirectory ? 'text-yellow-500' : 'text-slate-500';
+
+  return (
+    <span className={`flex h-6 w-6 flex-shrink-0 items-center justify-center ${iconClasses}`} aria-hidden="true">
+      {isDirectory ? <FolderGlyph className="h-5 w-5" /> : <FileGlyph className="h-5 w-5" />}
+    </span>
+  );
+}
+
 function DocumentTreeView({
   root,
   trash,
@@ -913,43 +962,130 @@ function DocumentTreeView({
   onDeleteFile,
   onEmptyTrash,
   emptyingTrash,
-  isConfigured
+  isConfigured,
+  collapsed,
+  onCollapsedChange
 }) {
   const safeRootPath = rootPath || '';
   const rootLabel = safeRootPath ? (safeRootPath.split(/[\\/]+/).filter(Boolean).pop() || 'Documents') : 'Documents';
+  const [collapsedNodes, setCollapsedNodes] = useState(() => new Set());
+  const [selectedNodeId, setSelectedNodeId] = useState(null);
+  const isControlledCollapse = typeof collapsed === 'boolean';
+  const [internalCollapsed, setInternalCollapsed] = useState(() => (isControlledCollapse ? collapsed : false));
 
-  const renderNode = (node, depth = 0, isRoot = false) => {
-    if (!node) return null;
+  useEffect(() => {
+    if (isControlledCollapse) return;
+    if (typeof collapsed === 'boolean') {
+      setInternalCollapsed(collapsed);
+    }
+  }, [collapsed, isControlledCollapse]);
+
+  const panelCollapsed = isControlledCollapse ? collapsed : internalCollapsed;
+
+  const handleSetPanelCollapsed = useCallback((next) => {
+    const value = Boolean(next);
+    if (!isControlledCollapse) {
+      setInternalCollapsed(value);
+    }
+    onCollapsedChange?.(value);
+  }, [isControlledCollapse, onCollapsedChange]);
+
+  useEffect(() => {
+    setCollapsedNodes(new Set());
+    setSelectedNodeId(null);
+  }, [safeRootPath, root]);
+
+  const toggleFolder = useCallback((nodeId) => {
+    setCollapsedNodes(prev => {
+      const next = new Set(prev);
+      if (next.has(nodeId)) {
+        next.delete(nodeId);
+      } else {
+        next.add(nodeId);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleNodeDoubleClick = useCallback((node, nodeId, isDirectory) => {
+    if (!node) return;
+    if (isDirectory) {
+      toggleFolder(nodeId);
+      return;
+    }
+    if (onOpen) {
+      onOpen(node);
+    } else if (onReveal) {
+      onReveal(node);
+    }
+  }, [onOpen, onReveal, toggleFolder]);
+
+  const renderRows = (node, depth = 0, isRoot = false) => {
+    if (!node) return [];
     const isDirectory = node.isDirectory !== false;
     const absolutePath = node.absolutePath || '';
     const nodeName = node.name || (isRoot ? rootLabel : '(unnamed)');
-    const paddingLeft = depth * 16;
-    const itemCount = Number.isFinite(node.itemCount) ? node.itemCount : null;
-    const sizeLabel = !isDirectory && Number.isFinite(node.size) ? formatFileSize(node.size) : null;
-    const modifiedLabel = node.modified ? formatTimestampDisplay(node.modified) : '';
+    const nodeId = isRoot ? '__root__' : (node.path || absolutePath || nodeName || `${nodeName}-${depth}`);
+    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
+    const isExpanded = isRoot ? true : !collapsedNodes.has(nodeId);
+    const isSelected = selectedNodeId === nodeId;
 
-    const metaPieces = [];
-    if (isDirectory && itemCount != null) {
-      metaPieces.push(`${itemCount} item${itemCount === 1 ? '' : 's'}`);
-    }
-    if (sizeLabel) metaPieces.push(sizeLabel);
-    if (modifiedLabel) metaPieces.push(modifiedLabel);
-    const metaLabel = metaPieces.join(' · ');
+    const rows = [];
+    const rowKey = absolutePath || `${nodeName}-${depth}`;
+    const itemCount = isDirectory ? Number(node.itemCount || (node.children ? node.children.length : 0)) : 1;
+    const sizeValue = isDirectory ? node.totalSize ?? node.size : node.size;
+    const modifiedLabel = formatTimestampDisplay(node.modified);
 
-    return (
-      <div key={absolutePath || `${nodeName}-${depth}`} className="border-b border-slate-100 last:border-b-0">
-        <div
-          className="group flex items-center justify-between gap-2 px-2 py-1.5 text-sm"
-          style={{ paddingLeft: `${paddingLeft}px` }}
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="text-base" role="img" aria-hidden="true">{isDirectory ? '📁' : '📄'}</span>
-            <div className="min-w-0">
-              <div className="truncate font-medium text-slate-700" title={absolutePath || nodeName}>{nodeName}</div>
-              {metaLabel ? <div className="text-xs text-slate-400">{metaLabel}</div> : null}
-            </div>
+    const baseRowClass = isDirectory ? 'bg-indigo-50/50' : 'bg-white';
+    const rowClasses = isSelected
+      ? 'bg-indigo-200/80 font-semibold text-indigo-900'
+      : `${baseRowClass} hover:bg-indigo-100/70`;
+
+    rows.push(
+      <tr
+        key={rowKey}
+        className={`group cursor-default border-b border-indigo-100 last:border-b-0 transition ${rowClasses}`}
+        onClick={() => setSelectedNodeId(nodeId)}
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          handleNodeDoubleClick(node, nodeId, isDirectory);
+        }}
+        aria-selected={isSelected}
+      >
+        <td className="px-3 py-2 text-sm text-slate-700">
+          <div className="flex min-w-0 items-center gap-2" style={{ paddingLeft: `${depth * 1.25}rem` }}>
+            {isDirectory && hasChildren ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  toggleFolder(nodeId);
+                }}
+                className="flex h-6 w-6 items-center justify-center rounded text-indigo-400 transition hover:bg-indigo-100 hover:text-indigo-600"
+                aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
+                aria-expanded={isExpanded}
+              >
+                <span>{isExpanded ? '▾' : '▸'}</span>
+              </button>
+            ) : (
+              <span className="h-6 w-6" />
+            )}
+            <DocumentNodeIcon isDirectory={isDirectory} />
+            <div className="min-w-0 truncate" title={absolutePath || nodeName}>{nodeName}</div>
           </div>
-          <div className="flex flex-shrink-0 items-center gap-1 opacity-0 transition group-hover:opacity-100">
+        </td>
+        <td className="px-3 py-2 text-xs">
+          <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold ${isDirectory ? 'bg-indigo-100 text-indigo-700' : 'bg-sky-100 text-sky-700'}`}>
+            {isDirectory ? 'Folder' : 'File'}
+          </span>
+        </td>
+        <td className={`px-3 py-2 text-xs ${isDirectory ? 'text-indigo-600 font-medium' : 'text-slate-500'}`}>
+          {isDirectory ? `${itemCount} item${itemCount === 1 ? '' : 's'}` : '—'}
+        </td>
+        <td className="px-3 py-2 text-xs text-slate-600 font-medium">{formatFileSize(sizeValue)}</td>
+        <td className="px-3 py-2 text-xs text-slate-600">{modifiedLabel}</td>
+        <td className="px-3 py-2">
+          <div className="flex justify-end gap-1 text-indigo-600">
             <TreeActionButton title="Open" onClick={() => onOpen?.(node)} disabled={!onOpen || !absolutePath}>
               <OpenIcon className="h-3.5 w-3.5" />
             </TreeActionButton>
@@ -972,18 +1108,23 @@ function DocumentTreeView({
               </TreeActionButton>
             ) : null}
           </div>
-        </div>
-        {isDirectory && Array.isArray(node.children) && node.children.length > 0 ? (
-          <div>
-            {node.children.map(child => renderNode(child, depth + 1, false))}
-          </div>
-        ) : null}
-      </div>
+        </td>
+      </tr>
     );
+
+    if (isDirectory && hasChildren && isExpanded) {
+      for (const child of node.children) {
+        rows.push(...renderRows(child, depth + 1, false));
+      }
+    }
+
+    return rows;
   };
 
   let content = null;
-  if (!isConfigured) {
+  if (panelCollapsed) {
+    content = null;
+  } else if (!isConfigured) {
     content = (
       <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
         Choose a documents folder in Settings to enable file management.
@@ -1000,9 +1141,22 @@ function DocumentTreeView({
   } else if (!root || !Array.isArray(root.children) || root.children.length === 0) {
     content = <div className="text-xs text-slate-500">No documents found in this folder yet.</div>;
   } else {
+    const tableRows = renderRows(root, 0, true);
     content = (
       <div className="max-h-[420px] overflow-y-auto rounded border border-slate-200">
-        {renderNode(root, 0, true)}
+        <table className="min-w-full border-collapse text-left text-sm">
+          <thead className="bg-indigo-600 text-indigo-50">
+            <tr>
+              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Name</th>
+              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Type</th>
+              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Contents</th>
+              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Size</th>
+              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Modified</th>
+              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-indigo-50">{tableRows}</tbody>
+        </table>
       </div>
     );
   }
@@ -1018,17 +1172,27 @@ function DocumentTreeView({
           <h3 className="text-sm font-semibold text-slate-700">Documents tree</h3>
           <p className="text-xs text-slate-500 break-all">{safeRootPath || 'Not configured'}</p>
         </div>
-        <button
-          type="button"
-          onClick={() => onRefresh?.()}
-          disabled={loading || !isConfigured}
-          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          {loading ? 'Loading…' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => handleSetPanelCollapsed(!panelCollapsed)}
+            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            aria-expanded={!panelCollapsed}
+          >
+            {panelCollapsed ? 'Expand' : 'Collapse'}
+          </button>
+          <button
+            type="button"
+            onClick={() => onRefresh?.()}
+            disabled={loading || !isConfigured}
+            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loading ? 'Loading…' : 'Refresh'}
+          </button>
+        </div>
       </div>
       {content}
-      {isConfigured ? (
+      {!panelCollapsed && isConfigured ? (
         <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
           <div className="flex items-center justify-between gap-3">
             <div>
@@ -1047,6 +1211,9 @@ function DocumentTreeView({
             </button>
           </div>
         </div>
+      ) : null}
+      {panelCollapsed ? (
+        <div className="text-xs text-slate-500">Tree hidden. Use Expand to view folders.</div>
       ) : null}
     </div>
   );
@@ -3642,6 +3809,17 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [documentTree, setDocumentTree] = useState(null);
   const [documentTreeLoading, setDocumentTreeLoading] = useState(false);
   const [documentTreeError, setDocumentTreeError] = useState('');
+  const [documentTreeCollapsed, setDocumentTreeCollapsed] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const stored = window.localStorage.getItem(DOCUMENT_TREE_COLLAPSE_KEY);
+      if (stored === 'true') return true;
+      if (stored === 'false') return false;
+    } catch (err) {
+      console.warn('Unable to read document tree collapse preference', err);
+    }
+    return false;
+  });
   const [emptyingTrash, setEmptyingTrash] = useState(false);
   const [documentsGroup, setDocumentsGroup] = useState('none');
   const [documentsSearch, setDocumentsSearch] = useState('');
@@ -3668,6 +3846,30 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const columnsMenuContentRef = useRef(null);
   const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
   const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(DOCUMENT_TREE_COLLAPSE_KEY, documentTreeCollapsed ? 'true' : 'false');
+    } catch (err) {
+      console.warn('Unable to store document tree collapse preference', err);
+    }
+  }, [documentTreeCollapsed]);
+
+  useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED) return () => {};
+    if (!window.api) return () => {};
+    window.api.watchDocuments?.({ businessId: business.id }).catch(err => {
+      console.warn('Unable to start documents watcher', err);
+    });
+    const unsubscribe = window.api.onDocumentsChange?.((payload) => {
+      if (!payload || payload.businessId !== business.id) return;
+      refreshDocuments();
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [business.id, refreshDocuments]);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -4469,6 +4671,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                   ? 'bg-white'
                   : 'bg-slate-50';
               const docTitle = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
+              const fileName = doc.file_path ? doc.file_path.split(/[\\/]+/).filter(Boolean).pop() : '';
               return (
                 <tr key={doc.document_id} className={`transition ${rowClass}`}>
                   <td className="align-top px-3 py-3">
@@ -4488,16 +4691,20 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                         : 'text-left';
                     let cell = null;
                     if (column.key === 'document') {
+                      const tooltipText = doc.file_path || docTitle;
+
                       cell = (
-                        <div className="flex items-start gap-3">
-                          <span className="mt-0.5 text-lg" role="img" aria-label={doc.typeLabel}>{getDocumentIcon(doc.doc_type)}</span>
-                          <div className="min-w-0">
-                            <div className="font-semibold text-slate-700" title={docTitle}>{docTitle}</div>
-                            <div className="text-xs uppercase tracking-wide text-slate-400">{doc.statusLabel}</div>
-                            {!doc.fileAvailable ? (
-                              <div className="text-xs font-medium text-amber-600">File not found</div>
-                            ) : null}
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg" role="img" aria-label={doc.typeLabel}>{getDocumentIcon(doc.doc_type)}</span>
+                          <div
+                            className="text-sm font-medium text-slate-700 truncate"
+                            title={tooltipText}
+                          >
+                            {fileName || docTitle}
                           </div>
+                          {!doc.fileAvailable ? (
+                            <div className="text-xs font-medium text-amber-600">Missing</div>
+                          ) : null}
                         </div>
                       );
                     } else if (column.key === 'client') {
@@ -4813,6 +5020,8 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     onEmptyTrash={handleEmptyTrash}
                     emptyingTrash={emptyingTrash}
                     isConfigured={documentsConfigured}
+                    collapsed={documentTreeCollapsed}
+                    onCollapsedChange={value => setDocumentTreeCollapsed(Boolean(value))}
                   />
                   <div className="space-y-4">
                     <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-4">
@@ -5011,6 +5220,7 @@ function JobsheetDocumentsPanel({
   error,
   onRefresh,
   onGenerate,
+  onRegenerate,
   generatingKey,
   workbookDefinition,
   onOpenTemplate,
@@ -5029,6 +5239,7 @@ function JobsheetDocumentsPanel({
   const hasTemplate = Boolean(workbookDefinition?.template_path);
   const isGenerating = generatingKey === workbookKey;
   const disableGenerate = !jobsheetId || !hasTemplate || isGenerating || definitionsLoading;
+  const existingWorkbook = list.find(doc => (doc.definition_key || 'workbook') === workbookKey || (doc.doc_type === 'workbook' && !doc.definition_key));
 
   const documentLabel = (doc) => {
     return doc?.definition_label
@@ -5099,6 +5310,16 @@ function JobsheetDocumentsPanel({
               >
                 Open template file
               </button>
+              {existingWorkbook ? (
+                <button
+                  type="button"
+                  onClick={() => onRegenerate?.(workbookKey, existingWorkbook)}
+                  disabled={disableGenerate}
+                  className="inline-flex items-center rounded border border-indigo-200 px-3 py-1.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {isGenerating ? 'Regenerating…' : 'Regenerate workbook'}
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => onGenerate(workbookKey)}
@@ -5142,12 +5363,18 @@ function JobsheetDocumentsPanel({
               <tbody className="divide-y divide-slate-200">
                 {list.map(doc => {
                   const title = documentLabel(doc);
+                  const fileName = doc.file_path ? doc.file_path.split(/[\\/]+/).filter(Boolean).pop() : '';
                   const createdDisplay = doc?.created_at ? formatTimestampDisplay(doc.created_at) : '—';
+                  const tooltip = doc.file_path || title;
                   return (
                     <tr key={doc.document_id}>
                       <td className="px-3 py-2 align-top">
-                        <div className="font-medium text-slate-700" title={title}>{title}</div>
-                        <div className="text-xs text-slate-500 break-all">{doc.file_path || 'File path unavailable'}</div>
+                        <div className="flex items-center gap-3">
+                          <span className="text-lg" role="img" aria-label={title}>{getDocumentIcon(doc.doc_type)}</span>
+                          <div className="text-xs font-medium text-slate-700 truncate" style={{ maxWidth: '24rem' }} title={tooltip}>
+                            {fileName || title}
+                          </div>
+                        </div>
                       </td>
                       <td className="px-3 py-2 align-top text-sm text-slate-600">{createdDisplay}</td>
                       <td className="px-3 py-2 align-top">
@@ -5342,26 +5569,70 @@ function JobsheetEditorWindow({
       if (!api || typeof api.getDocuments !== 'function') {
         throw new Error('Unable to load documents: API unavailable');
       }
-      const response = await api.getDocuments({ businessId: numericBusinessId });
+
+      const fetchDocuments = async () => {
+        const data = await api.getDocuments({ businessId: numericBusinessId });
+        return Array.isArray(data) ? data : [];
+      };
+
       const normalizedJobsheetId = jobsheetId != null ? Number(jobsheetId) : null;
       const currentState = formStateRef.current || DEFAULT_JOBSHEET(numericBusinessId);
-      const filtered = (Array.isArray(response) ? response : []).filter(doc => {
-        const docJobsheetId = doc?.jobsheet_id != null ? Number(doc.jobsheet_id) : null;
-        if (normalizedJobsheetId != null && docJobsheetId === normalizedJobsheetId) {
-          return true;
-        }
-        if (normalizedJobsheetId != null && docJobsheetId != null && docJobsheetId !== normalizedJobsheetId) {
+
+      const filterForJobsheet = (docs) => {
+        return docs.filter(doc => {
+          const docJobsheetId = doc?.jobsheet_id != null ? Number(doc.jobsheet_id) : null;
+          if (normalizedJobsheetId != null && docJobsheetId === normalizedJobsheetId) {
+            return true;
+          }
+          if (normalizedJobsheetId != null && docJobsheetId != null && docJobsheetId !== normalizedJobsheetId) {
+            return false;
+          }
+          if (docJobsheetId == null && normalizedJobsheetId != null) {
+            return matchesDocumentToJobsheet(doc, currentState);
+          }
           return false;
+        });
+      };
+
+      const initialDocs = await fetchDocuments();
+      let filtered = filterForJobsheet(initialDocs);
+
+      if (normalizedJobsheetId != null && typeof api.syncJobsheetOutputs === 'function') {
+        try {
+          const syncResult = await api.syncJobsheetOutputs({
+            businessId: numericBusinessId,
+            jobsheetId: normalizedJobsheetId,
+            jobsheetSnapshot: currentState,
+            hintPaths: filtered.map(doc => doc?.file_path).filter(Boolean)
+          });
+
+          if (syncResult?.added > 0) {
+            const refreshedDocs = await fetchDocuments();
+            filtered = filterForJobsheet(refreshedDocs);
+
+            const newIds = Array.isArray(syncResult.records)
+              ? syncResult.records.map(item => item?.document_id).filter(id => id != null)
+              : [];
+
+            if (newIds.length) {
+              window.api?.notifyJobsheetChange?.({
+                type: 'documents-updated',
+                businessId: numericBusinessId,
+                jobsheetId: normalizedJobsheetId,
+                documentIds: newIds
+              });
+            }
+          }
+        } catch (syncErr) {
+          console.error('Failed to sync exported documents', syncErr);
         }
-        if (docJobsheetId == null) {
-          return matchesDocumentToJobsheet(doc, currentState);
-        }
-        return false;
-      });
+      }
+
       setJobsheetDocuments(filtered);
     } catch (err) {
       console.error('Failed to load jobsheet documents', err);
       setJobsheetDocumentsError(err?.message || 'Unable to load documents');
+      setJobsheetDocuments([]);
     } finally {
       setJobsheetDocumentsLoading(false);
     }
@@ -5376,6 +5647,21 @@ function JobsheetEditorWindow({
     }
     refreshJobsheetDocuments();
   }, [jobsheetId, refreshJobsheetDocuments]);
+
+  useEffect(() => {
+    if (!DOCUMENT_FEATURES_ENABLED && !DOCUMENT_GENERATION_ENABLED) return () => {};
+    if (!window.api) return () => {};
+    window.api.watchDocuments?.({ businessId: numericBusinessId }).catch(err => {
+      console.warn('Unable to start jobsheet documents watcher', err);
+    });
+    const unsubscribe = window.api.onDocumentsChange?.((payload) => {
+      if (!payload || payload.businessId !== numericBusinessId) return;
+      refreshJobsheetDocuments();
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, [numericBusinessId, refreshJobsheetDocuments]);
 
   const findDefinitionByKey = useCallback((key) => {
     if (!key) return null;
@@ -6457,6 +6743,43 @@ function JobsheetEditorWindow({
     }
   }, [selectedDefinitionKey, findDefinitionByKey, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection]);
 
+  const handleRegenerateWorkbook = useCallback(async (definitionKey, existingDoc) => {
+    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
+      setJobsheetDocumentsError('Document generation features are disabled.');
+      return;
+    }
+
+    const targetKey = definitionKey || 'workbook';
+    const currentDoc = existingDoc
+      || jobsheetDocuments.find(doc => (doc.definition_key || 'workbook') === targetKey || (doc.doc_type === 'workbook' && !doc.definition_key));
+
+    const proceed = window.confirm('Regenerate the workbook using the latest jobsheet details?');
+    if (!proceed) {
+      return;
+    }
+
+    let removeFile = false;
+    if (currentDoc?.file_path) {
+      removeFile = window.confirm('Overwrite the existing workbook file on disk? Choose Cancel to keep the old file (a new copy will be created).');
+    }
+
+    try {
+      setJobsheetDocumentsError('');
+      if (currentDoc?.document_id != null && window.api?.deleteDocument) {
+        await window.api.deleteDocument(currentDoc.document_id, { removeFile });
+      } else if (removeFile && currentDoc?.file_path && window.api?.deleteDocumentByPath) {
+        await window.api.deleteDocumentByPath({ businessId: numericBusinessId, absolutePath: currentDoc.file_path });
+      }
+    } catch (err) {
+      console.error('Failed to remove existing workbook', err);
+      setJobsheetDocumentsError(err?.message || 'Unable to remove existing workbook');
+      return;
+    }
+
+    await refreshJobsheetDocuments();
+    await handlePopulateExcel(targetKey);
+  }, [jobsheetDocuments, numericBusinessId, refreshJobsheetDocuments, handlePopulateExcel]);
+
 
   const handleOpenOutputFolder = useCallback(async () => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
@@ -6772,6 +7095,7 @@ function JobsheetEditorWindow({
         error={jobsheetDocumentsError}
         onRefresh={refreshJobsheetDocuments}
         onGenerate={handlePopulateExcel}
+        onRegenerate={handleRegenerateWorkbook}
         generatingKey={documentGeneratingKey}
         workbookDefinition={workbookDefinition}
         onOpenTemplate={handleOpenDefinitionTemplate}

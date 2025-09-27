@@ -46,6 +46,23 @@ function resolvePath(targetPath) {
   return resolved;
 }
 
+async function pathExists(targetPath) {
+  if (!targetPath) return false;
+  try {
+    await fs.promises.access(targetPath);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function isSubPath(parentPath, childPath) {
+  const parentResolved = path.resolve(parentPath);
+  const childResolved = path.resolve(childPath);
+  const relative = path.relative(parentResolved, childResolved);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
 async function ensureFileAccessible(resolvedPath) {
   await fs.promises.access(resolvedPath, fs.constants.R_OK);
 }
@@ -93,6 +110,11 @@ function formatDateHuman(dateInput) {
     month: 'long',
     year: 'numeric'
   }).format(date);
+}
+
+async function ensureDirectoryExists(targetPath) {
+  if (!targetPath) return;
+  await fs.promises.mkdir(targetPath, { recursive: true });
 }
 
 function buildContext(payload, business = {}) {
@@ -160,6 +182,17 @@ function coerceCellValue(rawValue, binding) {
     return '';
   }
 
+  if (typeof rawValue === 'number' && !Number.isFinite(rawValue)) {
+    return null;
+  }
+
+  if (typeof rawValue === 'string') {
+    const normalized = rawValue.trim().toLowerCase();
+    if (normalized === 'nan' || normalized === 'infinity' || normalized === '-infinity') {
+      return '';
+    }
+  }
+
   const { data_type: dataType = 'string', format } = binding || {};
 
   if (format === 'date_human') {
@@ -169,6 +202,10 @@ function coerceCellValue(rawValue, binding) {
   if (dataType === 'number') {
     const numeric = Number(rawValue);
     return Number.isFinite(numeric) ? numeric : null;
+  }
+
+  if (typeof rawValue === 'number' && Number.isNaN(rawValue)) {
+    return '';
   }
 
   if (dataType === 'string') {
@@ -195,6 +232,60 @@ async function fillWorkbook(workbook, bindings, valueSources, context) {
     const value = resolveFieldValue(binding.field_key, valueSources, context, fallbackPaths[binding.field_key]);
     const coerced = coerceCellValue(value, binding);
     cell.value = coerced;
+  });
+}
+
+function sanitizeWorkbookValues(workbook) {
+  workbook.eachSheet(worksheet => {
+    worksheet.eachRow(row => {
+      row.eachCell(cell => {
+        const { value } = cell;
+        if (value == null) return;
+
+        if (value instanceof Date) {
+          if (Number.isNaN(value.valueOf())) {
+            cell.value = null;
+          }
+          return;
+        }
+
+        if (typeof value === 'number' && !Number.isFinite(value)) {
+          cell.value = null;
+          return;
+        }
+
+        if (typeof value === 'string') {
+          const normalized = value.trim().toLowerCase();
+          if (normalized === 'nan' || normalized === 'infinity' || normalized === '-infinity') {
+            cell.value = '';
+          }
+          return;
+        }
+
+        if (typeof value === 'object' && value !== null && ('formula' in value || 'sharedFormula' in value)) {
+          const result = value.result;
+          let sanitizedResult = result;
+
+          if (result instanceof Date && Number.isNaN(result.valueOf())) {
+            sanitizedResult = null;
+          } else if (typeof result === 'number' && !Number.isFinite(result)) {
+            sanitizedResult = null;
+          } else if (typeof result === 'string') {
+            const normalized = result.trim().toLowerCase();
+            if (normalized === 'nan' || normalized === 'infinity' || normalized === '-infinity') {
+              sanitizedResult = null;
+            }
+          }
+
+          if (sanitizedResult !== result) {
+            cell.value = {
+              ...value,
+              result: sanitizedResult
+            };
+          }
+        }
+      });
+    });
   });
 }
 
@@ -304,6 +395,9 @@ async function createWorkbookDocument(payload = {}) {
   const valueSources = await db.getMergeFieldValueSources(fieldKeys);
 
   await fillWorkbook(workbook, bindings, valueSources, context);
+  workbook.calcProperties = workbook.calcProperties || {};
+  workbook.calcProperties.fullCalcOnLoad = true;
+  sanitizeWorkbookValues(workbook);
   await workbook.xlsx.writeFile(targetPath);
 
   const clientName = context.client?.name || context.jobsheet?.client_name || null;
@@ -340,6 +434,242 @@ async function createDocument(payload = {}) {
   return createWorkbookDocument(payload);
 }
 
+const documentWatchers = new Map();
+const watcherCallbacks = new Map();
+const watcherTimers = new Map();
+
+async function watchDocumentsFolder(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required to watch documents folder.');
+  }
+
+  const business = await db.getBusinessById(businessId);
+  if (!business || !business.save_path) {
+    throw new Error('Documents folder not configured for this business.');
+  }
+
+  const rootPath = path.resolve(business.save_path);
+  await ensureDirectoryExists(rootPath);
+
+  if (typeof options.onChange === 'function') {
+    watcherCallbacks.set(businessId, options.onChange);
+  }
+
+  if (documentWatchers.has(businessId)) {
+    return { ok: true, watching: true };
+  }
+
+  const triggerChange = async () => {
+    try {
+      const callback = watcherCallbacks.get(businessId);
+      if (callback) {
+        callback({ businessId });
+      }
+    } catch (err) {
+      console.error('Failed to notify documents change', err);
+    }
+  };
+
+  const watcher = fs.watch(rootPath, { recursive: true }, () => {
+    const existingTimer = watcherTimers.get(businessId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+    const timer = setTimeout(triggerChange, 300);
+    watcherTimers.set(businessId, timer);
+  });
+
+  watcher.on('error', (err) => {
+    console.error('Documents watcher error', err);
+  });
+
+  documentWatchers.set(businessId, watcher);
+  return { ok: true, watching: true };
+}
+
+function unwatchDocumentsFolder(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    return { ok: true, watching: false };
+  }
+
+  const watcher = documentWatchers.get(businessId);
+  if (watcher) {
+    try {
+      watcher.close();
+    } catch (err) {
+      console.warn('Failed to close documents watcher', err);
+    }
+  }
+  documentWatchers.delete(businessId);
+
+  const timer = watcherTimers.get(businessId);
+  if (timer) {
+    clearTimeout(timer);
+    watcherTimers.delete(businessId);
+  }
+  watcherCallbacks.delete(businessId);
+
+  return { ok: true, watching: false };
+}
+
+
+async function syncJobsheetOutputs(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required to sync outputs.');
+  }
+
+  const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+  const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+
+  const hintPaths = Array.isArray(options.hintPaths) ? options.hintPaths.filter(Boolean) : [];
+  const explicitDirectories = Array.isArray(options.directories) ? options.directories.filter(Boolean) : [];
+  const snapshot = options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object'
+    ? { ...options.jobsheetSnapshot }
+    : {};
+
+  const extensionsInput = Array.isArray(options.extensions) && options.extensions.length
+    ? options.extensions
+    : ['.pdf'];
+
+  const normalizedExtensions = extensionsInput
+    .map(ext => {
+      if (!ext) return null;
+      const trimmed = ext.toString().trim();
+      if (!trimmed) return null;
+      return trimmed.startsWith('.') ? trimmed.toLowerCase() : `.${trimmed.toLowerCase()}`;
+    })
+    .filter(Boolean);
+
+  if (!normalizedExtensions.length) {
+    return { added: 0, records: [] };
+  }
+
+  const business = await db.getBusinessById(businessId);
+  if (!business || !business.save_path) {
+    throw new Error('Documents folder not configured for this business.');
+  }
+
+  const rootPath = path.resolve(business.save_path);
+  const directories = new Set();
+
+  explicitDirectories.forEach(dir => {
+    try {
+      if (dir) directories.add(path.resolve(dir));
+    } catch (_err) {
+      // ignore invalid paths
+    }
+  });
+
+  hintPaths.forEach(filePath => {
+    if (!filePath || typeof filePath !== 'string') return;
+    try {
+      const absolute = path.resolve(filePath);
+      directories.add(path.dirname(absolute));
+    } catch (_err) {
+      // ignore resolve errors
+    }
+  });
+
+  if (!directories.size) {
+    try {
+      const payload = {
+        business_id: businessId,
+        jobsheet_id: jobsheetId,
+        jobsheet_snapshot: snapshot,
+        client_override: {},
+        event_override: {},
+        pricing_snapshot: {}
+      };
+      const context = buildContext(payload, business);
+      const naming = buildFileName(context, payload, { label: 'Workbook' });
+      const expectedDirectory = buildOutputDirectory(business, context, payload, naming.folderName);
+      directories.add(expectedDirectory);
+    } catch (err) {
+      console.warn('Unable to determine expected jobsheet directory', err);
+    }
+  }
+
+  if (!directories.size) {
+    return { added: 0, records: [] };
+  }
+
+  const results = [];
+  let added = 0;
+
+  for (const dir of directories) {
+    if (!dir) continue;
+    let resolvedDir;
+    try {
+      resolvedDir = path.resolve(dir);
+    } catch (_err) {
+      continue;
+    }
+
+    if (!isSubPath(rootPath, resolvedDir)) {
+      continue;
+    }
+
+    if (!(await pathExists(resolvedDir))) {
+      continue;
+    }
+
+    let entries;
+    try {
+      entries = await fs.promises.readdir(resolvedDir, { withFileTypes: true });
+    } catch (err) {
+      console.warn('Unable to read output directory', resolvedDir, err);
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!normalizedExtensions.includes(ext)) continue;
+
+      const absolutePath = path.join(resolvedDir, entry.name);
+      try {
+        const existing = await db.getDocumentByFilePath(businessId, absolutePath);
+        if (existing) {
+          continue;
+        }
+
+        const stats = await fs.promises.stat(absolutePath);
+        const documentDate = stats?.mtime instanceof Date && !Number.isNaN(stats.mtime.valueOf())
+          ? stats.mtime.toISOString()
+          : new Date().toISOString();
+
+        const inserted = await db.addDocument({
+          business_id: businessId,
+          jobsheet_id: jobsheetId,
+          doc_type: 'pdf_export',
+          status: 'exported',
+          total_amount: null,
+          balance_due: null,
+          due_date: null,
+          file_path: absolutePath,
+          client_name: snapshot.client_name || snapshot.client || null,
+          event_name: snapshot.event_type || snapshot.event_name || null,
+          event_date: snapshot.event_date || null,
+          document_date: documentDate,
+          definition_key: null,
+          invoice_variant: null
+        });
+
+        added += 1;
+        results.push({ document_id: inserted?.id || null, file_path: absolutePath });
+      } catch (err) {
+        console.error('Failed to record exported document', absolutePath, err);
+      }
+    }
+  }
+
+  return { added, records: results };
+}
+
+
 async function deleteDocument(documentId, options = {}) {
   const id = Number(documentId);
   if (!Number.isInteger(id)) {
@@ -371,5 +701,8 @@ async function deleteDocument(documentId, options = {}) {
 module.exports = {
   normalizeTemplate,
   createDocument,
-  deleteDocument
+  deleteDocument,
+  syncJobsheetOutputs,
+  watchDocumentsFolder,
+  unwatchDocumentsFolder
 };

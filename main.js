@@ -16,6 +16,15 @@ const DEFAULT_JOBSHEET_WINDOW_STATE = {
 let mainWindow = null;
 let jobsheetWindow = null;
 
+function broadcastDocumentsChange(payload = {}) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('documents-change', payload);
+  }
+  if (jobsheetWindow && !jobsheetWindow.isDestroyed()) {
+    jobsheetWindow.webContents.send('documents-change', payload);
+  }
+}
+
 function getStateStorePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
 }
@@ -328,6 +337,25 @@ ipcMain.handle('open-template', async (_event, args = {}) => {
       return { ok: false, message: result };
     }
     return { ok: true, templatePath };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('watch-documents', async (_event, args = {}) => {
+  try {
+    return await documentService.watchDocumentsFolder({
+      ...args,
+      onChange: broadcastDocumentsChange
+    });
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('unwatch-documents', async (_event, args = {}) => {
+  try {
+    return await documentService.unwatchDocumentsFolder(args || {});
   } catch (err) {
     return { ok: false, message: err?.message || String(err) };
   }

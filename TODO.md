@@ -10,3 +10,4 @@
 - [ ] Add calendar of upcoming deadlines/reminders with background macOS notifications while the app is closed.
 - [ ] Integrate outbound email for sending generated documents directly to clients.
 - [ ] Add WhatsApp workflow for AhMen enquiries, gig sheets, and personnel follow-ups.
+- [ ] Design import method for existing job files that creates corresponding jobsheets automatically.

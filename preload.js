@@ -5,6 +5,7 @@ const documentService = require(path.join(__dirname, 'documentService.js'));
 const ahmenCosting = require(path.join(__dirname, 'ahmenCosting.js'));
 
 const jobsheetListeners = new Set();
+const documentListeners = new Set();
 
 ipcRenderer.on('jobsheet-change', (_event, payload) => {
   jobsheetListeners.forEach(callback => {
@@ -12,6 +13,16 @@ ipcRenderer.on('jobsheet-change', (_event, payload) => {
       callback(payload);
     } catch (err) {
       console.error('Jobsheet change listener error', err);
+    }
+  });
+});
+
+ipcRenderer.on('documents-change', (_event, payload) => {
+  documentListeners.forEach(callback => {
+    try {
+      callback(payload);
+    } catch (err) {
+      console.error('Documents change listener error', err);
     }
   });
 });
@@ -39,6 +50,7 @@ contextBridge.exposeInMainWorld('api', {
   reorderDocumentDefinitions: async (businessId, orderedKeys) => await db.reorderDocumentDefinitions(businessId, orderedKeys),
   addDocument: async (documentData) => await db.addDocument(documentData),
   createDocument: async (payload) => await documentService.createDocument(payload),
+  syncJobsheetOutputs: async (options) => await documentService.syncJobsheetOutputs(options || {}),
   updateDocumentStatus: async (documentId, data) => await db.updateDocumentStatus(documentId, data),
   getMusiciansForEvent: async (eventId) => await db.getMusiciansForEvent(eventId),
   addMusicianToEvent: async (eventId, musicianData) => await db.addMusicianToEvent(eventId, musicianData),
@@ -49,6 +61,8 @@ contextBridge.exposeInMainWorld('api', {
   markSessionExported: async (sessionId, exported) => await db.markSessionExported(sessionId, exported),
   deleteTimekeeperSession: async (sessionId, options) => await db.deleteTimekeeperSession(sessionId, options),
   deleteDocument: async (documentId, options) => await documentService.deleteDocument(documentId, options || {}),
+  watchDocuments: async (options) => await ipcRenderer.invoke('watch-documents', options || {}),
+  unwatchDocuments: async (options) => await ipcRenderer.invoke('unwatch-documents', options || {}),
   deleteEvent: async (eventId) => await db.deleteEvent(eventId),
   deleteClient: async (clientId) => await db.deleteClient(clientId),
   getAhmenJobsheets: async (options) => await db.getAhmenJobsheets(options),
@@ -88,5 +102,10 @@ contextBridge.exposeInMainWorld('api', {
     if (typeof callback !== 'function') return () => {};
     jobsheetListeners.add(callback);
     return () => jobsheetListeners.delete(callback);
+  },
+  onDocumentsChange: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    documentListeners.add(callback);
+    return () => documentListeners.delete(callback);
   }
 });
