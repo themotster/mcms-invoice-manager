@@ -47,9 +47,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     doc_type: 'workbook',
     label: 'Excel Workbook',
     description: 'Excel workbook populated with all jobsheet details.',
-    file_suffix: '',
     invoice_variant: null,
-    requires_total: 1,
     is_primary: 1,
     sort_order: 0,
     locked: 1
@@ -59,9 +57,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     doc_type: 'quote',
     label: 'Quote',
     description: 'Quote document with pricing totals.',
-    file_suffix: ' - Quote',
     invoice_variant: null,
-    requires_total: 1,
     is_primary: 0,
     sort_order: 1,
     locked: 1
@@ -71,9 +67,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     doc_type: 'contract',
     label: 'Contract',
     description: 'Contract ready for signatures.',
-    file_suffix: ' - Contract',
     invoice_variant: null,
-    requires_total: 0,
     is_primary: 0,
     sort_order: 2,
     locked: 1
@@ -83,9 +77,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     doc_type: 'invoice',
     label: 'Invoice – Deposit',
     description: 'Deposit invoice for the booking.',
-    file_suffix: ' - Deposit',
     invoice_variant: 'deposit',
-    requires_total: 1,
     is_primary: 0,
     sort_order: 3,
     locked: 1
@@ -95,9 +87,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     doc_type: 'invoice',
     label: 'Invoice – Balance',
     description: 'Balance invoice for the booking.',
-    file_suffix: ' - Balance',
     invoice_variant: 'balance',
-    requires_total: 1,
     is_primary: 0,
     sort_order: 4,
     locked: 1
@@ -352,18 +342,15 @@ function initializeDatabase() {
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
-      definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      business_id INTEGER NOT NULL,
-      key TEXT NOT NULL,
+  db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
+    definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    business_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
       doc_type TEXT NOT NULL,
       label TEXT NOT NULL,
       description TEXT,
-      file_suffix TEXT,
       invoice_variant TEXT,
       template_path TEXT,
-      requires_total INTEGER DEFAULT 0,
-      is_primary INTEGER DEFAULT 0,
       is_active INTEGER DEFAULT 1,
       is_locked INTEGER DEFAULT 0,
       sort_order INTEGER DEFAULT 0,
@@ -374,8 +361,14 @@ function initializeDatabase() {
       UNIQUE (business_id, key)
     )`);
 
-    db.run(`CREATE INDEX IF NOT EXISTS idx_document_definitions_business_sort
-      ON document_definitions (business_id, sort_order)`);
+  db.run(`CREATE INDEX IF NOT EXISTS idx_document_definitions_business_sort
+    ON document_definitions (business_id, sort_order)`);
+
+  db.run(`CREATE TABLE IF NOT EXISTS document_definition_tombstones (
+    business_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    PRIMARY KEY (business_id, key)
+  )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS jobsheet_template_overrides (
       override_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -562,7 +555,9 @@ function initializeDatabase() {
        VALUES ('ahmen_fee', 'ahmen_excel', 'Client Data', 'B27', 'number', '12', NULL)`
     );
     seedMergeFieldValueSources();
-    seedDocumentDefinitions();
+    migrateDocumentDefinitionsTable(() => {
+      seedDocumentDefinitions();
+    });
   });
 }
 
@@ -728,8 +723,22 @@ function seedDocumentDefinitions() {
 
           const existingKeys = new Set(Array.isArray(rows) ? rows.map(row => row.key) : []);
 
-          DEFAULT_DOCUMENT_DEFINITIONS.forEach(definition => {
-            const templatePath = resolveDefinitionTemplatePath(business, definition.key);
+          db.all(
+            'SELECT key FROM document_definition_tombstones WHERE business_id = ?',
+            [businessId],
+            (tombErr, tombRows) => {
+              if (tombErr) {
+                console.error('Failed to read document definition tombstones', tombErr);
+                return;
+              }
+
+              const tombstonedKeys = new Set(Array.isArray(tombRows) ? tombRows.map(row => row.key) : []);
+
+              DEFAULT_DOCUMENT_DEFINITIONS.forEach(definition => {
+                if (tombstonedKeys.has(definition.key)) {
+                  return;
+                }
+                const templatePath = resolveDefinitionTemplatePath(business, definition.key);
 
             db.run(
               `INSERT OR IGNORE INTO document_definitions (
@@ -738,28 +747,22 @@ function seedDocumentDefinitions() {
                 doc_type,
                 label,
                 description,
-                file_suffix,
                 invoice_variant,
                 template_path,
-                requires_total,
-                is_primary,
                 is_active,
                 is_locked,
                 sort_order,
                 created_at,
                 updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, datetime('now'), datetime('now'))`,
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
               [
                 businessId,
                 definition.key,
                 definition.doc_type,
                 definition.label,
                 definition.description || null,
-                definition.file_suffix || null,
                 definition.invoice_variant || null,
                 templatePath || null,
-                definition.requires_total ? 1 : 0,
-                definition.is_primary ? 1 : 0,
                 definition.locked ? 1 : 0,
                 definition.sort_order
               ],
@@ -774,12 +777,8 @@ function seedDocumentDefinitions() {
               SET doc_type = ?,
                   label = ?,
                   description = ?,
-                  file_suffix = ?,
                   invoice_variant = ?,
-                  requires_total = ?,
-                  is_primary = ?,
                   is_locked = CASE WHEN is_locked = 1 THEN 1 ELSE ? END,
-                  sort_order = CASE WHEN is_locked = 1 THEN ? ELSE sort_order END,
                   template_path = CASE WHEN ? IS NOT NULL AND (template_path IS NULL OR template_path = '') THEN ? ELSE template_path END
               WHERE business_id = ? AND key = ?`;
 
@@ -789,12 +788,8 @@ function seedDocumentDefinitions() {
                 definition.doc_type,
                 definition.label,
                 definition.description || null,
-                definition.file_suffix || null,
                 definition.invoice_variant || null,
-                definition.requires_total ? 1 : 0,
-                definition.is_primary ? 1 : 0,
                 definition.locked ? 1 : 0,
-                definition.sort_order,
                 templatePath || null,
                 templatePath || null,
                 businessId,
@@ -810,11 +805,77 @@ function seedDocumentDefinitions() {
             if (!existingKeys.has(definition.key)) {
               existingKeys.add(definition.key);
             }
-          });
+              });
+            }
+          );
         }
       );
     });
   });
+}
+
+function migrateDocumentDefinitionsTable(done) {
+  try {
+    db.all('PRAGMA table_info(document_definitions)', (err, rows) => {
+      if (err) {
+        console.error('Failed to inspect document_definitions table', err);
+        if (typeof done === 'function') done();
+        return;
+      }
+      const columns = Array.isArray(rows) ? rows.map(r => r.name) : [];
+      const hasFileSuffix = columns.includes('file_suffix');
+      const hasRequiresTotal = columns.includes('requires_total');
+      const hasIsPrimary = columns.includes('is_primary');
+      if (!hasFileSuffix && !hasRequiresTotal && !hasIsPrimary) {
+        if (typeof done === 'function') done();
+        return;
+      }
+
+      console.log('Migrating document_definitions table to drop deprecated columns…');
+      db.serialize(() => {
+        db.run('BEGIN');
+        db.run(
+          `CREATE TABLE IF NOT EXISTS document_definitions_new (
+            definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            label TEXT NOT NULL,
+            description TEXT,
+            invoice_variant TEXT,
+            template_path TEXT,
+            is_active INTEGER DEFAULT 1,
+            is_locked INTEGER DEFAULT 0,
+            sort_order INTEGER DEFAULT 0,
+            sheet_exports TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (business_id) REFERENCES business_settings(id),
+            UNIQUE (business_id, key)
+          )`
+        );
+        db.run(
+          `INSERT INTO document_definitions_new (
+             definition_id, business_id, key, doc_type, label, description, invoice_variant, template_path, is_active, is_locked, sort_order, sheet_exports, created_at, updated_at
+           )
+           SELECT definition_id, business_id, key, doc_type, label, description, invoice_variant, template_path, is_active, is_locked, sort_order, sheet_exports, created_at, updated_at
+           FROM document_definitions`
+        );
+        db.run('DROP TABLE document_definitions');
+        db.run('ALTER TABLE document_definitions_new RENAME TO document_definitions');
+        db.run(`CREATE INDEX IF NOT EXISTS idx_document_definitions_business_sort ON document_definitions (business_id, sort_order)`);
+        db.run('COMMIT', (commitErr) => {
+          if (commitErr) {
+            console.error('Failed to commit document_definitions migration', commitErr);
+          }
+          if (typeof done === 'function') done();
+        });
+      });
+    });
+  } catch (err) {
+    console.error('Migration error for document_definitions', err);
+    if (typeof done === 'function') done();
+  }
 }
 
 function syncLegacyBusinessesTable() {
@@ -844,8 +905,7 @@ function mapDocumentDefinitionRow(row) {
   }
   return {
     ...row,
-    requires_total: row.requires_total ? 1 : 0,
-    is_primary: row.is_primary ? 1 : 0,
+    is_primary: 0,
     is_active: row.is_active ? 1 : 0,
     is_locked: row.is_locked ? 1 : 0,
     sort_order: Number.isFinite(row.sort_order) ? Number(row.sort_order) : 0,
@@ -929,11 +989,8 @@ function sanitizeDefinitionPayload(definition) {
     doc_type: (definition.doc_type || '').trim(),
     label: (definition.label || '').trim(),
     description: definition.description != null && definition.description !== '' ? String(definition.description) : null,
-    file_suffix: definition.file_suffix != null && definition.file_suffix !== '' ? String(definition.file_suffix) : null,
     invoice_variant: definition.invoice_variant != null && definition.invoice_variant !== '' ? String(definition.invoice_variant) : null,
     template_path: definition.template_path != null && definition.template_path !== '' ? String(definition.template_path) : null,
-    requires_total: definition.requires_total ? 1 : 0,
-    is_primary: definition.is_primary ? 1 : 0,
     is_active: definition.is_active === 0 ? 0 : 1,
     is_locked: definition.is_locked ? 1 : 0,
     sort_order: Number.isFinite(definition.sort_order) ? Number(definition.sort_order) : null,
@@ -973,43 +1030,34 @@ function saveDocumentDefinition(businessId, definition) {
            doc_type,
            label,
            description,
-           file_suffix,
            invoice_variant,
            template_path,
-           requires_total,
-           is_primary,
            is_active,
            is_locked,
            sort_order,
            sheet_exports,
            created_at,
            updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(business_id, key) DO UPDATE SET
            doc_type = excluded.doc_type,
            label = excluded.label,
            description = excluded.description,
-           file_suffix = excluded.file_suffix,
            invoice_variant = excluded.invoice_variant,
            template_path = excluded.template_path,
-           requires_total = excluded.requires_total,
-           is_primary = excluded.is_primary,
            is_active = excluded.is_active,
            sort_order = excluded.sort_order,
            sheet_exports = excluded.sheet_exports,
            updated_at = excluded.updated_at,
-           is_locked = CASE WHEN document_definitions.is_locked = 1 THEN 1 ELSE excluded.is_locked END`,
+           is_locked = excluded.is_locked`,
         [
           id,
           payload.key,
           payload.doc_type,
           payload.label,
           payload.description,
-          payload.file_suffix,
           payload.invoice_variant,
           payload.template_path,
-          payload.requires_total,
-          payload.is_primary,
           payload.is_active,
           payload.is_locked,
           orderValue,
@@ -1021,6 +1069,11 @@ function saveDocumentDefinition(businessId, definition) {
           if (err) {
             reject(err);
           } else {
+            db.run(
+              'DELETE FROM document_definition_tombstones WHERE business_id = ? AND key = ?',
+              [id, payload.key],
+              () => {}
+            );
             resolve({ key: payload.key, changes: this.changes });
           }
         }
@@ -1051,8 +1104,8 @@ function deleteDocumentDefinition(businessId, identifier) {
     }
 
     const query = typeof identifier === 'number'
-      ? 'SELECT definition_id, is_locked FROM document_definitions WHERE business_id = ? AND definition_id = ?'
-      : 'SELECT definition_id, is_locked FROM document_definitions WHERE business_id = ? AND key = ?';
+      ? 'SELECT definition_id, key, is_locked FROM document_definitions WHERE business_id = ? AND definition_id = ?'
+      : 'SELECT definition_id, key, is_locked FROM document_definitions WHERE business_id = ? AND key = ?';
 
     db.get(query, [id, identifier], (err, row) => {
       if (err) {
@@ -1068,11 +1121,20 @@ function deleteDocumentDefinition(businessId, identifier) {
         return;
       }
 
+      const resolvedKey = row.key;
+      if (resolvedKey) {
+        db.run(
+          'INSERT OR IGNORE INTO document_definition_tombstones (business_id, key) VALUES (?, ?)',
+          [id, resolvedKey],
+          () => {}
+        );
+      }
+
       db.run(
-        "UPDATE document_definitions SET is_active = 0, updated_at = datetime('now') WHERE definition_id = ?",
+        "DELETE FROM document_definitions WHERE definition_id = ?",
         [row.definition_id],
-        function (updateErr) {
-          if (updateErr) reject(updateErr);
+        function (deleteErr) {
+          if (deleteErr) reject(deleteErr);
           else resolve({ removed: this.changes });
         }
       );
@@ -2764,7 +2826,6 @@ module.exports = {
         `SELECT
            documents.*,
            def.label AS definition_label,
-           def.file_suffix AS definition_file_suffix,
            def.invoice_variant AS definition_invoice_variant,
            def.doc_type AS definition_doc_type,
            COALESCE(documents.client_name, clients.name) AS display_client_name,

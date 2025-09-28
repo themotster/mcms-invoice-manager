@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ToastOverlay from './ToastOverlay';
 
 const CATEGORY_LABELS = {
@@ -11,6 +11,11 @@ const CATEGORY_LABELS = {
 };
 
 const WORKBOOK_FILE_FILTERS = [{ name: 'Excel workbook', extensions: ['xlsx'] }];
+
+const TEMPLATES_MANAGER_TABS = [
+  { key: 'templates', label: 'Templates' },
+  { key: 'placeholders', label: 'Placeholders' }
+];
 
 function startCase(value) {
   return (value || '')
@@ -35,6 +40,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
   const [placeholders, setPlaceholders] = useState([]);
   const [valueSources, setValueSources] = useState({});
   const [definitions, setDefinitions] = useState([]);
+  const [reorderBusy, setReorderBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadingDefinitions, setLoadingDefinitions] = useState(true);
   const [activeCategory, setActiveCategory] = useState(null);
@@ -46,15 +52,62 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
   const [dialogMode, setDialogMode] = useState('create');
   const [dialogTarget, setDialogTarget] = useState(null);
   const [dialogLabel, setDialogLabel] = useState('');
-  const [dialogFileSuffix, setDialogFileSuffix] = useState('');
-  const [dialogRequiresTotal, setDialogRequiresTotal] = useState(true);
   const [dialogPath, setDialogPath] = useState('');
   const [dialogError, setDialogError] = useState('');
   const [dialogBusy, setDialogBusy] = useState(false);
   const [definitionSearch, setDefinitionSearch] = useState('');
+  const [debouncedDefinitionSearch, setDebouncedDefinitionSearch] = useState('');
   const [normalizeAllBusy, setNormalizeAllBusy] = useState(false);
   const [placeholdersCollapsed, setPlaceholdersCollapsed] = useState(false);
   const [templatesCollapsed, setTemplatesCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState('templates');
+  const [menuOpenKey, setMenuOpenKey] = useState('');
+  const menuRef = useRef(null);
+
+  // Persist selected tab between sessions
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem('templatesManager:activeTab');
+      if (stored && (stored === 'templates' || stored === 'placeholders')) {
+        setActiveTab(stored);
+      }
+    } catch (_err) {}
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('templatesManager:activeTab', activeTab);
+    } catch (_err) {}
+  }, [activeTab]);
+
+  // Close kebab menu on outside click or Escape
+  useEffect(() => {
+    const handleDocClick = (event) => {
+      if (!menuOpenKey) return;
+      const el = menuRef.current;
+      if (el && el.contains(event.target)) return;
+      setMenuOpenKey('');
+    };
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape' && menuOpenKey) setMenuOpenKey('');
+    };
+    document.addEventListener('mousedown', handleDocClick);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleDocClick);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [menuOpenKey]);
+
+  useEffect(() => {
+    if (!menuOpenKey) return;
+    // focus first menu item when menu opens
+    const id = requestAnimationFrame(() => {
+      const first = menuRef.current?.querySelector('button[role="menuitem"]');
+      if (first && typeof first.focus === 'function') first.focus();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [menuOpenKey]);
 
   const restoreScroll = useCallback((position) => {
     if (typeof window === 'undefined') return;
@@ -120,12 +173,38 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
   }, [business.id]);
 
   useEffect(() => {
+    const id = setTimeout(() => setDebouncedDefinitionSearch(definitionSearch.trim().toLowerCase()), 200);
+    return () => clearTimeout(id);
+  }, [definitionSearch]);
+
+  useEffect(() => {
+    // restore UI state
+    try {
+      const ph = window.localStorage.getItem('templatesManager:placeholdersCollapsed');
+      if (ph != null) setPlaceholdersCollapsed(ph === '1');
+      const tm = window.localStorage.getItem('templatesManager:templatesCollapsed');
+      if (tm != null) setTemplatesCollapsed(tm === '1');
+      const lastCat = window.localStorage.getItem('templatesManager:lastPlaceholderCategory');
+      if (lastCat) setActiveCategory(lastCat);
+    } catch (_err) {}
     loadPlaceholders();
   }, [loadPlaceholders]);
 
   useEffect(() => {
     loadDefinitions();
   }, [loadDefinitions]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('templatesManager:placeholdersCollapsed', placeholdersCollapsed ? '1' : '0');
+    } catch (_err) {}
+  }, [placeholdersCollapsed]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('templatesManager:templatesCollapsed', templatesCollapsed ? '1' : '0');
+    } catch (_err) {}
+  }, [templatesCollapsed]);
 
   const persistDefinition = useCallback(async (definition, overrides = {}) => {
     const api = window.api;
@@ -144,10 +223,8 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       doc_type: merged.doc_type,
       label: merged.label,
       description: merged.description,
-      file_suffix: merged.file_suffix,
       invoice_variant: merged.invoice_variant,
       template_path: merged.template_path,
-      requires_total: merged.requires_total ? 1 : 0,
       is_primary: merged.is_primary ? 1 : 0,
       is_active: merged.is_active === 0 ? 0 : 1,
       is_locked: merged.is_locked ? 1 : 0,
@@ -187,6 +264,11 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       setActiveCategory(firstCategory);
     }
   }, [groupedPlaceholders, activeCategory]);
+
+  useEffect(() => {
+    if (!activeCategory) return;
+    try { window.localStorage.setItem('templatesManager:lastPlaceholderCategory', activeCategory); } catch (_err) {}
+  }, [activeCategory]);
 
   const handleCopy = useCallback(async (placeholder) => {
     if (!placeholder) return;
@@ -280,8 +362,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
     setDialogTarget(null);
     setDialogLabel('');
     
-    setDialogFileSuffix('');
-    setDialogRequiresTotal(true);
+    // totals no longer required; no state to manage
     setDialogPath('');
     setDialogError('');
     setDialogOpen(true);
@@ -292,8 +373,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
     setDialogMode('edit');
     setDialogTarget(definition);
     setDialogLabel(definition.label || '');
-    setDialogFileSuffix(definition.file_suffix || '');
-    setDialogRequiresTotal(definition.requires_total ? 1 : 0);
+    // totals are irrelevant for editing now
     setDialogPath(definition.template_path || '');
     setDialogError('');
     setDialogOpen(true);
@@ -305,8 +385,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
     setDialogMode('create');
     setDialogTarget(null);
     setDialogLabel('');
-    setDialogFileSuffix('');
-    setDialogRequiresTotal(true);
+    // reset not needed for totals
     setDialogPath('');
     setDialogError('');
   }, [dialogBusy]);
@@ -369,11 +448,10 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       doc_type: docType,
       label,
       description: '',
-      file_suffix: dialogFileSuffix || '',
       invoice_variant: isEdit ? dialogTarget.invoice_variant : null,
       template_path: dialogPath || '',
-      requires_total: dialogRequiresTotal ? 1 : 0,
-      is_primary: isEdit ? (dialogTarget.is_primary ? 1 : 0) : definitions.length === 0 ? 1 : 0,
+      // requires_total removed
+      is_primary: 0,
       is_active: isEdit ? (dialogTarget.is_active ? 1 : 0) : 1,
       is_locked: isEdit ? (dialogTarget.is_locked ? 1 : 0) : 0,
       sort_order: isEdit && Number.isFinite(dialogTarget.sort_order) ? dialogTarget.sort_order : definitions.length
@@ -392,8 +470,6 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       setDialogTarget(null);
       setDialogLabel('');
       setDialogDocType('workbook');
-      setDialogFileSuffix('');
-      setDialogRequiresTotal(true);
       setDialogPath('');
     } catch (err) {
       console.error('Failed to save template', err);
@@ -402,22 +478,21 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       setDialogBusy(false);
       setTimeout(() => setMessage(''), 2500);
     }
-  }, [dialogBusy, dialogLabel, dialogFileSuffix, dialogRequiresTotal, dialogPath, dialogMode, dialogTarget, business.id, definitions, loadDefinitions, onTemplatesUpdated]);
+  }, [dialogBusy, dialogLabel, dialogPath, dialogMode, dialogTarget, business.id, definitions, loadDefinitions, onTemplatesUpdated]);
 
   const filteredDefinitions = useMemo(() => {
-    const search = definitionSearch.trim().toLowerCase();
+    const search = debouncedDefinitionSearch;
     if (!search) return definitions;
     return definitions.filter(definition => {
       const haystack = [
         definition.label,
         definition.key,
         definition.doc_type,
-        definition.file_suffix,
         definition.description
       ].filter(Boolean).join(' ').toLowerCase();
       return haystack.includes(search);
     });
-  }, [definitions, definitionSearch]);
+  }, [definitions, debouncedDefinitionSearch]);
 
   const handleDeleteDefinition = useCallback(async (definition) => {
     if (!definition) return;
@@ -520,6 +595,30 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
     }
   }, []);
 
+  const moveDefinition = useCallback(async (key, delta) => {
+    if (!Array.isArray(definitions) || !definitions.length) return;
+    const index = definitions.findIndex(d => d.key === key);
+    if (index === -1) return;
+    const nextIndex = index + delta;
+    if (nextIndex < 0 || nextIndex >= definitions.length) return;
+    const updated = [...definitions];
+    const [moved] = updated.splice(index, 1);
+    updated.splice(nextIndex, 0, moved);
+    setDefinitions(updated);
+    try {
+      setReorderBusy(true);
+      const keys = updated.map(d => d.key);
+      await window.api?.reorderDocumentDefinitions?.(business.id, keys);
+      setMessage('Order updated');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to reorder templates', err);
+      setError(err?.message || 'Unable to reorder templates');
+    } finally {
+      setReorderBusy(false);
+    }
+  }, [definitions, business.id]);
+
   const categoryEntries = useMemo(() => {
     return Array.from(groupedPlaceholders.entries())
       .map(([key, rows]) => ({ key, label: CATEGORY_LABELS[key] || startCase(key), rows }))
@@ -543,103 +642,144 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
         ]}
       />
 
-      <div className="flex flex-col gap-6 lg:flex-row">
-        <aside className="lg:w-64 flex-shrink-0 space-y-2">
-          {loading ? (
-            <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">Loading placeholders…</div>
-          ) : categoryEntries.length === 0 ? (
-            <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">No placeholders found.</div>
-          ) : (
-            categoryEntries.map(category => {
-              const isActive = activeCategory === category.key;
-              return (
-                <button
-                  key={category.key}
-                  type="button"
-                  onClick={() => setActiveCategory(category.key)}
-                  className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm transition ${isActive ? 'border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
-                >
-                  <span>{category.label}</span>
-                  <span className={`inline-flex h-5 min-w-[1.5rem] items-center justify-center rounded-full text-xs ${isActive ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>
-                    {category.rows.length}
-                  </span>
-                </button>
-              );
-            })
-          )}
-        </aside>
+      <div className="border-b border-slate-200">
+        <nav className="flex gap-2" aria-label="Templates manager sections" role="tablist">
+          {TEMPLATES_MANAGER_TABS.map(tab => {
+            const isActive = activeTab === tab.key;
+            const tabId = `templates-tab-${tab.key}`;
+            const panelId = `templates-panel-${tab.key}`;
+            return (
+              <button
+                key={tab.key}
+                id={tabId}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                className={`inline-flex items-center rounded-t-md border px-4 py-2 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 ${isActive ? 'border-slate-200 border-b-white bg-white text-indigo-700 shadow-sm' : 'border-transparent text-slate-500 hover:border-slate-200 hover:text-slate-700'}`}
+                aria-selected={isActive}
+                aria-controls={panelId}
+                role="tab"
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </nav>
+      </div>
 
-        <section className="flex-1 space-y-4">
-          <div className="rounded border border-slate-200 bg-white shadow-sm">
-            <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-700">Placeholders</h2>
-                <p className="mt-1 text-xs text-slate-500">Copy tokens and see where their data comes from.</p>
+      {activeTab === 'placeholders' ? (
+        <section
+          id="templates-panel-placeholders"
+          role="tabpanel"
+          aria-labelledby="templates-tab-placeholders"
+          className="space-y-6"
+        >
+          <div className="flex flex-col gap-6 lg:flex-row">
+            <aside className="lg:w-64 flex-shrink-0 space-y-2">
+              {loading ? (
+                <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">Loading placeholders…</div>
+              ) : categoryEntries.length === 0 ? (
+                <div className="rounded border border-slate-200 bg-white px-3 py-2 text-sm text-slate-500">No placeholders found.</div>
+              ) : (
+                categoryEntries.map(category => {
+                  const isActiveCategory = activeCategory === category.key;
+                  return (
+                    <button
+                      key={category.key}
+                      type="button"
+                      onClick={() => setActiveCategory(category.key)}
+                      className={`flex w-full items-center justify-between rounded-lg border px-3 py-2 text-sm transition ${isActiveCategory ? 'border-indigo-200 bg-indigo-50 text-indigo-700 font-semibold' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'}`}
+                    >
+                      <span>{category.label}</span>
+                      <span className={`inline-flex h-5 min-w-[1.5rem] items-center justify-center rounded-full text-xs ${isActiveCategory ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>
+                        {category.rows.length}
+                      </span>
+                    </button>
+                  );
+                })
+              )}
+            </aside>
+
+            <div className="flex-1">
+              <div className="rounded border border-slate-200 bg-white shadow-sm">
+                <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-slate-700">Placeholders</h2>
+                    <p className="mt-1 text-xs text-slate-500">Copy tokens and see where their data comes from.</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPlaceholdersCollapsed(prev => !prev)}
+                    className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    aria-expanded={!placeholdersCollapsed}
+                  >
+                    {placeholdersCollapsed ? 'Expand' : 'Collapse'}
+                  </button>
+                </header>
+                {!placeholdersCollapsed ? (
+                  <div className="px-4 py-3 space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">{activeCategoryLabel}</div>
+                    <div className="space-y-2">
+                      {loading ? (
+                        <div className="text-sm text-slate-500">Loading…</div>
+                      ) : !activePlaceholders.length ? (
+                        <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">No placeholders in this category.</div>
+                      ) : (
+                        activePlaceholders.map(field => {
+                          const placeholderToken = field.placeholder || field.field_key;
+                          const displayToken = `{{${placeholderToken}}}`;
+                          const sourcePath = valueSources[field.field_key]?.source_path || 'Calculated automatically';
+                          return (
+                            <div key={field.field_key} className="rounded border border-slate-200 px-3 py-2 flex flex-col gap-1 bg-white">
+                              <div className="flex items-center justify-between gap-2">
+                                <div>
+                                  <div className="text-sm font-semibold text-slate-700">{field.label || startCase(field.field_key)}</div>
+                                  <div className="text-xs text-slate-500">{displayToken}</div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopy(placeholderToken)}
+                                  className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                                >
+                                  Copy
+                                </button>
+                              </div>
+                              <div className="text-xs text-slate-500">
+                                Source: <span className="font-mono text-slate-600">{sourcePath}</span>
+                              </div>
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </div>
+            </div>
+          </div>
+        </section>
+      ) : null}
+
+      {activeTab === 'templates' ? (
+        <section
+          id="templates-panel-templates"
+          role="tabpanel"
+          aria-labelledby="templates-tab-templates"
+          className="rounded border border-slate-200 bg-white shadow-sm"
+        >
+          <header className="border-b border-slate-200 px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-slate-700">Templates</h2>
+              <p className="mt-1 text-xs text-slate-500">Manage and reorder document templates.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={() => setPlaceholdersCollapsed(prev => !prev)}
+                onClick={() => setTemplatesCollapsed(prev => !prev)}
                 className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                aria-expanded={!placeholdersCollapsed}
+                aria-expanded={!templatesCollapsed}
               >
-                {placeholdersCollapsed ? 'Expand' : 'Collapse'}
+                {templatesCollapsed ? 'Expand' : 'Collapse'}
               </button>
-            </header>
-            {!placeholdersCollapsed ? (
-              <div className="px-4 py-3 space-y-2">
-                <div className="text-xs uppercase tracking-wide text-slate-500">{activeCategoryLabel}</div>
-                <div className="space-y-2">
-                  {loading ? (
-                    <div className="text-sm text-slate-500">Loading…</div>
-                  ) : !activePlaceholders.length ? (
-                    <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">No placeholders in this category.</div>
-                  ) : (
-                    activePlaceholders.map(field => {
-                      const placeholderToken = field.placeholder || field.field_key;
-                      const displayToken = `{{${placeholderToken}}}`;
-                      const sourcePath = valueSources[field.field_key]?.source_path || 'Calculated automatically';
-                      return (
-                        <div key={field.field_key} className="rounded border border-slate-200 px-3 py-2 flex flex-col gap-1 bg-white">
-                        <div className="flex items-center justify-between gap-2">
-                          <div>
-                            <div className="text-sm font-semibold text-slate-700">{field.label || startCase(field.field_key)}</div>
-                            <div className="text-xs text-slate-500">{displayToken}</div>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => handleCopy(placeholderToken)}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                          >
-                            Copy
-                          </button>
-                        </div>
-                        <div className="text-xs text-slate-500">
-                          Source: <span className="font-mono text-slate-600">{sourcePath}</span>
-                        </div>
-                      </div>
-                    );
-                    })
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="rounded border border-slate-200 bg-white shadow-sm">
-            <header className="border-b border-slate-200 px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h2 className="text-sm font-semibold text-slate-700">Templates</h2>
-                <p className="mt-1 text-xs text-slate-500">Manage all document templates and quickly access related actions.</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTemplatesCollapsed(prev => !prev)}
-                  className="inline-flex items-center gap-1 rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                  aria-expanded={!templatesCollapsed}
-                >
-                  {templatesCollapsed ? 'Expand' : 'Collapse'}
-                </button>
                 <button
                   type="button"
                   onClick={handleOpenCreateDialog}
@@ -648,172 +788,278 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
                 >
                   {dialogBusy && dialogMode === 'create' ? 'Adding…' : 'Add template'}
                 </button>
-                <button
-                  type="button"
-                  onClick={async () => {
-                    if (normalizeAllBusy) return;
-                    const api = window.api;
-                    if (!api || typeof api.normalizeTemplate !== 'function') {
-                      setError('Normalize API unavailable');
-                      setTimeout(() => setError(''), 2500);
-                      return;
-                    }
-                    const paths = definitions
-                      .map(def => def.template_path)
-                      .filter(path => typeof path === 'string' && path.trim());
-                    if (!paths.length) {
-                      setMessage('No templates to normalize');
-                      setTimeout(() => setMessage(''), 2000);
-                      return;
-                    }
-                    const previousScroll = typeof window !== 'undefined' ? window.scrollY : 0;
-                    setNormalizeAllBusy(true);
-                    setMessage('Normalizing templates…');
-                    try {
-                      await Promise.all(paths.map(path => api.normalizeTemplate({ templatePath: path })));            
-                      setMessage('Templates normalized');
-                    } catch (err) {
-                      console.error('Normalize all failed', err);
-                      setError(err?.message || 'Unable to normalize templates');
-                    } finally {
-                      setNormalizeAllBusy(false);
-                      setTimeout(() => setMessage(''), 2500);
-                      restoreScroll(previousScroll);
-                    }
-                  }}
-                  disabled={normalizeAllBusy || !definitions.some(def => def.template_path)}
-                  className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+              <button
+                type="button"
+                onClick={async () => {
+                  if (normalizeAllBusy) return;
+                  const api = window.api;
+                  if (!api || typeof api.normalizeTemplate !== 'function') {
+                    setError('Normalize API unavailable');
+                    setTimeout(() => setError(''), 2500);
+                    return;
+                  }
+                  const paths = definitions
+                    .map(def => def.template_path)
+                    .filter(path => typeof path === 'string' && path.trim());
+                  if (!paths.length) {
+                    setMessage('No templates to normalize');
+                    setTimeout(() => setMessage(''), 2000);
+                    return;
+                  }
+                  const previousScroll = typeof window !== 'undefined' ? window.scrollY : 0;
+                  setNormalizeAllBusy(true);
+                  setMessage('Normalizing templates…');
+                  try {
+                    await Promise.all(paths.map(path => api.normalizeTemplate({ templatePath: path })));
+                    setMessage('Templates normalized');
+                  } catch (err) {
+                    console.error('Normalize all failed', err);
+                    setError(err?.message || 'Unable to normalize templates');
+                  } finally {
+                    setNormalizeAllBusy(false);
+                    setTimeout(() => setMessage(''), 2500);
+                    restoreScroll(previousScroll);
+                  }
+                }}
+                disabled={normalizeAllBusy || !definitions.some(def => def.template_path)}
+                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60"
                 >
                   {normalizeAllBusy ? 'Normalizing…' : 'Normalize all'}
                 </button>
-              </div>
-            </header>
-            {!templatesCollapsed ? (
-              <div className="px-4 py-3 space-y-3">
-                {loadingDefinitions ? (
-                  <div className="text-sm text-slate-500">Loading templates…</div>
-                ) : !definitions.length ? (
-                  <div className="text-sm text-slate-500">No document types configured yet.</div>
-                ) : (
-                  <>
-                    <div className="grid gap-2">
-                      <label className="flex items-center gap-2 text-sm text-slate-600">
-                        <span className="sr-only">Search templates</span>
-                        <input
-                          type="search"
-                          value={definitionSearch}
-                          onChange={event => setDefinitionSearch(event.target.value)}
-                          placeholder="Search templates"
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        />
-                      </label>
+                
+            </div>
+          </header>
+          {!templatesCollapsed ? (
+            <div className="px-4 py-3 space-y-3">
+              {loadingDefinitions ? (
+                <div className="text-sm text-slate-500">Loading templates…</div>
+              ) : !definitions.length ? (
+                <div className="text-sm text-slate-500">No document types configured yet.</div>
+              ) : (
+                <>
+                  <div className="grid gap-2">
+                    <label className="flex items-center gap-2 text-sm text-slate-600">
+                      <span className="sr-only">Search templates</span>
+                      <input
+                        type="search"
+                        value={definitionSearch}
+                        onChange={event => setDefinitionSearch(event.target.value)}
+                        placeholder="Search templates"
+                        className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </label>
+                  </div>
+                  {!filteredDefinitions.length ? (
+                    <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
+                      No templates match your filters.
                     </div>
-                    {!filteredDefinitions.length ? (
-                      <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-                        No templates match your filters.
-                      </div>
-                    ) : null}
-                    <div className="space-y-2">
-                      {filteredDefinitions.map(definition => {
+                  ) : null}
+                  <div className="space-y-2">
+                    {filteredDefinitions.map(definition => {
                       const templatePath = definition.template_path || '';
                       const isLocked = definition.is_locked === 1;
                       const isInactive = definition.is_active === 0;
 
-                      const actionButtons = [
-                        {
-                          label: 'Edit template',
-                          icon: '✏️',
-                          onClick: () => handleOpenEditDialog(definition),
-                          disabled: dialogBusy
-                        },
-                        {
-                          label: 'Replace file',
-                          icon: '📂',
-                          onClick: () => handleReplaceTemplate(definition),
-                          disabled: busyDefinitionKey === definition.key
-                        },
-                        {
-                          label: 'Open file',
-                          icon: '🔍',
-                          onClick: () => handleOpenTemplate(definition),
-                          disabled: !templatePath
-                        },
-                        {
-                          label: 'Clear path',
-                          icon: '🧹',
-                          onClick: () => handleClearTemplate(definition),
-                          disabled: busyDefinitionKey === definition.key || !templatePath
-                        },
-                        {
-                          label: definition.is_active === 0 ? 'Activate' : 'Deactivate',
-                          icon: definition.is_active === 0 ? '✅' : '🚫',
-                          onClick: () => handleToggleActive(definition),
-                          disabled: busyDefinitionKey === definition.key
-                        },
-                        {
-                          label: isLocked ? 'Unlock' : 'Lock',
-                          icon: isLocked ? '🔓' : '🔒',
-                          onClick: () => handleToggleLock(definition),
-                          disabled: busyDefinitionKey === definition.key
-                        },
-                        {
-                          label: 'Delete template',
-                          icon: '🗑️',
-                          onClick: () => handleDeleteDefinition(definition),
-                          disabled: busyDefinitionKey === definition.key
-                        }
-                      ];
+                      // actions moved into kebab menu
 
+                      const canReorder = !debouncedDefinitionSearch && !reorderBusy;
+                      const currentIndex = definitions.findIndex(d => d.key === definition.key);
+                      const isFirst = currentIndex <= 0;
+                      const isLast = currentIndex === definitions.length - 1;
                       return (
                         <div
                           key={definition.key}
-                          className="rounded border border-slate-200 bg-white px-3 py-2 shadow-sm transition hover:border-indigo-200 hover:shadow"
+                          className={`relative rounded border bg-white px-3 py-2 shadow-sm transition hover:border-indigo-200 hover:shadow border-slate-200`}
                         >
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div className="min-w-0 space-y-1">
-                              <div className="flex items-center gap-2">
-                                <span className="text-sm font-semibold text-slate-800 truncate" title={definition.label || definition.key}>
-                                  {definition.label || startCase(definition.key)}
-                                </span>
-                                
-                                {isLocked ? <span className="text-[11px] text-amber-600" title="Locked">🔒</span> : null}
-                                {isInactive ? <span className="text-[11px] text-rose-600" title="Inactive">⏸</span> : null}
-                              </div>
-                              <div className="text-xs text-slate-500 truncate" title={templatePath || 'No template selected'}>
-                                {templatePath || 'No template selected yet'}
-                              </div>
-                              <div className="flex flex-wrap gap-3 text-[11px] text-slate-500">
-                                <span>{definition.requires_total ? 'Requires totals' : 'No totals required'}</span>
-                                {definition.file_suffix ? <span title="File suffix">Suffix: {definition.file_suffix}</span> : null}
+                          <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-start gap-2 min-w-0">
+                                  {canReorder ? (
+                                <div className="flex flex-col items-center gap-1 w-7 flex-none" aria-hidden="false">
+                                  <button
+                                    type="button"
+                                    onClick={() => moveDefinition(definition.key, -1)}
+                                    disabled={reorderBusy || isFirst}
+                                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-100 bg-white text-[11px] text-slate-200 opacity-60 hover:opacity-100 hover:text-slate-700 hover:border-slate-300 hover:bg-slate-100 disabled:opacity-40"
+                                    title="Move up"
+                                    aria-label="Move up"
+                                  >
+                                    ▲
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => moveDefinition(definition.key, 1)}
+                                    disabled={reorderBusy || isLast}
+                                    className="inline-flex h-5 w-5 items-center justify-center rounded border border-slate-100 bg-white text-[11px] text-slate-200 opacity-60 hover:opacity-100 hover:text-slate-700 hover:border-slate-300 hover:bg-slate-100 disabled:opacity-40"
+                                    title="Move down"
+                                    aria-label="Move down"
+                                  >
+                                    ▼
+                                  </button>
+                                </div>
+                              ) : null}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-semibold text-slate-800 truncate" title={definition.label || definition.key}>
+                                    {definition.label || startCase(definition.key)}
+                                  </span>
+                                  {isInactive ? (
+                                    <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700" title="Inactive">
+                                      Inactive
+                                    </span>
+                                  ) : null}
+                                  {isLocked ? (
+                                    <span className="text-[11px] text-amber-600 align-middle" title="Locked">🔒</span>
+                                  ) : null}
+                                </div>
+                                <div className="text-xs text-slate-500 truncate mt-0.5" title={templatePath || 'No template selected'}>
+                                  {!templatePath ? (
+                                    <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700 mr-2">Missing file</span>
+                                  ) : null}
+                                  {templatePath || 'No template selected yet'}
+                                </div>
                               </div>
                             </div>
-                            <div className="flex flex-wrap items-center gap-2">
-                              {actionButtons.map(action => (
-                                <button
-                                  key={action.label}
-                                  type="button"
-                                  onClick={action.onClick}
-                                  disabled={action.disabled}
-                                  className="inline-flex h-9 w-9 items-center justify-center rounded border border-slate-300 text-lg hover:bg-slate-100 disabled:opacity-60"
-                                  title={action.label}
-                                  aria-label={action.label}
+                            <div className="relative ml-auto">
+                              <button
+                                type="button"
+                                onClick={() => setMenuOpenKey(menuOpenKey === definition.key ? '' : definition.key)}
+                                className="inline-flex h-9 w-9 items-center justify-center rounded border border-slate-300 text-lg hover:bg-slate-100"
+                                aria-haspopup="menu"
+                                aria-expanded={menuOpenKey === definition.key}
+                                aria-label="More actions"
+                              >
+                                ⋯
+                              </button>
+                              {menuOpenKey === definition.key ? (
+                                <div
+                                  ref={menuRef}
+                                  className="absolute right-0 z-20 mt-2 w-52 rounded border border-slate-200 bg-white p-1 shadow-lg"
+                                  role="menu"
+                                  onKeyDown={(e) => {
+                                    const items = Array.from(menuRef.current?.querySelectorAll('button[role="menuitem"]') || []);
+                                    if (!items.length) return;
+                                    const idx = items.indexOf(document.activeElement);
+                                    if (e.key === 'ArrowDown') {
+                                      e.preventDefault();
+                                      const next = items[(idx + 1 + items.length) % items.length];
+                                      next?.focus();
+                                    } else if (e.key === 'ArrowUp') {
+                                      e.preventDefault();
+                                      const prev = items[(idx - 1 + items.length) % items.length];
+                                      prev?.focus();
+                                    } else if (e.key === 'Home') {
+                                      e.preventDefault(); items[0]?.focus();
+                                    } else if (e.key === 'End') {
+                                      e.preventDefault(); items[items.length - 1]?.focus();
+                                    }
+                                  }}
                                 >
-                                  <span role="img" aria-hidden="true">{action.icon}</span>
-                                </button>
-                              ))}
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleOpenEditDialog(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100"
+                                    disabled={dialogBusy}
+                                    role="menuitem"
+                                  >
+                                    Edit template
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleReplaceTemplate(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={busyDefinitionKey === definition.key}
+                                    role="menuitem"
+                                  >
+                                    Replace file
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleOpenTemplate(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={!templatePath}
+                                    role="menuitem"
+                                  >
+                                    Open file
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); window.api?.showItemInFolder?.(templatePath); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={!templatePath}
+                                    role="menuitem"
+                                  >
+                                    Reveal in Finder
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      try {
+                                        if (templatePath && navigator?.clipboard?.writeText) {
+                                          await navigator.clipboard.writeText(templatePath);
+                                          setCopyFeedback('Template path copied');
+                                          setTimeout(() => setCopyFeedback(''), 2000);
+                                        }
+                                      } catch (_err) {}
+                                      setMenuOpenKey('');
+                                    }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={!templatePath}
+                                    role="menuitem"
+                                  >
+                                    Copy path
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleClearTemplate(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={busyDefinitionKey === definition.key || !templatePath}
+                                    role="menuitem"
+                                  >
+                                    Clear path
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleToggleActive(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={busyDefinitionKey === definition.key}
+                                    role="menuitem"
+                                  >
+                                    {definition.is_active === 0 ? 'Activate' : 'Deactivate'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleToggleLock(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                                    disabled={busyDefinitionKey === definition.key}
+                                    role="menuitem"
+                                  >
+                                    {isLocked ? 'Unlock' : 'Lock'}
+                                  </button>
+                                  <div className="my-1 border-t border-slate-200" />
+                                  <button
+                                    type="button"
+                                    onClick={() => { setMenuOpenKey(''); handleDeleteDefinition(definition); }}
+                                    className="block w-full rounded px-3 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50 disabled:opacity-60"
+                                    disabled={busyDefinitionKey === definition.key}
+                                    role="menuitem"
+                                  >
+                                    Delete template
+                                  </button>
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         </div>
                       );
-                      })}
-                    </div>
-                  </>
-                )}
-              </div>
-            ) : null}
-          </div>
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : null}
         </section>
-      </div>
+      ) : null}
+
       {dialogOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4 py-6">
           <div className="w-full max-w-md rounded-lg bg-white shadow-xl">
@@ -851,28 +1097,9 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
                 />
               </label>
 
-              <label className="block text-sm font-medium text-slate-700">
-                File suffix (optional)
-                <input
-                  type="text"
-                  value={dialogFileSuffix}
-                  onChange={event => setDialogFileSuffix(event.target.value)}
-                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  placeholder="e.g. - Quote"
-                  disabled={dialogBusy}
-                />
-              </label>
+              {/* Suffix field removed */}
 
-              <label className="flex items-center gap-2 text-sm text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={Boolean(dialogRequiresTotal)}
-                  onChange={event => setDialogRequiresTotal(event.target.checked)}
-                  disabled={dialogBusy}
-                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                Requires totals
-              </label>
+              {/* Requires totals removed */}
 
               <div className="space-y-1">
                 <div className="flex items-center justify-between text-sm font-medium text-slate-700">

@@ -1,10 +1,12 @@
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
 const ExcelJS = require('exceljs');
 const db = require('./db');
 
 const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
 const TEMPLATE_BINDING_KEY = 'ahmen_excel';
+const PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
 const DEFAULT_FIELD_VALUE_SOURCES = {
   client_name: 'jobsheet.client_name',
   client_email: 'jobsheet.client_email',
@@ -46,6 +48,10 @@ function resolvePath(targetPath) {
   return resolved;
 }
 
+const SPLIT_WORKBOOKS_DIR = process.env.SPLIT_WORKBOOKS_DIR || '/Users/motticohen/Dropbox/My Invoicing App/AhMen/TEMPLATES';
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
 async function pathExists(targetPath) {
   if (!targetPath) return false;
   try {
@@ -65,6 +71,17 @@ function isSubPath(parentPath, childPath) {
 
 async function ensureFileAccessible(resolvedPath) {
   await fs.promises.access(resolvedPath, fs.constants.R_OK);
+}
+
+async function waitForFile(targetPath, timeoutMs) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (await pathExists(targetPath)) {
+      return true;
+    }
+    await sleep(300);
+  }
+  return false;
 }
 
 async function normalizeTemplate(args = {}) {
@@ -235,6 +252,87 @@ async function fillWorkbook(workbook, bindings, valueSources, context) {
   });
 }
 
+function collectPlaceholderKeys(workbook) {
+  const keys = new Set();
+  workbook.eachSheet(worksheet => {
+    worksheet.eachRow(row => {
+      row.eachCell(cell => {
+        const value = cell?.value;
+        if (typeof value === 'string') {
+          let match;
+          PLACEHOLDER_PATTERN.lastIndex = 0;
+          while ((match = PLACEHOLDER_PATTERN.exec(value)) !== null) {
+            if (match[1]) keys.add(match[1]);
+          }
+        } else if (value && typeof value === 'object' && Array.isArray(value.richText)) {
+          value.richText.forEach(fragment => {
+            if (!fragment?.text) return;
+            let match;
+            PLACEHOLDER_PATTERN.lastIndex = 0;
+            while ((match = PLACEHOLDER_PATTERN.exec(fragment.text)) !== null) {
+              if (match[1]) keys.add(match[1]);
+            }
+          });
+        }
+      });
+    });
+  });
+  return keys;
+}
+
+function replaceWorkbookPlaceholders(workbook, valueSources, context) {
+  const fallbackPaths = DEFAULT_FIELD_VALUE_SOURCES;
+
+  const resolvePlaceholder = (fieldKey) => (
+    resolveFieldValue(fieldKey, valueSources, context, fallbackPaths[fieldKey])
+  );
+
+  workbook.eachSheet(worksheet => {
+    worksheet.eachRow(row => {
+      row.eachCell(cell => {
+        const current = cell?.value;
+        if (typeof current === 'string') {
+          PLACEHOLDER_PATTERN.lastIndex = 0;
+          const updated = current.replace(PLACEHOLDER_PATTERN, (match, key) => {
+            if (!key) return '';
+            const resolved = resolvePlaceholder(key);
+            if (resolved === undefined || resolved === null) return '';
+            if (resolved instanceof Date) return formatDateHuman(resolved) || '';
+            if (typeof resolved === 'number' && Number.isFinite(resolved)) return resolved.toString();
+            return resolved != null ? resolved.toString() : '';
+          });
+          if (updated !== current) {
+            cell.value = updated;
+          }
+        } else if (current && typeof current === 'object' && Array.isArray(current.richText)) {
+          let changed = false;
+          const richText = current.richText.map(fragment => {
+            if (!fragment?.text) return fragment;
+            const original = fragment.text;
+            PLACEHOLDER_PATTERN.lastIndex = 0;
+            const updated = original.replace(PLACEHOLDER_PATTERN, (match, key) => {
+              if (!key) return '';
+              const resolved = resolvePlaceholder(key);
+              if (resolved === undefined || resolved === null) return '';
+              if (resolved instanceof Date) return formatDateHuman(resolved) || '';
+              if (typeof resolved === 'number' && Number.isFinite(resolved)) return resolved.toString();
+              return resolved != null ? resolved.toString() : '';
+            });
+            if (updated !== original) {
+              changed = true;
+              return { ...fragment, text: updated };
+            }
+            return fragment;
+          });
+          if (changed) {
+            cell.value = { ...current, richText };
+          }
+        }
+      });
+    });
+  });
+}
+
 function sanitizeWorkbookValues(workbook) {
   workbook.eachSheet(worksheet => {
     worksheet.eachRow(row => {
@@ -287,6 +385,108 @@ function sanitizeWorkbookValues(workbook) {
       });
     });
   });
+}
+
+async function saveWorkbookAsPdf(sourcePath, targetPath) {
+  await fs.promises.rm(targetPath, { force: true }).catch(() => {});
+
+  const osaArgs = [
+    '-e', 'on run argv',
+    '-e', 'if (count of argv) < 2 then return',
+    '-e', 'set workbookPosixPath to item 1 of argv',
+    '-e', 'set targetPdfPosix to item 2 of argv',
+    '-e', 'set workbookAlias to POSIX file workbookPosixPath',
+    '-e', 'set pdfAlias to POSIX file targetPdfPosix',
+    '-e', 'tell application "Microsoft Excel"',
+    '-e', 'launch',
+    '-e', 'set wb to open workbook workbook file name workbookPosixPath',
+    '-e', 'save workbook wb in pdfAlias as PDF file format',
+    '-e', 'close workbook wb saving no',
+    '-e', 'end tell',
+    '-e', 'end run',
+    sourcePath,
+    targetPath
+  ];
+
+  await new Promise((resolve, reject) => {
+    execFile('osascript', osaArgs, (error, stdout, stderr) => {
+      if (error) {
+        const message = (stderr || stdout || error.message || '').toString().trim();
+        reject(new Error(message || 'Unable to export workbook to PDF'));
+        return;
+      }
+      resolve();
+    });
+  });
+
+  const created = await waitForFile(targetPath, 20000);
+  if (!created) {
+    throw new Error(`Excel did not create ${targetPath}`);
+  }
+}
+
+function parseWorkbookName(filePath) {
+  const baseName = path.basename(filePath, path.extname(filePath));
+  const lastSeparator = baseName.lastIndexOf(' - ');
+  if (lastSeparator === -1) {
+    return {
+      baseName,
+      prefix: baseName,
+      suffix: baseName
+    };
+  }
+  return {
+    baseName,
+    prefix: baseName.slice(0, lastSeparator),
+    suffix: baseName.slice(lastSeparator + 3)
+  };
+}
+
+async function findRelatedWorkbooks(seedPath) {
+  const info = parseWorkbookName(seedPath);
+  const directories = new Set();
+  const seedDir = path.dirname(seedPath);
+  if (seedDir) directories.add(seedDir);
+  if (SPLIT_WORKBOOKS_DIR) {
+    try {
+      directories.add(path.resolve(SPLIT_WORKBOOKS_DIR));
+    } catch (_err) {
+      // ignore resolution errors
+    }
+  }
+
+  const results = new Map();
+
+  for (const dir of directories) {
+    if (!dir) continue;
+    let exists = false;
+    try {
+      exists = await pathExists(dir);
+    } catch (_err) {
+      exists = false;
+    }
+    if (!exists) continue;
+
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir);
+    } catch (_err) {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (!entry.toLowerCase().endsWith('.xlsx')) continue;
+      const fullPath = path.join(dir, entry);
+      const entryInfo = parseWorkbookName(fullPath);
+      if (entryInfo.prefix !== info.prefix) continue;
+      const resolved = path.resolve(fullPath);
+      if (!results.has(resolved)) {
+        results.set(resolved, { path: resolved, info: entryInfo });
+      }
+    }
+  }
+
+  return Array.from(results.values());
 }
 
 function formatDisplayDate(dateInput) {
@@ -378,10 +578,13 @@ async function createWorkbookDocument(payload = {}) {
   await workbook.xlsx.readFile(templatePath);
 
   const bindings = await db.getMergeFieldBindingsByTemplate(TEMPLATE_BINDING_KEY);
-  const fieldKeys = [...new Set((bindings || []).map(binding => binding.field_key).filter(Boolean))];
-  const valueSources = await db.getMergeFieldValueSources(fieldKeys);
+  const placeholderKeys = collectPlaceholderKeys(workbook);
+  const fieldKeySet = new Set((bindings || []).map(binding => binding.field_key).filter(Boolean));
+  placeholderKeys.forEach(key => fieldKeySet.add(key));
+  const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
 
   await fillWorkbook(workbook, bindings, valueSources, context);
+  replaceWorkbookPlaceholders(workbook, valueSources, context);
   workbook.calcProperties = workbook.calcProperties || {};
   workbook.calcProperties.fullCalcOnLoad = true;
   sanitizeWorkbookValues(workbook);
@@ -517,6 +720,145 @@ async function filterDocumentsByExistingFiles(documents, options = {}) {
   return enriched.filter(doc => doc.file_available);
 }
 
+
+async function listJobsheetDocuments(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('businessId is required to list jobsheet documents.');
+  }
+
+  const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+  const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+
+  const documents = await db.getDocuments({ businessId });
+  const enriched = await filterDocumentsByExistingFiles(documents, { includeMissing: true });
+
+  const folderSet = new Set();
+
+  const mapped = enriched.map((doc) => {
+    const filePath = doc?.file_path || null;
+    const fileName = filePath ? path.basename(filePath) : null;
+    const folderPath = filePath ? path.dirname(filePath) : null;
+    if (folderPath) folderSet.add(folderPath);
+
+    let parsed = null;
+    if (filePath) {
+      try {
+        parsed = parseWorkbookName(filePath);
+      } catch (_err) {
+        parsed = null;
+      }
+    }
+
+    const label = doc?.definition_label
+      || doc?.label
+      || fileName
+      || doc?.doc_type
+      || 'Document';
+
+    return {
+      ...doc,
+      file_name: fileName,
+      file_prefix: null,
+      file_suffix: null,
+      display_label: label,
+      folder_path: folderPath
+    };
+  });
+
+  let jobsheetFolder = null;
+  try {
+    const business = await db.getBusinessById(businessId);
+    if (business?.save_path) {
+      const payload = {
+        business_id: businessId,
+        jobsheet_id: jobsheetId,
+        jobsheet_snapshot: options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object'
+          ? { ...options.jobsheetSnapshot }
+          : {},
+        client_override: options.clientOverride && typeof options.clientOverride === 'object'
+          ? { ...options.clientOverride }
+          : {},
+        event_override: options.eventOverride && typeof options.eventOverride === 'object'
+          ? { ...options.eventOverride }
+          : {},
+        pricing_snapshot: options.pricingSnapshot && typeof options.pricingSnapshot === 'object'
+          ? { ...options.pricingSnapshot }
+          : {}
+      };
+      const context = buildContext(payload, business);
+      try {
+        jobsheetFolder = buildOutputDirectory(business, context, payload, 'Documents');
+      } catch (_err) {
+        jobsheetFolder = null;
+      }
+    }
+  } catch (_err) {
+    jobsheetFolder = null;
+  }
+
+  const folders = Array.from(folderSet);
+
+  return {
+    documents: mapped,
+    folders,
+    jobsheet_folder: jobsheetFolder
+  };
+}
+
+
+async function exportWorkbookPdfs(options = {}) {
+  const providedPath = options.filePath || options.file_path;
+  if (!providedPath || typeof providedPath !== 'string') {
+    throw new Error('filePath is required to export PDFs.');
+  }
+
+  const normalizedPath = path.resolve(providedPath.trim());
+  await ensureFileAccessible(normalizedPath);
+
+  const masterInfo = parseWorkbookName(normalizedPath);
+  const jobDirectory = path.dirname(normalizedPath);
+
+  const relatedWorkbooks = await findRelatedWorkbooks(normalizedPath);
+  const workbooks = [{ path: normalizedPath, info: masterInfo }];
+  relatedWorkbooks.forEach(entry => {
+    if (!entry || !entry.path) return;
+    if (path.resolve(entry.path) === path.resolve(normalizedPath)) return;
+    workbooks.push(entry);
+  });
+
+  const outputs = [];
+
+  for (const entry of workbooks) {
+    const workbookPath = entry.path;
+    const info = entry.info || parseWorkbookName(workbookPath);
+    const targetPdfName = `${info.baseName}.pdf`;
+    const targetPdfPath = path.join(jobDirectory, targetPdfName);
+
+    try {
+      await saveWorkbookAsPdf(workbookPath, targetPdfPath);
+      outputs.push({
+        success: true,
+        sheet: info.suffix,
+        label: `PDF`,
+        file_path: targetPdfPath
+      });
+    } catch (err) {
+      outputs.push({
+        success: false,
+        sheet: info.suffix,
+        error: err?.message || 'Unable to export sheet'
+      });
+    }
+  }
+
+  const ok = outputs.some(item => item.success);
+  return {
+    ok,
+    workbook_path: normalizedPath,
+    outputs
+  };
+}
 
 async function syncJobsheetOutputs(options = {}) {
   const businessId = Number(options.businessId ?? options.business_id ?? options.id);
@@ -704,9 +1046,11 @@ async function deleteDocument(documentId, options = {}) {
 module.exports = {
   normalizeTemplate,
   createDocument,
+  exportWorkbookPdfs,
   deleteDocument,
   syncJobsheetOutputs,
   watchDocumentsFolder,
   unwatchDocumentsFolder,
-  filterDocumentsByExistingFiles
+  filterDocumentsByExistingFiles,
+  listJobsheetDocuments
 };
