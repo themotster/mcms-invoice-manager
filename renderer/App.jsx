@@ -28,6 +28,7 @@ const AHMEN_BOOLEAN_FIELDS = new Set(['venue_same_as_client']);
 const STATUS_OPTIONS = [
   { value: 'enquiry', label: 'Enquiry' },
   { value: 'quoted', label: 'Quoted' },
+  { value: 'contracting', label: 'Contracting (gate open)' },
   { value: 'confirmed', label: 'Confirmed' },
   { value: 'completed', label: 'Completed' }
 ];
@@ -156,6 +157,7 @@ function createDefinitionDraft(overrides = {}) {
 const STATUS_STYLES = {
   enquiry: 'bg-yellow-100 text-yellow-800 border border-yellow-200',
   quoted: 'bg-blue-100 text-blue-800 border border-blue-200',
+  contracting: 'bg-indigo-100 text-indigo-800 border border-indigo-200',
   confirmed: 'bg-green-100 text-green-800 border border-green-200',
   completed: 'bg-gray-200 text-gray-700 border border-gray-300'
 };
@@ -163,6 +165,7 @@ const STATUS_STYLES = {
 const STATUS_ROW_CLASSES = {
   enquiry: 'bg-yellow-100',
   quoted: 'bg-blue-100',
+  contracting: 'bg-indigo-100',
   confirmed: 'bg-green-100',
   completed: 'bg-gray-200'
 };
@@ -170,6 +173,7 @@ const STATUS_ROW_CLASSES = {
 const ACTIVE_STATUS_ROW_CLASSES = {
   enquiry: 'bg-yellow-400',
   quoted: 'bg-blue-400',
+  contracting: 'bg-indigo-400',
   confirmed: 'bg-green-400',
   completed: 'bg-gray-500'
 };
@@ -182,6 +186,7 @@ const STATUS_ORDER = STATUS_OPTIONS.reduce((acc, option, index) => {
 const STATUS_DOT_CLASSES = {
   enquiry: 'bg-yellow-400',
   quoted: 'bg-blue-400',
+  contracting: 'bg-indigo-400',
   confirmed: 'bg-green-500',
   completed: 'bg-slate-400'
 };
@@ -2940,6 +2945,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
 function DocumentsInlinePanel({
   jobsheetId,
+  jobsheetStatus,
   documents,
   documentDefinitions,
   loading,
@@ -3012,8 +3018,14 @@ function DocumentsInlinePanel({
   });
 
   const handleGenerate = (key) => onGenerate?.(key);
+  const statusKey = normalizeStatus(jobsheetStatus) || 'enquiry';
+  const invoiceGateOpen = statusKey === 'contracting' || statusKey === 'confirmed' || statusKey === 'completed';
   const canGenerateAll = Boolean(
-    jobsheetId && excelItems.some(i => i.def && i.def.template_path && !(i.doc && i.doc.file_path) && !(i.doc && i.doc.is_locked)) && !definitionsLoading
+    jobsheetId && excelItems.some(i => {
+      const isInvoiceDef = i.def && (i.def.invoice_variant === 'deposit' || i.def.invoice_variant === 'balance');
+      const gateOk = isInvoiceDef ? invoiceGateOpen : true;
+      return gateOk && i.def && i.def.template_path && !(i.doc && i.doc.file_path) && !(i.doc && i.doc.is_locked);
+    }) && !definitionsLoading
   );
 
   const handleExportForDef = async (item) => {
@@ -3021,6 +3033,11 @@ function DocumentsInlinePanel({
     const { def, wbDoc, pdfDoc } = item;
     const exported = Boolean(pdfDoc && pdfDoc.file_path);
     if (exported || (pdfDoc && pdfDoc.is_locked)) return;
+    const isInvoiceDef = def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance');
+    if (isInvoiceDef && !invoiceGateOpen) {
+      error && console.warn('Invoice export gated: move job to Contracting or Confirmed');
+      return;
+    }
     if (!wbDoc || !wbDoc.file_path) {
       const proceed = window.confirm('No workbook found for this document. Generate it first?');
       if (!proceed) return;
@@ -3075,7 +3092,9 @@ function DocumentsInlinePanel({
             {excelItems.map(({ def, doc, label }) => {
               const generated = Boolean(doc && doc.file_path);
               const locked = Boolean(doc?.is_locked);
-              const disabled = !jobsheetId || !def || !def.template_path || definitionsLoading || locked || Boolean(doc?.file_path);
+              const isInvoiceDef = def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance');
+              const gateOk = isInvoiceDef ? invoiceGateOpen : true;
+              const disabled = !jobsheetId || !def || !def.template_path || definitionsLoading || locked || Boolean(doc?.file_path) || !gateOk;
               return (
                 <div key={def ? def.key : `missing:${label}`} className="flex items-center justify-between rounded px-2 py-2">
                   <div className="min-w-0">
@@ -3929,6 +3948,7 @@ function JobsheetEditor({
                       <DocumentsInlinePanel
                         key="documentsPanel"
                         jobsheetId={jobsheetId}
+                        jobsheetStatus={formState.status}
                         documentDefinitions={documentDefinitions}
                         documents={documents}
                         loading={documentsLoading}

@@ -208,7 +208,7 @@ const AHMEN_JOBSHEET_INTEGER_FIELDS = new Set([
   'venue_id'
 ]);
 
-const AHMEN_JOBSHEET_STATUS_VALUES = new Set(['enquiry', 'quoted', 'confirmed', 'completed']);
+const AHMEN_JOBSHEET_STATUS_VALUES = new Set(['enquiry', 'quoted', 'contracting', 'confirmed', 'completed']);
 
 const AHMEN_VENUE_FIELDS = [
   'business_id',
@@ -495,6 +495,9 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN definition_key TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN invoice_variant TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN reminder_date TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN reminder_sent_at TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN paid_at TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN is_locked INTEGER DEFAULT 0', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
@@ -3082,6 +3085,14 @@ module.exports = {
         updates.push('due_date = ?');
         params.push(data.due_date);
       }
+      if (data.reminder_date !== undefined) {
+        updates.push('reminder_date = ?');
+        params.push(data.reminder_date);
+      }
+      if (data.paid_at !== undefined) {
+        updates.push('paid_at = ?');
+        params.push(data.paid_at);
+      }
       if (data.file_path !== undefined) {
         updates.push('file_path = ?');
         params.push(data.file_path);
@@ -3333,6 +3344,39 @@ module.exports = {
         (err, row) => {
           if (err) reject(err);
           else resolve(row || null);
+        }
+      );
+    });
+  },
+  getMaxInvoiceNumber: (businessId) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      if (!Number.isInteger(id)) {
+        resolve(null);
+        return;
+      }
+      db.get(
+        `SELECT MAX(number) AS maxnum FROM documents WHERE business_id = ? AND lower(doc_type) = 'invoice'`,
+        [id],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row?.maxnum != null ? Number(row.maxnum) : null);
+        }
+      );
+    });
+  },
+  setLastInvoiceNumber: (businessId, nextVal) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      const val = Number(nextVal);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid business id')); return; }
+      if (!Number.isInteger(val) || val < 0) { reject(new Error('Invalid invoice number')); return; }
+      db.run(
+        `UPDATE business_settings SET last_invoice_number = ? WHERE id = ?`,
+        [val, id],
+        function (err) {
+          if (err) reject(err);
+          else resolve();
         }
       );
     });
