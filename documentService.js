@@ -1,12 +1,23 @@
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+let chokidar = null;
+try { chokidar = require('chokidar'); } catch (_err) { chokidar = null; }
 const ExcelJS = require('exceljs');
 const db = require('./db');
 
 const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
 const TEMPLATE_BINDING_KEY = 'ahmen_excel';
 const PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+
+function normalizeTokenKey(value) {
+  if (!value) return '';
+  return String(value)
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
 const DEFAULT_FIELD_VALUE_SOURCES = {
   client_name: 'jobsheet.client_name',
   client_email: 'jobsheet.client_email',
@@ -27,7 +38,8 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   venue_town: 'jobsheet.venue_town',
   venue_postcode: 'jobsheet.venue_postcode',
   caterer_name: 'jobsheet.caterer_name',
-  ahmen_fee: 'context.totalAmount',
+  // AhMen singer fee should come from the jobsheet-sourced value
+  ahmen_fee: 'jobsheet.ahmen_fee',
   total_amount: 'context.totalAmount',
   extra_fees: 'context.extraFees',
   production_fees: 'context.productionFees',
@@ -51,6 +63,41 @@ function resolvePath(targetPath) {
 const SPLIT_WORKBOOKS_DIR = process.env.SPLIT_WORKBOOKS_DIR || '/Users/motticohen/Dropbox/My Invoicing App/AhMen/TEMPLATES';
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Graceful Excel shutdown scheduler so batch exports can keep Excel open
+let excelQuitTimer = null;
+let excelShouldQuitAtEnd = null; // set per batch based on whether Excel was running at batch start
+
+async function isExcelRunning() {
+  return await new Promise(resolve => {
+    try {
+      execFile('osascript', ['-e', 'tell application "System Events" to (exists process "Microsoft Excel")'], (error, stdout) => {
+        if (error) return resolve(false);
+        const text = (stdout || '').toString().trim().toLowerCase();
+        resolve(text === 'true' || text === 'yes');
+      });
+    } catch (_err) {
+      resolve(false);
+    }
+  });
+}
+
+function scheduleExcelQuit(delayMs = 10000) {
+  try { if (excelQuitTimer) clearTimeout(excelQuitTimer); } catch (_) {}
+  if (!excelShouldQuitAtEnd) {
+    // Do not schedule quit if Excel was already running at batch start
+    return;
+  }
+  excelQuitTimer = setTimeout(() => {
+    try {
+      execFile('osascript', ['-e', 'tell application "Microsoft Excel" to quit saving no'], () => {});
+    } catch (_) { /* ignore */ }
+    // Reset batch state after quit attempt
+    try { if (excelQuitTimer) clearTimeout(excelQuitTimer); } catch (_) {}
+    excelQuitTimer = null;
+    excelShouldQuitAtEnd = null;
+  }, Math.max(0, Number(delayMs) || 0));
+}
 
 async function pathExists(targetPath) {
   if (!targetPath) return false;
@@ -194,6 +241,15 @@ function resolveFieldValue(fieldKey, valueSources, context, fallbackPath) {
   return undefined;
 }
 
+function toExcelDate(value) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.valueOf()) ? null : value;
+  }
+  const dt = new Date(value);
+  return Number.isNaN(dt.valueOf()) ? null : dt;
+}
+
 function coerceCellValue(rawValue, binding) {
   if (rawValue === undefined || rawValue === null || rawValue === '') {
     return '';
@@ -212,12 +268,25 @@ function coerceCellValue(rawValue, binding) {
 
   const { data_type: dataType = 'string', format } = binding || {};
 
+  // Prefer true Excel date (Date object) when data_type requests a date
+  if (dataType === 'date') {
+    const d = toExcelDate(rawValue);
+    return d || '';
+  }
+
+  // Legacy/support: allow explicit request for a human string
   if (format === 'date_human') {
     return formatDateHuman(rawValue);
   }
 
   if (dataType === 'number') {
-    const numeric = Number(rawValue);
+    let numeric;
+    if (typeof rawValue === 'string') {
+      const cleaned = rawValue.replace(/[^0-9.\-]+/g, '');
+      numeric = Number(cleaned);
+    } else {
+      numeric = Number(rawValue);
+    }
     return Number.isFinite(numeric) ? numeric : null;
   }
 
@@ -230,6 +299,36 @@ function coerceCellValue(rawValue, binding) {
   }
 
   return rawValue;
+}
+
+function applyNumberFormat(cell, binding) {
+  if (!cell || !binding) return;
+  const fmt = (binding.format || '').toLowerCase();
+  const dataType = (binding.data_type || '').toLowerCase();
+  let numFmt = null;
+  if (dataType === 'date') {
+    // Enforce long UK-style date: 15 October 2025
+    numFmt = 'dd mmmm yyyy';
+  } else if (dataType === 'number') {
+    if (fmt === 'percentage' || fmt === 'percent') numFmt = '0.00%';
+    else if (fmt === 'integer' || fmt === 'whole') numFmt = '0';
+    else if (fmt === 'decimal_2' || fmt === 'decimal2' || fmt === 'number_2dp') numFmt = '#,##0.00';
+    else if (fmt === 'currency' || fmt === 'money' || fmt === 'gbp' || fmt === '£') numFmt = '£#,##0.00';
+  }
+  if (!numFmt) return;
+  try {
+    // Always enforce date format. For numbers, override when format is currency
+    // or when the existing format is blank, General, or Text ('@').
+    if (dataType === 'date') {
+      cell.numFmt = numFmt;
+    } else {
+      const existing = (cell.numFmt || '').toString().toLowerCase();
+      const shouldOverride = !existing || existing === 'general' || existing === '@' || fmt === 'currency' || fmt === 'money' || fmt === 'gbp' || fmt === '£';
+      if (shouldOverride) {
+        cell.numFmt = numFmt;
+      }
+    }
+  } catch (_err) {}
 }
 
 async function fillWorkbook(workbook, bindings, valueSources, context) {
@@ -249,6 +348,7 @@ async function fillWorkbook(workbook, bindings, valueSources, context) {
     const value = resolveFieldValue(binding.field_key, valueSources, context, fallbackPaths[binding.field_key]);
     const coerced = coerceCellValue(value, binding);
     cell.value = coerced;
+    applyNumberFormat(cell, binding);
   });
 }
 
@@ -280,31 +380,225 @@ function collectPlaceholderKeys(workbook) {
   return keys;
 }
 
-function replaceWorkbookPlaceholders(workbook, valueSources, context) {
+function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholderMap = new Map()) {
   const fallbackPaths = DEFAULT_FIELD_VALUE_SOURCES;
 
-  const resolvePlaceholder = (fieldKey) => (
-    resolveFieldValue(fieldKey, valueSources, context, fallbackPaths[fieldKey])
-  );
+  // Keys that should be rendered as currency (GBP) when used as placeholders
+  const CURRENCY_KEYS = new Set([
+    'ahmen_fee',
+    'total_amount',
+    'extra_fees',
+    'production_fees',
+    'deposit_amount',
+    'balance_amount'
+  ]);
+
+  // Keys that represent dates
+  const DATE_KEYS = new Set([
+    'event_date',
+    'balance_due_date',
+    'balance_reminder_date',
+    'document_date'
+  ]);
+
+  const formatCurrency = (val) => {
+    const num = Number(val);
+    if (!Number.isFinite(num)) return '';
+    try {
+      return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(num);
+    } catch (_err) {
+      // Fallback if Intl fails for any reason
+      return `£${num.toFixed(2)}`;
+    }
+  };
+
+  const toNumeric = (val) => {
+    if (val === null || val === undefined) return null;
+    if (typeof val === 'number') return Number.isFinite(val) ? val : null;
+    const cleaned = String(val).replace(/[^0-9.\-]+/g, '');
+    const n = Number(cleaned);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  const resolvePlaceholder = (rawKey) => {
+    const lookup = String(rawKey || '').toLowerCase();
+    const slug = normalizeTokenKey(lookup);
+    const fieldKey = placeholderMap.get(lookup) || placeholderMap.get(slug) || rawKey;
+    return resolveFieldValue(fieldKey, valueSources, context, fallbackPaths[fieldKey]);
+  };
+
+  const renderValueForPlaceholder = (fieldKey, value) => {
+    const keyLower = String(fieldKey || '').toLowerCase();
+    if (value === undefined || value === null) return '';
+    if (value instanceof Date) return formatDateHuman(value) || '';
+    if (DATE_KEYS.has(keyLower)) return formatDateHuman(value);
+    if (CURRENCY_KEYS.has(keyLower)) return formatCurrency(value);
+    if (typeof value === 'number' && Number.isFinite(value)) return value.toString();
+    return value != null ? value.toString() : '';
+  };
+
+  const tokenKeys = Array.from(placeholderMap.keys());
 
   workbook.eachSheet(worksheet => {
     worksheet.eachRow(row => {
       row.eachCell(cell => {
         const current = cell?.value;
         if (typeof current === 'string') {
+          // If the entire cell is a single placeholder like {{AHMEN_FEE}}, write a typed value
+          const singleToken = current.trim().match(/^{{\s*([a-zA-Z0-9_.-]+)\s*}}$/);
+          if (singleToken) {
+            const rawKey = singleToken[1];
+            const mappedKey = placeholderMap.get(String(rawKey).toLowerCase()) || rawKey;
+            const resolved = resolvePlaceholder(rawKey);
+            if (resolved === undefined || resolved === null) {
+              cell.value = '';
+            } else if (DATE_KEYS.has(String(mappedKey).toLowerCase())) {
+              const dt = toExcelDate(resolved);
+              if (dt) {
+                cell.value = dt;
+                applyNumberFormat(cell, { data_type: 'date' });
+              } else {
+                cell.value = formatDateHuman(resolved) || '';
+              }
+            } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
+              cell.value = resolved;
+              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
+                applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+              }
+            } else {
+              // Attempt to coerce numeric strings for currency keys
+              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
+                const n = toNumeric(resolved);
+                if (n !== null) {
+                  cell.value = n;
+                  applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+                } else {
+                  cell.value = renderValueForPlaceholder(mappedKey, resolved);
+                }
+              } else {
+                cell.value = renderValueForPlaceholder(mappedKey, resolved);
+              }
+            }
+            return; // handled this cell
+          }
           PLACEHOLDER_PATTERN.lastIndex = 0;
           const updated = current.replace(PLACEHOLDER_PATTERN, (match, key) => {
             if (!key) return '';
+            const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
             const resolved = resolvePlaceholder(key);
-            if (resolved === undefined || resolved === null) return '';
-            if (resolved instanceof Date) return formatDateHuman(resolved) || '';
-            if (typeof resolved === 'number' && Number.isFinite(resolved)) return resolved.toString();
-            return resolved != null ? resolved.toString() : '';
+            return renderValueForPlaceholder(mappedKey, resolved);
           });
           if (updated !== current) {
             cell.value = updated;
+          } else {
+            // Fallback: exact token match without braces
+            const trimmedLower = current.trim().toLowerCase();
+            if (tokenKeys.includes(trimmedLower)) {
+              const fieldKey = placeholderMap.get(trimmedLower) || placeholderMap.get(normalizeTokenKey(trimmedLower)) || trimmedLower;
+              const resolved = resolvePlaceholder(fieldKey);
+              if (resolved === undefined || resolved === null) {
+                cell.value = '';
+              } else if (resolved instanceof Date) {
+                if (DATE_KEYS.has(String(fieldKey).toLowerCase())) {
+                  cell.value = toExcelDate(resolved) || '';
+                  applyNumberFormat(cell, { data_type: 'date' });
+                } else {
+                  cell.value = formatDateHuman(resolved) || '';
+                }
+              } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
+                if (CURRENCY_KEYS.has(String(fieldKey).toLowerCase())) {
+                  // Keep numeric value for Excel but enforce currency formatting
+                  cell.value = resolved;
+                  applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+                } else {
+                  cell.value = resolved;
+                }
+              } else {
+                if (DATE_KEYS.has(String(fieldKey).toLowerCase())) {
+                  const dt = toExcelDate(resolved);
+                  if (dt) {
+                    cell.value = dt;
+                    applyNumberFormat(cell, { data_type: 'date' });
+                  } else {
+                    cell.value = formatDateHuman(resolved);
+                  }
+                } else {
+                  cell.value = resolved.toString();
+                }
+              }
+            }
           }
         } else if (current && typeof current === 'object' && Array.isArray(current.richText)) {
+          // If the entire richText content is a single placeholder token, write a typed value
+          const fullText = current.richText.map(f => (f && typeof f.text === 'string' ? f.text : '')).join('');
+          const singleToken = fullText.trim().match(/^{{\s*([a-zA-Z0-9_.-]+)\s*}}$/);
+          if (singleToken) {
+            const rawKey = singleToken[1];
+            const mappedKey = placeholderMap.get(String(rawKey).toLowerCase()) || rawKey;
+            const resolved = resolvePlaceholder(rawKey);
+            if (resolved === undefined || resolved === null) {
+              cell.value = '';
+            } else if (DATE_KEYS.has(String(mappedKey).toLowerCase())) {
+              const dt = toExcelDate(resolved);
+              if (dt) {
+                cell.value = dt;
+                applyNumberFormat(cell, { data_type: 'date' });
+              } else {
+                cell.value = formatDateHuman(resolved) || '';
+              }
+            } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
+              cell.value = resolved;
+              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
+                applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+              }
+            } else {
+              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
+                const n = toNumeric(resolved);
+                if (n !== null) {
+                  cell.value = n;
+                  applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+                } else {
+                  cell.value = renderValueForPlaceholder(mappedKey, resolved);
+                }
+              } else {
+                cell.value = renderValueForPlaceholder(mappedKey, resolved);
+              }
+            }
+            return; // handled this cell
+          }
+          // Also handle bare token without braces for the whole richText
+          const bare = fullText.trim().toLowerCase();
+          if (tokenKeys.includes(bare)) {
+            const mappedKey = placeholderMap.get(bare) || bare;
+            const resolved = resolvePlaceholder(mappedKey);
+            if (resolved === undefined || resolved === null) {
+              cell.value = '';
+            } else if (DATE_KEYS.has(String(mappedKey).toLowerCase())) {
+              const dt = toExcelDate(resolved);
+              if (dt) {
+                cell.value = dt;
+                applyNumberFormat(cell, { data_type: 'date' });
+              } else {
+                cell.value = formatDateHuman(resolved) || '';
+              }
+            } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
+              cell.value = resolved;
+              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
+                applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+              }
+            } else if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
+              const n = toNumeric(resolved);
+              if (n !== null) {
+                cell.value = n;
+                applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
+              } else {
+                cell.value = renderValueForPlaceholder(mappedKey, resolved);
+              }
+            } else {
+              cell.value = renderValueForPlaceholder(mappedKey, resolved);
+            }
+            return; // handled
+          }
           let changed = false;
           const richText = current.richText.map(fragment => {
             if (!fragment?.text) return fragment;
@@ -312,15 +606,22 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context) {
             PLACEHOLDER_PATTERN.lastIndex = 0;
             const updated = original.replace(PLACEHOLDER_PATTERN, (match, key) => {
               if (!key) return '';
+              const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
               const resolved = resolvePlaceholder(key);
-              if (resolved === undefined || resolved === null) return '';
-              if (resolved instanceof Date) return formatDateHuman(resolved) || '';
-              if (typeof resolved === 'number' && Number.isFinite(resolved)) return resolved.toString();
-              return resolved != null ? resolved.toString() : '';
+              return renderValueForPlaceholder(mappedKey, resolved);
             });
             if (updated !== original) {
               changed = true;
               return { ...fragment, text: updated };
+            }
+            // Fallback: exact token match without braces
+            const trimmedLower = original.trim().toLowerCase();
+            if (tokenKeys.includes(trimmedLower)) {
+              const fieldKey = placeholderMap.get(trimmedLower) || placeholderMap.get(normalizeTokenKey(trimmedLower)) || trimmedLower;
+              const resolved = resolvePlaceholder(fieldKey);
+              changed = true;
+              const textVal = renderValueForPlaceholder(fieldKey, resolved);
+              return { ...fragment, text: textVal };
             }
             return fragment;
           });
@@ -387,21 +688,79 @@ function sanitizeWorkbookValues(workbook) {
   });
 }
 
-async function saveWorkbookAsPdf(sourcePath, targetPath) {
+async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
   await fs.promises.rm(targetPath, { force: true }).catch(() => {});
 
+  // If no batch timer is active, capture whether Excel is currently running
+  if (excelQuitTimer == null && excelShouldQuitAtEnd == null) {
+    try {
+      const running = await isExcelRunning();
+      excelShouldQuitAtEnd = !running; // quit later only if not already running
+    } catch (_err) {
+      excelShouldQuitAtEnd = false;
+    }
+  }
+
+  // Primary: simple AppleScript using Excel's PDF file format
   const osaArgs = [
     '-e', 'on run argv',
-    '-e', 'if (count of argv) < 2 then return',
+    '-e', 'if (count of argv) < 2 then error "Missing arguments"',
     '-e', 'set workbookPosixPath to item 1 of argv',
     '-e', 'set targetPdfPosix to item 2 of argv',
-    '-e', 'set workbookAlias to POSIX file workbookPosixPath',
+    '-e', 'set workbookHfs to (POSIX file workbookPosixPath) as text',
+    '-e', 'set targetPdfHfs to (POSIX file targetPdfPosix) as text',
     '-e', 'set pdfAlias to POSIX file targetPdfPosix',
     '-e', 'tell application "Microsoft Excel"',
     '-e', 'launch',
-    '-e', 'set wb to open workbook workbook file name workbookPosixPath',
-    '-e', 'save workbook wb in pdfAlias as PDF file format',
+    '-e', 'activate',
+    '-e', 'set wb to missing value',
+    '-e', 'try',
+    '-e', 'set wb to open workbook workbook file name workbookHfs',
+    '-e', 'end try',
+    '-e', 'if wb is missing value then',
+    '-e', 'tell application "Finder" to open file workbookHfs',
+    '-e', 'repeat with i from 1 to 50',
+    '-e', 'delay 0.1',
+    '-e', 'try',
+    '-e', 'set wb to active workbook',
+    '-e', 'exit repeat',
+    '-e', 'end try',
+    '-e', 'end repeat',
+    '-e', 'end if',
+    '-e', 'if wb is missing value then error "Unable to open workbook"',
+    '-e', 'set wbName to name of wb',
+    '-e', 'delay 0.2',
+    '-e', 'try',
+    '-e', 'save workbook as wb filename targetPdfHfs file format PDF file format',
+    '-e', 'on error errMsg number errNum',
+    '-e', 'try',
     '-e', 'close workbook wb saving no',
+    '-e', 'end try',
+    '-e', 'error errMsg number errNum',
+    '-e', 'end try',
+    // Ensure workbook closes even if Excel is busy
+    '-e', 'try',
+    '-e', 'close workbook wb saving no',
+    '-e', 'end try',
+    '-e', 'try',
+    '-e', 'tell wb to close saving no',
+    '-e', 'end try',
+    // Fallback: close any workbook with the same name (AppleScript, not VB)
+    '-e', 'try',
+    '-e', 'repeat with bk in (workbooks whose name is wbName)',
+    '-e', 'close bk saving no',
+    '-e', 'end repeat',
+    '-e', 'end try',
+    // Retry-close loop in case Excel is momentarily busy after export
+    '-e', 'repeat with i from 1 to 20',
+    '-e', 'try',
+    '-e', 'close workbook wb saving no',
+    '-e', 'exit repeat',
+    '-e', 'on error errMsg number errNum',
+    '-e', 'delay 0.2',
+    '-e', 'end try',
+    '-e', 'end repeat',
+    '-e', 'delay 0.1',
     '-e', 'end tell',
     '-e', 'end run',
     sourcePath,
@@ -409,20 +768,24 @@ async function saveWorkbookAsPdf(sourcePath, targetPath) {
   ];
 
   await new Promise((resolve, reject) => {
-    execFile('osascript', osaArgs, (error, stdout, stderr) => {
+    execFile('osascript', osaArgs, { timeout: 120000 }, (error, stdout, stderr) => {
       if (error) {
-        const message = (stderr || stdout || error.message || '').toString().trim();
-        reject(new Error(message || 'Unable to export workbook to PDF'));
+        const raw = (stderr || stdout || '').toString();
+        const message = `${error.message || 'Unable to export workbook to PDF'}${raw ? `\n${raw.trim()}` : ''}`.trim();
+        reject(new Error(message));
         return;
       }
       resolve();
     });
   });
 
-  const created = await waitForFile(targetPath, 20000);
+  const created = await waitForFile(targetPath, 60000);
   if (!created) {
-    throw new Error(`Excel did not create ${targetPath}`);
+    throw new Error(`PDF not found after export: ${targetPath}`);
   }
+
+  // Schedule Excel to quit shortly after export; repeated exports will reset the timer
+  scheduleExcelQuit(10000);
 }
 
 function parseWorkbookName(filePath) {
@@ -545,10 +908,6 @@ function buildFileName(context, payload, definition) {
 }
 
 async function createWorkbookDocument(payload = {}) {
-  const docType = (payload.doc_type || '').toLowerCase();
-  if (docType !== 'workbook') {
-    throw new Error('Only the workbook document type is supported in this workflow.');
-  }
 
   const businessId = Number(payload.business_id);
   if (!Number.isInteger(businessId)) {
@@ -572,19 +931,57 @@ async function createWorkbookDocument(payload = {}) {
   await fs.promises.mkdir(directory, { recursive: true });
 
   const targetPath = path.join(directory, naming.fileName);
-  await fs.promises.rm(targetPath, { force: true });
+  // Treat existing workbooks as immutable: do not overwrite
+  if (await pathExists(targetPath)) {
+    try {
+      const existing = await db.getDocumentByFilePath(businessId, targetPath);
+      if (existing && existing.is_locked) {
+        throw new Error('Workbook is locked');
+      }
+    } catch (_err) {}
+    throw new Error('Workbook already exists');
+  }
 
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(templatePath);
 
+  // Add a manual page break after row 45 on booking schedule without altering page setup
+  try {
+    const ws = workbook.getWorksheet('Booking Schedule');
+    if (ws) {
+      try {
+        const row = ws.getRow(45);
+        if (row) row.addPageBreak();
+      } catch (_) {}
+    }
+  } catch (_err) {
+    // Ignore errors; rely on template defaults
+  }
+
   const bindings = await db.getMergeFieldBindingsByTemplate(TEMPLATE_BINDING_KEY);
+  const mergeFields = await db.getMergeFields();
+  const placeholderMap = new Map();
+  (mergeFields || []).forEach(f => {
+    const fieldKey = (f.field_key || '').toLowerCase();
+    const placeholder = (f.placeholder || '').toLowerCase();
+    const fieldSlug = normalizeTokenKey(fieldKey);
+    const placeholderSlug = normalizeTokenKey(placeholder);
+    if (fieldKey) placeholderMap.set(fieldKey, f.field_key);
+    if (placeholder) placeholderMap.set(placeholder, f.field_key);
+    if (fieldSlug) placeholderMap.set(fieldSlug, f.field_key);
+    if (placeholderSlug) placeholderMap.set(placeholderSlug, f.field_key);
+  });
+
   const placeholderKeys = collectPlaceholderKeys(workbook);
   const fieldKeySet = new Set((bindings || []).map(binding => binding.field_key).filter(Boolean));
-  placeholderKeys.forEach(key => fieldKeySet.add(key));
+  placeholderKeys.forEach(key => {
+    const mapped = placeholderMap.get(String(key).toLowerCase()) || key;
+    fieldKeySet.add(mapped);
+  });
   const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
 
   await fillWorkbook(workbook, bindings, valueSources, context);
-  replaceWorkbookPlaceholders(workbook, valueSources, context);
+  replaceWorkbookPlaceholders(workbook, valueSources, context, placeholderMap);
   workbook.calcProperties = workbook.calcProperties || {};
   workbook.calcProperties.fullCalcOnLoad = true;
   sanitizeWorkbookValues(workbook);
@@ -661,18 +1058,35 @@ async function watchDocumentsFolder(options = {}) {
     }
   };
 
-  const watcher = fs.watch(rootPath, { recursive: true }, () => {
-    const existingTimer = watcherTimers.get(businessId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
-    const timer = setTimeout(triggerChange, 300);
-    watcherTimers.set(businessId, timer);
-  });
-
-  watcher.on('error', (err) => {
-    console.error('Documents watcher error', err);
-  });
+  let watcher;
+  if (chokidar) {
+    watcher = chokidar.watch(rootPath, {
+      ignoreInitial: true,
+      persistent: true,
+      awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+      depth: 10
+    });
+    const schedule = () => {
+      const existingTimer = watcherTimers.get(businessId);
+      if (existingTimer) clearTimeout(existingTimer);
+      const timer = setTimeout(triggerChange, 250);
+      watcherTimers.set(businessId, timer);
+    };
+    ['add', 'addDir', 'change', 'unlink', 'unlinkDir'].forEach(evt => watcher.on(evt, schedule));
+    watcher.on('error', err => console.error('Documents watcher error', err));
+  } else {
+    watcher = fs.watch(rootPath, { recursive: true }, () => {
+      const existingTimer = watcherTimers.get(businessId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+      }
+      const timer = setTimeout(triggerChange, 300);
+      watcherTimers.set(businessId, timer);
+    });
+    watcher.on('error', (err) => {
+      console.error('Documents watcher error', err);
+    });
+  }
 
   documentWatchers.set(businessId, watcher);
   return { ok: true, watching: true };
@@ -706,7 +1120,7 @@ function unwatchDocumentsFolder(options = {}) {
 
 async function filterDocumentsByExistingFiles(documents, options = {}) {
   if (!Array.isArray(documents)) return [];
-  const includeMissing = options.includeMissing !== false;
+  const includeMissing = options.includeMissing === true;
 
   const enriched = await Promise.all(documents.map(async (doc) => {
     const filePath = doc?.file_path || doc?.filePath;
@@ -714,10 +1128,7 @@ async function filterDocumentsByExistingFiles(documents, options = {}) {
     return { ...doc, file_available: fileAvailable };
   }));
 
-  if (includeMissing) {
-    return enriched;
-  }
-  return enriched.filter(doc => doc.file_available);
+  return includeMissing ? enriched : enriched.filter(doc => doc.file_available);
 }
 
 
@@ -731,7 +1142,44 @@ async function listJobsheetDocuments(options = {}) {
   const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
 
   const documents = await db.getDocuments({ businessId });
-  const enriched = await filterDocumentsByExistingFiles(documents, { includeMissing: true });
+  const enriched = await filterDocumentsByExistingFiles(documents, { includeMissing: false });
+
+  // Deduplicate by exact file_path (keep the latest document_id) and clean DB for duplicates
+  try {
+    const byPath = new Map();
+    for (const doc of enriched) {
+      const fp = doc?.file_path;
+      if (!fp) continue;
+      const existing = byPath.get(fp);
+      if (!existing || Number(doc.document_id) > Number(existing.document_id)) {
+        byPath.set(fp, doc);
+      }
+    }
+    const dups = [];
+    for (const doc of enriched) {
+      const fp = doc?.file_path;
+      if (!fp) continue;
+      const primary = byPath.get(fp);
+      if (primary && Number(primary.document_id) !== Number(doc.document_id)) {
+        dups.push(doc);
+      }
+    }
+    // Clear file_path for duplicates in DB so they stop showing up in future
+    await Promise.all(dups.map(doc => db.setDocumentFilePath(doc.document_id, null).catch(() => null)));
+    // Rebuild enriched without duplicates
+    const deduped = Array.from(byPath.values());
+    // Replace enriched reference
+    enriched.length = 0;
+    deduped.forEach(doc => enriched.push(doc));
+  } catch (_err) {
+    // If any cleanup fails, continue with current list
+  }
+
+  // DB hygiene: clear file_path for any entries whose file no longer exists
+  try {
+    const missing = Array.isArray(documents) ? documents.filter(d => d?.file_path && !enriched.some(e => e?.file_path === d.file_path)) : [];
+    await Promise.all(missing.map(d => db.clearDocumentPath(businessId, d.file_path).catch(() => null)));
+  } catch (_err) {}
 
   const folderSet = new Set();
 
@@ -816,18 +1264,25 @@ async function exportWorkbookPdfs(options = {}) {
   const normalizedPath = path.resolve(providedPath.trim());
   await ensureFileAccessible(normalizedPath);
 
+  const businessId = options.businessId != null ? Number(options.businessId) : null;
+
   const masterInfo = parseWorkbookName(normalizedPath);
   const jobDirectory = path.dirname(normalizedPath);
 
-  const relatedWorkbooks = await findRelatedWorkbooks(normalizedPath);
-  const workbooks = [{ path: normalizedPath, info: masterInfo }];
-  relatedWorkbooks.forEach(entry => {
-    if (!entry || !entry.path) return;
-    if (path.resolve(entry.path) === path.resolve(normalizedPath)) return;
-    workbooks.push(entry);
-  });
+  const includeRelated = options.includeRelated === true;
+  let workbooks = [{ path: normalizedPath, info: masterInfo }];
+  if (includeRelated) {
+    const relatedWorkbooks = await findRelatedWorkbooks(normalizedPath);
+    relatedWorkbooks.forEach(entry => {
+      if (!entry || !entry.path) return;
+      if (path.resolve(entry.path) === path.resolve(normalizedPath)) return;
+      workbooks.push(entry);
+    });
+  }
 
   const outputs = [];
+
+  const activeSheetOnly = options.activeSheetOnly === true;
 
   for (const entry of workbooks) {
     const workbookPath = entry.path;
@@ -836,7 +1291,37 @@ async function exportWorkbookPdfs(options = {}) {
     const targetPdfPath = path.join(jobDirectory, targetPdfName);
 
     try {
-      await saveWorkbookAsPdf(workbookPath, targetPdfPath);
+      // Treat existing PDFs as immutable: do not overwrite existing files
+      try {
+        const exists = await pathExists(targetPdfPath);
+        if (exists) {
+          // If DB has a locked record, report locked; otherwise report already exists
+          if (businessId != null) {
+            try {
+              const existing = await db.getDocumentByFilePath(businessId, targetPdfPath);
+              if (existing && existing.is_locked) {
+                outputs.push({ success: false, sheet: info.suffix, error: 'PDF is locked' });
+                continue;
+              }
+            } catch (_err) {}
+          }
+          outputs.push({ success: false, sheet: info.suffix, error: 'PDF already exists' });
+          continue;
+        }
+      } catch (_err) {}
+
+      // If a PDF already exists and is locked in DB, block export (defensive)
+      if (businessId != null) {
+        try {
+          const existing = await db.getDocumentByFilePath(businessId, targetPdfPath);
+          if (existing && existing.is_locked) {
+            outputs.push({ success: false, sheet: info.suffix, error: 'PDF is locked' });
+            continue;
+          }
+        } catch (_err) {}
+      }
+
+      await saveWorkbookAsPdf(workbookPath, targetPdfPath, { activeSheetOnly });
       outputs.push({
         success: true,
         sheet: info.suffix,
@@ -853,11 +1338,18 @@ async function exportWorkbookPdfs(options = {}) {
   }
 
   const ok = outputs.some(item => item.success);
-  return {
-    ok,
-    workbook_path: normalizedPath,
-    outputs
-  };
+  let message = '';
+  if (!ok) {
+    const firstError = outputs.find(o => o && o.success === false && o.error);
+    if (firstError && firstError.error) {
+      message = `Export failed: ${firstError.error}`;
+    } else if (!outputs.length) {
+      message = 'Export failed: no sheets processed.';
+    } else {
+      message = 'Export failed.';
+    }
+  }
+  return { ok, workbook_path: normalizedPath, outputs, message };
 }
 
 async function syncJobsheetOutputs(options = {}) {
@@ -1029,6 +1521,10 @@ async function deleteDocument(documentId, options = {}) {
     // ignore lookup errors and continue with deletion
   }
 
+  if (record && record.is_locked) {
+    throw new Error('This document is locked and cannot be modified.');
+  }
+
   if (removeFile && record?.file_path) {
     try {
       await fs.promises.unlink(record.file_path);
@@ -1043,6 +1539,116 @@ async function deleteDocument(documentId, options = {}) {
   return { ok: true };
 }
 
+async function preflightPdfExport(options = {}) {
+  const providedPath = options.filePath || options.file_path;
+  if (!providedPath || typeof providedPath !== 'string' || !providedPath.trim()) {
+    throw new Error('filePath is required for preflight.');
+  }
+
+  const normalizedPath = path.resolve(providedPath.trim());
+  const dir = path.dirname(normalizedPath);
+  const baseName = path.basename(normalizedPath, path.extname(normalizedPath));
+  const targetPdfPath = path.join(dir, `${baseName}.pdf`);
+
+  const checks = [];
+  const addCheck = (name, ok, message) => checks.push({ name, ok: Boolean(ok), message: message || '' });
+
+  // Check workbook file exists and is readable
+  try {
+    await fs.promises.access(normalizedPath, fs.constants.R_OK);
+    addCheck('workbook_exists', true);
+  } catch (err) {
+    addCheck('workbook_exists', false, `Workbook not accessible: ${err?.message || err}`);
+  }
+
+  // Check destination directory is writable
+  try {
+    await fs.promises.access(dir, fs.constants.W_OK);
+    // Try a temp write/delete to be certain (especially on cloud folders)
+    const tmp = path.join(dir, `.preflight_${Date.now()}_${Math.random().toString(36).slice(2)}.tmp`);
+    await fs.promises.writeFile(tmp, 'ok');
+    await fs.promises.unlink(tmp);
+    addCheck('destination_writable', true);
+  } catch (err) {
+    addCheck('destination_writable', false, `Destination not writable: ${err?.message || err}`);
+  }
+
+  // Check Excel Apple Events permission / availability
+  try {
+    await new Promise((resolve, reject) => {
+      execFile('osascript', ['-e', 'tell application "Microsoft Excel" to version'], { timeout: 15000 }, (error, stdout, stderr) => {
+        if (error) {
+          const message = (stderr || stdout || error.message || '').toString().trim();
+          reject(new Error(message || 'Unable to communicate with Microsoft Excel'));
+          return;
+        }
+        resolve();
+      });
+    });
+    addCheck('excel_automation', true);
+  } catch (err) {
+    addCheck('excel_automation', false, `Excel automation failed: ${err?.message || err}`);
+  }
+
+  // Attempt to open and close the workbook (no save), to catch Excel-specific open errors
+  try {
+    const osaArgs = [
+      '-e', 'on run argv',
+      '-e', 'if (count of argv) < 1 then error "Missing path"',
+      '-e', 'set workbookPosixPath to item 1 of argv',
+      '-e', 'set workbookHfs to (POSIX file workbookPosixPath) as text',
+      '-e', 'tell application "Microsoft Excel"',
+      '-e', 'launch',
+      '-e', 'activate',
+      '-e', 'set wb to missing value',
+      '-e', 'try',
+      '-e', 'set wb to open workbook workbook file name workbookHfs',
+      '-e', 'end try',
+      '-e', 'if wb is missing value then',
+      '-e', 'tell application "Finder" to open file workbookHfs',
+      '-e', 'repeat with i from 1 to 50',
+      '-e', 'delay 0.1',
+      '-e', 'try',
+      '-e', 'set wb to active workbook',
+      '-e', 'exit repeat',
+      '-e', 'end try',
+      '-e', 'end repeat',
+      '-e', 'end if',
+      '-e', 'if wb is missing value then error "Unable to open workbook"',
+      '-e', 'try',
+      '-e', 'close workbook wb saving no',
+      '-e', 'end try',
+      '-e', 'end tell',
+      '-e', 'end run',
+      normalizedPath
+    ];
+    await new Promise((resolve, reject) => {
+      execFile('osascript', osaArgs, { timeout: 45000 }, (error, stdout, stderr) => {
+        if (error) {
+          const message = (stderr || stdout || error.message || '').toString().trim();
+          reject(new Error(message || 'Excel failed to open the workbook'));
+          return;
+        }
+        resolve();
+      });
+    });
+    addCheck('workbook_openable', true);
+  } catch (err) {
+    addCheck('workbook_openable', false, `Unable to open in Excel: ${err?.message || err}`);
+  }
+
+  const ok = checks.every(c => c.ok);
+  const firstFailure = checks.find(c => !c.ok);
+  const message = ok ? 'Preflight OK' : (firstFailure?.message || 'Preflight failed');
+
+  return {
+    ok,
+    workbook_path: normalizedPath,
+    target_pdf_path: targetPdfPath,
+    checks,
+    message
+  };
+}
 module.exports = {
   normalizeTemplate,
   createDocument,
@@ -1052,5 +1658,74 @@ module.exports = {
   watchDocumentsFolder,
   unwatchDocumentsFolder,
   filterDocumentsByExistingFiles,
-  listJobsheetDocuments
+  listJobsheetDocuments,
+  preflightPdfExport
+  ,
+  cleanOrphanDocuments: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    if (!Number.isInteger(businessId)) {
+      throw new Error('businessId is required');
+    }
+    const performDelete = options.delete === true || options.remove === true;
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) {
+      throw new Error('Documents folder not configured for this business.');
+    }
+    const rootPath = path.resolve(business.save_path);
+
+    const docs = await db.getDocuments({ businessId });
+    const existing = await filterDocumentsByExistingFiles(docs, { includeMissing: true });
+
+    // Clear DB for missing files
+    let clearedMissing = 0;
+    for (const doc of existing) {
+      const hasFile = doc?.file_available === true;
+      if (!hasFile && doc?.file_path) {
+        try { await db.clearDocumentPath(businessId, doc.file_path); clearedMissing += 1; } catch (_err) {}
+      }
+    }
+
+    // Group by folder and find orphan PDFs (no matching workbook base)
+    const byDir = new Map();
+    existing.forEach(doc => {
+      const fp = doc?.file_path || '';
+      if (!fp) return;
+      const dir = path.dirname(fp);
+      const arr = byDir.get(dir) || [];
+      arr.push(doc);
+      byDir.set(dir, arr);
+    });
+
+    const orphanRecords = [];
+    for (const [dir, list] of byDir.entries()) {
+      const workbookBases = new Set(
+        list
+          .filter(d => (d?.file_path || '').toLowerCase().endsWith('.xlsx'))
+          .map(d => path.basename(d.file_path, path.extname(d.file_path)))
+      );
+      for (const d of list) {
+        const fp = d?.file_path || '';
+        if (!fp.toLowerCase().endsWith('.pdf')) continue;
+        const base = path.basename(fp, path.extname(fp));
+        if (!workbookBases.has(base)) {
+          orphanRecords.push(d);
+        }
+      }
+    }
+
+    let deleted = 0;
+    const records = [];
+    for (const d of orphanRecords) {
+      if (!d || !d.file_path) continue;
+      if (d.is_locked) { records.push({ file_path: d.file_path, action: 'locked' }); continue; }
+      if (!isSubPath(rootPath, d.file_path)) { records.push({ file_path: d.file_path, action: 'outside-root' }); continue; }
+      if (performDelete) {
+        try { await db.deleteDocumentByPath({ businessId, absolutePath: d.file_path }); deleted += 1; records.push({ file_path: d.file_path, action: 'deleted' }); } catch (_err) { records.push({ file_path: d.file_path, action: 'failed' }); }
+      } else {
+        records.push({ file_path: d.file_path, action: 'orphan' });
+      }
+    }
+
+    return { ok: true, cleared_missing: clearedMissing, orphan_count: orphanRecords.length, deleted, records };
+  }
 };

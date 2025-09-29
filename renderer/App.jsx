@@ -861,12 +861,15 @@ function IconButton({ label, onClick, disabled, className = '', children }) {
     onClick?.(event);
   }, [onClick]);
 
+  const wantsCustomColors = /\b(border-|text-|hover:bg-)\w/.test(className || '');
+  const colorClasses = wantsCustomColors ? '' : 'border-slate-300 text-slate-600 hover:bg-slate-100';
+
   return (
     <button
       type="button"
       onClick={handleClick}
       disabled={disabled}
-      className={`inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60 ${className}`}
+      className={`inline-flex h-8 w-8 items-center justify-center rounded border transition disabled:cursor-not-allowed disabled:opacity-60 ${colorClasses} ${className}`}
       aria-label={label}
       title={label}
     >
@@ -974,7 +977,9 @@ function DocumentTreeView({
   emptyingTrash,
   isConfigured,
   collapsed,
-  onCollapsedChange
+  onCollapsedChange,
+  persist = false,
+  persistKey = ''
 }) {
   const safeRootPath = rootPath || '';
   const rootLabel = safeRootPath ? (safeRootPath.split(/[\\/]+/).filter(Boolean).pop() || 'Documents') : 'Documents';
@@ -1001,9 +1006,27 @@ function DocumentTreeView({
   }, [isControlledCollapse, onCollapsedChange]);
 
   useEffect(() => {
-    setCollapsedNodes(new Set());
-    setSelectedNodeId(null);
-  }, [safeRootPath, root]);
+    const prefix = persist && persistKey ? `${persistKey}:tree:` : '';
+    if (persist && prefix && typeof window !== 'undefined') {
+      try {
+        const savedCollapsed = window.localStorage.getItem(`${prefix}collapsed`);
+        if (savedCollapsed) {
+          const arr = JSON.parse(savedCollapsed);
+          if (Array.isArray(arr)) setCollapsedNodes(new Set(arr));
+        } else {
+          setCollapsedNodes(new Set());
+        }
+        const savedSelected = window.localStorage.getItem(`${prefix}selected`);
+        setSelectedNodeId(savedSelected || null);
+      } catch (_err) {
+        setCollapsedNodes(new Set());
+        setSelectedNodeId(null);
+      }
+    } else {
+      setCollapsedNodes(new Set());
+      setSelectedNodeId(null);
+    }
+  }, [safeRootPath, root, persist, persistKey]);
 
   const toggleFolder = useCallback((nodeId) => {
     setCollapsedNodes(prev => {
@@ -1013,9 +1036,12 @@ function DocumentTreeView({
       } else {
         next.add(nodeId);
       }
+      if (persist && persistKey && typeof window !== 'undefined') {
+        try { window.localStorage.setItem(`${persistKey}:tree:collapsed`, JSON.stringify(Array.from(next))); } catch (_err) {}
+      }
       return next;
     });
-  }, []);
+  }, [persist, persistKey]);
 
   const handleNodeDoubleClick = useCallback((node, nodeId, isDirectory) => {
     if (!node) return;
@@ -1055,7 +1081,12 @@ function DocumentTreeView({
       <tr
         key={rowKey}
         className={`group cursor-default border-b border-indigo-100 last:border-b-0 transition ${rowClasses}`}
-        onClick={() => setSelectedNodeId(nodeId)}
+        onClick={() => {
+          setSelectedNodeId(nodeId);
+          if (persist && persistKey && typeof window !== 'undefined') {
+            try { window.localStorage.setItem(`${persistKey}:tree:selected`, nodeId); } catch (_err) {}
+          }
+        }}
         onDoubleClick={(event) => {
           event.stopPropagation();
           handleNodeDoubleClick(node, nodeId, isDirectory);
@@ -2917,6 +2948,8 @@ function DocumentsInlinePanel({
   onRefresh,
   onGenerate,
   onExportPdf,
+  onToggleLock,
+  locksOverride = {},
   onOpenFile,
   onRevealFile,
   onDelete,
@@ -2954,32 +2987,40 @@ function DocumentsInlinePanel({
     pdfDocs.map(d => [baseNameNoExt(d.file_path || ''), d])
   );
 
-  const EXCEL_TARGETS = [
-    { key: 'client_data', label: 'Client Data' },
-    { key: 'quote', label: 'Quote' },
-    { key: 'booking_schedule', label: 'Booking Schedule' },
-    { key: 't_and_cs', label: 'T&Cs' },
-    { key: 'invoice_deposit', label: 'Invoice – Deposit' },
-    { key: 'invoice_balance', label: 'Invoice – Balance' }
-  ];
-  const defByKey = new Map(defs.map(d => [d.key, d]));
-  const excelItems = EXCEL_TARGETS.map(target => {
-    const def = defByKey.get(target.key) || defs.find(d => (d.label || '').toLowerCase() === target.label.toLowerCase()) || null;
+  // Dynamic: show all definitions that point to an .xlsx template
+  const excelDefs = defs
+    .filter(d => (d?.template_path || '').toLowerCase().endsWith('.xlsx'))
+    .sort((a, b) => {
+      const ao = Number.isFinite(a.sort_order) ? a.sort_order : 0;
+      const bo = Number.isFinite(b.sort_order) ? b.sort_order : 0;
+      if (ao !== bo) return ao - bo;
+      const al = (a.label || a.key || '').toLowerCase();
+      const bl = (b.label || b.key || '').toLowerCase();
+      return al.localeCompare(bl);
+    });
+
+  const excelItems = excelDefs.map(def => {
     const doc = def ? workbookDocsByKey.get(def.key) : null;
-    return { target, def, doc };
+    const label = def.label || def.key;
+    return { def, doc, label };
   });
-  const pdfItems = excelItems.map(({ target, def }) => {
+
+  const pdfItems = excelItems.map(({ def, label }) => {
     const wbDoc = def ? workbookDocsByKey.get(def.key) : null;
     const pdfDoc = wbDoc ? pdfByBase.get(baseNameNoExt(wbDoc?.file_path || '')) : null;
-    return { target, def, wbDoc, pdfDoc };
+    return { def, wbDoc, pdfDoc, label };
   });
 
   const handleGenerate = (key) => onGenerate?.(key);
-  const canGenerateAll = Boolean(jobsheetId && excelItems.some(i => i.def && i.def.template_path) && !definitionsLoading);
+  const canGenerateAll = Boolean(
+    jobsheetId && excelItems.some(i => i.def && i.def.template_path && !(i.doc && i.doc.file_path) && !(i.doc && i.doc.is_locked)) && !definitionsLoading
+  );
 
   const handleExportForDef = async (item) => {
     if (!item) return;
     const { def, wbDoc, pdfDoc } = item;
+    const exported = Boolean(pdfDoc && pdfDoc.file_path);
+    if (exported || (pdfDoc && pdfDoc.is_locked)) return;
     if (!wbDoc || !wbDoc.file_path) {
       const proceed = window.confirm('No workbook found for this document. Generate it first?');
       if (!proceed) return;
@@ -3000,8 +3041,10 @@ function DocumentsInlinePanel({
         await onGenerate?.(i.def.key);
       }
     }
+    // Only export PDFs that are not already exported
     for (const i of pdfItems) {
-      if (i.wbDoc && i.wbDoc.file_path) {
+      const alreadyExported = Boolean(i.pdfDoc && i.pdfDoc.file_path);
+      if (i.wbDoc && i.wbDoc.file_path && !alreadyExported) {
         // eslint-disable-next-line no-await-in-loop
         await onExportPdf?.(i.wbDoc);
       }
@@ -3018,41 +3061,64 @@ function DocumentsInlinePanel({
             <div className="text-sm font-semibold text-slate-700">Excel</div>
             <div className="flex items-center gap-2 text-xs">
               <button type="button" onClick={onRefresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-              <button type="button" onClick={() => excelItems.forEach(i => i.def.template_path && handleGenerate(i.def.key))} disabled={!canGenerateAll} className="inline-flex items-center rounded border border-indigo-200 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-60">Generate all</button>
+              <button
+                type="button"
+                onClick={() => excelItems.forEach(i => (!i.doc?.file_path && !i.doc?.is_locked && i.def?.template_path) && handleGenerate(i.def.key))}
+                disabled={!canGenerateAll}
+                className="inline-flex items-center rounded border border-indigo-200 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-60"
+              >
+                Generate all
+              </button>
             </div>
           </div>
           <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
-            {excelItems.map(({ target, def, doc }) => {
-              const label = target.label;
-              const disabled = !jobsheetId || !def || !def.template_path || definitionsLoading;
+            {excelItems.map(({ def, doc, label }) => {
               const generated = Boolean(doc && doc.file_path);
+              const locked = Boolean(doc?.is_locked);
+              const disabled = !jobsheetId || !def || !def.template_path || definitionsLoading || locked || Boolean(doc?.file_path);
               return (
                 <div key={def ? def.key : `missing:${label}`} className="flex items-center justify-between rounded px-2 py-2">
                   <div className="min-w-0">
                     <div className={`flex items-center gap-2 text-sm font-medium truncate ${generated ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
                       <span aria-hidden>{generated ? '✅' : '❌'}</span>
-                      <span className="truncate">{label}</span>
+                      <span className="truncate" title={label}>{label}</span>
                     </div>
-                    {/* Do not display file path when generated */}
                   </div>
                   <div className="flex items-center gap-2">
+                    <IconButton
+                      label={locked ? 'Unlock workbook' : 'Lock workbook'}
+                      onClick={() => doc && onToggleLock?.(doc)}
+                      disabled={!generated || !doc?.document_id}
+                      className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
+                    >
+                      <span className="text-base" aria-hidden>{locked ? '🔒' : '🔓'}</span>
+                    </IconButton>
                     <button type="button" onClick={() => def && handleGenerate(def.key)} disabled={disabled} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">Generate</button>
-                    <div className="relative">
-                      {(() => { const rowId = `excel:${def ? def.key : label}`; return (
-                        <>
-                          <button type="button" onClick={() => setMenuOpenId(menuOpenId === rowId ? '' : rowId)} className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 hover:bg-slate-100" aria-label="More actions">⋯</button>
-                          {menuOpenId === rowId ? (
-                            <div ref={menuRef} className="absolute right-0 z-10 mt-2 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
-                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onOpenFile?.(doc?.file_path); }} disabled={!generated}>Open</button>
-                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onRevealFile?.(doc?.file_path); }} disabled={!generated}>Reveal</button>
-                              {onDelete ? <>
-                                <div className="my-1 border-t border-slate-200" />
-                                <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => { setMenuOpenId(''); onDelete?.(doc); }} disabled={!generated || doc?.document_id == null}>Delete</button>
-                              </> : null}
-                            </div>
-                          ) : null}
-                        </>
-                      ); })()}
+                    <div className="flex items-center gap-1.5">
+                      <IconButton
+                        label="Open"
+                        onClick={() => onOpenFile?.(doc?.file_path)}
+                        disabled={!generated}
+                      >
+                        <OpenIcon className="h-3.5 w-3.5" />
+                      </IconButton>
+                      <IconButton
+                        label="Reveal in Finder"
+                        onClick={() => onRevealFile?.(doc?.file_path)}
+                        disabled={!generated}
+                      >
+                        <RevealIcon className="h-3.5 w-3.5" />
+                      </IconButton>
+                      {onDelete ? (
+                        <IconButton
+                          label="Delete"
+                          onClick={() => onDelete?.(doc)}
+                          disabled={!generated || doc?.document_id == null || doc?.is_locked}
+                          className="border-red-200 text-red-600 hover:bg-red-50"
+                        >
+                          <DeleteIcon className="h-3.5 w-3.5" />
+                        </IconButton>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -3072,8 +3138,7 @@ function DocumentsInlinePanel({
           </div>
           <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
             {pdfItems.map((item) => {
-              const { target, def, wbDoc, pdfDoc } = item;
-              const label = target.label;
+              const { def, wbDoc, pdfDoc, label } = item;
               const exported = Boolean(pdfDoc && pdfDoc.file_path);
               return (
                 <div key={def ? def.key : `pdf:${label}`} className="flex items-center justify-between rounded px-2 py-2">
@@ -3085,23 +3150,40 @@ function DocumentsInlinePanel({
                     {/* Do not display file path when exported */}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button type="button" onClick={() => handleExportForDef(item)} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Export</button>
-                    <div className="relative">
-                      {(() => { const rowId = `pdf:${def ? def.key : label}`; return (
-                        <>
-                          <button type="button" onClick={() => setMenuOpenId(menuOpenId === rowId ? '' : rowId)} className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 hover:bg-slate-100" aria-label="More actions">⋯</button>
-                          {menuOpenId === rowId ? (
-                            <div ref={menuRef} className="absolute right-0 z-10 mt-2 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
-                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onOpenFile?.(pdfDoc?.file_path); }} disabled={!exported}>Open</button>
-                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onRevealFile?.(pdfDoc?.file_path); }} disabled={!exported}>Reveal</button>
-                              {onDelete ? <>
-                                <div className="my-1 border-t border-slate-200" />
-                                <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => { setMenuOpenId(''); onDelete?.(pdfDoc); }} disabled={!exported || pdfDoc?.document_id == null}>Delete</button>
-                              </> : null}
-                            </div>
-                          ) : null}
-                        </>
-                      ); })()}
+                    <IconButton
+                      label={pdfDoc?.is_locked ? 'Unlock PDF' : 'Lock PDF'}
+                      onClick={() => pdfDoc && onToggleLock?.(pdfDoc)}
+                      disabled={!exported || !pdfDoc?.document_id}
+                      className={pdfDoc?.is_locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
+                    >
+                      <span className="text-base" aria-hidden>{pdfDoc?.is_locked ? '🔒' : '🔓'}</span>
+                    </IconButton>
+                    <button type="button" onClick={() => handleExportForDef(item)} disabled={exported || Boolean(pdfDoc?.is_locked)} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">Export</button>
+                    <div className="flex items-center gap-1.5">
+                      <IconButton
+                        label="Open"
+                        onClick={() => onOpenFile?.(pdfDoc?.file_path)}
+                        disabled={!exported}
+                      >
+                        <OpenIcon className="h-3.5 w-3.5" />
+                      </IconButton>
+                      <IconButton
+                        label="Reveal in Finder"
+                        onClick={() => onRevealFile?.(pdfDoc?.file_path)}
+                        disabled={!exported}
+                      >
+                        <RevealIcon className="h-3.5 w-3.5" />
+                      </IconButton>
+                      {onDelete ? (
+                        <IconButton
+                          label="Delete"
+                          onClick={() => onDelete?.(pdfDoc)}
+                          disabled={!exported || pdfDoc?.document_id == null || pdfDoc?.is_locked}
+                          className="border-red-200 text-red-600 hover:bg-red-50"
+                        >
+                          <DeleteIcon className="h-3.5 w-3.5" />
+                        </IconButton>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -3569,6 +3651,9 @@ function JobsheetEditor({
   const [showVenueModal, setShowVenueModal] = useState(false);
   const [venueDraft, setVenueDraft] = useState(() => buildVenueDraft());
 
+  // Local override for definition lock state so the inline UI updates immediately after toggle
+  const [definitionLocks, setDefinitionLocks] = useState({});
+
   const openVenueModal = (venue = null) => {
     if (venue) {
       setVenueDraft(buildVenueDraft(venue));
@@ -3610,6 +3695,39 @@ function JobsheetEditor({
     setSavedVenueId(String(savedId));
     setShowVenueModal(false);
   };
+
+  const handleToggleDefinitionLockInline = useCallback(async (item) => {
+    if (!item) return;
+    const api = window.api;
+    try {
+      // PDF document lock toggle (has document_id)
+      if (item.document_id != null) {
+        await api?.setDocumentLock?.(item.document_id, !(item.is_locked ? 1 : 0));
+        await onRefreshDocuments?.();
+        return;
+      }
+
+      // Definition lock toggle
+      if (!item.key) return;
+      if (!api || typeof api.saveDocumentDefinition !== 'function') return;
+      const nextLocked = item.is_locked ? 0 : 1;
+      await api.saveDocumentDefinition(businessId, {
+        key: item.key,
+        doc_type: item.doc_type,
+        label: item.label,
+        description: item.description,
+        invoice_variant: item.invoice_variant,
+        template_path: item.template_path,
+        is_primary: item.is_primary ? 1 : 0,
+        is_active: item.is_active === 0 ? 0 : 1,
+        is_locked: nextLocked,
+        sort_order: item.sort_order
+      });
+      setDefinitionLocks(prev => ({ ...prev, [item.key]: Boolean(nextLocked) }));
+    } catch (err) {
+      console.warn('Inline lock toggle failed', err);
+    }
+  }, [businessId, onRefreshDocuments]);
 
   const [activeGroupKey, setActiveGroupKey] = useState(() => {
     if (activeGroupKeyProp) return activeGroupKeyProp;
@@ -3819,6 +3937,8 @@ function JobsheetEditor({
                         onRefresh={onRefreshDocuments}
                         onGenerate={onGenerateDocument}
                         onExportPdf={onExportPdf}
+                        onToggleLock={handleToggleDefinitionLockInline}
+                        locksOverride={definitionLocks}
                         onOpenFile={onOpenDocumentFile}
                         onRevealFile={onRevealDocument}
                         onDelete={onDeleteDocument}
@@ -4036,9 +4156,43 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
-  const [activeJobsheetId, setActiveJobsheetId] = useState(null);
-  const [inlineEditorVisible, setInlineEditorVisible] = useState(false);
-  const [inlineEditorTargetId, setInlineEditorTargetId] = useState(null);
+  const [activeJobsheetId, setActiveJobsheetId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const persist = window.localStorage.getItem('app:persistUiState') === 'true';
+      if (!persist) return null;
+      const key = `ui:${business.id}:activeJobsheetId`;
+      const raw = window.localStorage.getItem(key);
+      const num = raw != null && raw !== '' ? Number(raw) : null;
+      return Number.isFinite(num) ? num : null;
+    } catch (_err) {
+      return null;
+    }
+  });
+  const [inlineEditorVisible, setInlineEditorVisible] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const persist = window.localStorage.getItem('app:persistUiState') === 'true';
+      if (!persist) return false;
+      const key = `ui:${business.id}:inlineVisible`;
+      return window.localStorage.getItem(key) === 'true';
+    } catch (_err) {
+      return false;
+    }
+  });
+  const [inlineEditorTargetId, setInlineEditorTargetId] = useState(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const persist = window.localStorage.getItem('app:persistUiState') === 'true';
+      if (!persist) return null;
+      const key = `ui:${business.id}:activeJobsheetId`;
+      const raw = window.localStorage.getItem(key);
+      const num = raw != null && raw !== '' ? Number(raw) : null;
+      return Number.isFinite(num) ? num : null;
+    } catch (_err) {
+      return null;
+    }
+  });
   const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
   const [workspaceSection, setWorkspaceSection] = useState(() => {
@@ -4095,6 +4249,32 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const columnsMenuContentRef = useRef(null);
   const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
   const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
+  const [showDocumentsLoading, setShowDocumentsLoading] = useState(false);
+  const PERSIST_UI_KEY = 'app:persistUiState';
+  const PERSIST_PREFIX = `ui:${business.id}:`;
+  const [persistUi, setPersistUi] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem(PERSIST_UI_KEY) === 'true';
+    } catch (_err) { return false; }
+  });
+
+  const applyStoredScroll = useCallback(() => {
+    if (!persistUi || typeof window === 'undefined') return;
+    try {
+      const y = Number(window.localStorage.getItem(`${PERSIST_PREFIX}scrollY`) || '0');
+      if (!Number.isFinite(y) || y <= 0) return;
+      let attempts = 24; // ~1.2s total
+      const tick = () => {
+        try {
+          window.scrollTo(0, y);
+          if (Math.abs((window.scrollY || 0) - y) < 2 || attempts-- <= 0) return;
+          setTimeout(tick, 50);
+        } catch (_err) {}
+      };
+      setTimeout(tick, 50);
+    } catch (_err) {}
+  }, [persistUi, PERSIST_PREFIX]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -4104,6 +4284,80 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       console.warn('Unable to store document tree collapse preference', err);
     }
   }, [documentTreeCollapsed]);
+
+  // Persist key UI state if enabled
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try { window.localStorage.setItem(PERSIST_UI_KEY, persistUi ? 'true' : 'false'); } catch (_err) {}
+  }, [persistUi]);
+
+  useEffect(() => {
+    if (!persistUi || typeof window === 'undefined') return;
+    try { window.localStorage.setItem(`${PERSIST_PREFIX}workspaceSection`, workspaceSection); } catch (_err) {}
+  }, [persistUi, workspaceSection]);
+
+  useEffect(() => {
+    if (!persistUi || typeof window === 'undefined') return;
+    try { window.localStorage.setItem(`${PERSIST_PREFIX}activeJobsheetId`, activeJobsheetId != null ? String(activeJobsheetId) : ''); } catch (_err) {}
+    try { window.localStorage.setItem(`${PERSIST_PREFIX}inlineVisible`, inlineEditorVisible ? 'true' : 'false'); } catch (_err) {}
+  }, [persistUi, activeJobsheetId, inlineEditorVisible]);
+
+  useEffect(() => {
+    if (!persistUi || typeof window === 'undefined') return;
+    const onScroll = () => {
+      try { window.localStorage.setItem(`${PERSIST_PREFIX}scrollY`, String(window.scrollY || 0)); } catch (_err) {}
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, [persistUi]);
+
+  // Debounce documentsLoading indicator to prevent UI shake on very fast operations
+  useEffect(() => {
+    let timer = null;
+    if (documentsLoading) {
+      timer = setTimeout(() => setShowDocumentsLoading(true), 180);
+    } else {
+      setShowDocumentsLoading(false);
+    }
+    return () => { if (timer) clearTimeout(timer); };
+  }, [documentsLoading]);
+
+  // Restore UI state on mount
+  useEffect(() => {
+    if (!persistUi || typeof window === 'undefined') return;
+    try {
+      const storedSection = window.localStorage.getItem(`${PERSIST_PREFIX}workspaceSection`);
+      if (storedSection && WORKSPACE_SECTIONS.some(s => s.key === storedSection)) {
+        setWorkspaceSection(storedSection);
+      }
+      const storedJob = window.localStorage.getItem(`${PERSIST_PREFIX}activeJobsheetId`);
+      const storedVisible = window.localStorage.getItem(`${PERSIST_PREFIX}inlineVisible`) === 'true';
+      if (storedJob) {
+        const idNum = Number(storedJob);
+        if (Number.isFinite(idNum)) {
+          setActiveJobsheetId(idNum);
+          setInlineEditorTargetId(idNum);
+          setInlineEditorVisible(storedVisible || true);
+        }
+      }
+      applyStoredScroll();
+    } catch (_err) {}
+  }, [persistUi, applyStoredScroll]);
+
+  // Re-apply scroll when returning to Jobsheets or when inline editor is shown
+  useEffect(() => {
+    if (!persistUi) return;
+    if (workspaceSection === 'jobsheets') {
+      setTimeout(() => applyStoredScroll(), 60);
+    }
+  }, [persistUi, workspaceSection, applyStoredScroll]);
+
+  useEffect(() => {
+    if (!persistUi) return;
+    if (inlineEditorVisible) {
+      setTimeout(() => applyStoredScroll(), 80);
+    }
+  }, [persistUi, inlineEditorVisible, applyStoredScroll]);
 
   useEffect(() => {
     if (!DOCUMENT_FEATURES_ENABLED) return () => {};
@@ -4521,6 +4775,13 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
       if (!payload || payload.businessId !== business.id) return;
+      if (payload.type === 'document-lock-toggled' && payload.documentId != null && typeof payload.locked === 'boolean') {
+        const docId = Number(payload.documentId);
+        setDocuments(prev => prev.map(d => (
+          d && d.document_id === docId ? { ...d, is_locked: payload.locked ? 1 : 0 } : d
+        )));
+        return;
+      }
       if (payload.type === 'documents-updated') {
         refreshDocuments();
         loadDocumentTree();
@@ -4746,6 +5007,24 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       };
     });
   }, [documents]);
+
+  // Helpers for matching PDFs to workbooks by base filename (no extension)
+  const baseNameNoExt = useCallback((fp) => {
+    const name = fp ? String(fp).split(/[\\/]+/).pop() : '';
+    return name ? name.replace(/\.[^.]+$/, '') : '';
+  }, []);
+
+  const pdfBaseNames = useMemo(() => {
+    const set = new Set();
+    (normalizedDocuments || []).forEach(doc => {
+      const path = doc?.file_path || '';
+      if (path && path.toLowerCase().endsWith('.pdf')) {
+        const base = baseNameNoExt(path);
+        if (base) set.add(base);
+      }
+    });
+    return set;
+  }, [normalizedDocuments, baseNameNoExt]);
 
   useEffect(() => {
     setSelectedDocuments(prev => {
@@ -5014,25 +5293,56 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                         </div>
                       );
                     } else if (column.key === 'actions') {
+                      const isLocked = Boolean(doc?.is_locked);
+                      const isWorkbook = (doc?.doc_type || '').toLowerCase() === 'workbook';
+                      const fileExists = doc?.fileAvailable !== false && Boolean(doc?.file_path);
+                      const workbookHasPdf = isWorkbook && fileExists ? pdfBaseNames.has(baseNameNoExt(doc.file_path)) : false;
                       cell = (
                         <div className="flex flex-wrap justify-end gap-1.5">
                           <IconButton
+                            label={isLocked ? 'Unlock' : 'Lock'}
+                            onClick={async () => {
+                              try {
+                                await window.api?.setDocumentLock?.(doc.document_id, !isLocked);
+                                await refreshDocuments();
+                              } catch (err) {
+                                console.error('Failed to toggle document lock', err);
+                                setError(err?.message || 'Unable to toggle document lock');
+                              }
+                            }}
+                            disabled={!doc?.document_id}
+                    className={isLocked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
+                          >
+                            <span className="text-base" aria-hidden>{isLocked ? '🔒' : '🔓'}</span>
+                          </IconButton>
+                          <IconButton
                             label="Open document"
                             onClick={() => handleOpenDocumentFile(doc.file_path)}
-                            disabled={!doc.fileAvailable}
+                            disabled={!fileExists}
                           >
                             <OpenIcon />
                           </IconButton>
                           <IconButton
                             label="Reveal document in Finder"
                             onClick={() => handleRevealDocument(doc.file_path)}
-                            disabled={!doc.fileAvailable}
+                            disabled={!fileExists}
                           >
                             <RevealIcon />
                           </IconButton>
+                          {isWorkbook ? (
+                            <button
+                              type="button"
+                              onClick={() => handleExportWorkbookPdf(doc)}
+                              disabled={!fileExists || isLocked || workbookHasPdf}
+                              className="inline-flex items-center rounded border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              Export
+                            </button>
+                          ) : null}
                           <IconButton
                             label="Delete document"
                             onClick={() => handleDeleteDocumentRecord(doc)}
+                            disabled={doc?.document_id == null || isLocked}
                             className="border-red-200 text-red-600 hover:bg-red-50"
                           >
                             <DeleteIcon />
@@ -5059,22 +5369,133 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     );
   }, [activeDocumentColumns, handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection]);
 
+  // Mirror inline documents pane visually (no generation), across all files
   const documentsContent = useMemo(() => {
-    if (!filteredDocuments.length) {
-      return <div className="rounded border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">{emptyStateMessage}</div>;
-    }
+    const excelDocs = filteredDocuments.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
+    const pdfDocs = filteredDocuments.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
 
-    if (documentsGroup === 'none') {
-      return renderDocumentTable(filteredDocuments);
-    }
+    // No export-all in main pane
 
-    return groupedDocuments.map(group => (
-      <div key={group.key || 'group'} className="space-y-2">
-        <h3 className="text-sm font-semibold text-slate-600">{group.label || 'Other'}</h3>
-        {renderDocumentTable(group.items)}
+    const ExcelPane = (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-slate-700">Excel</div>
+          <div className="flex items-center gap-2 text-xs">
+            <button type="button" onClick={handleRefreshDocuments} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
+          {excelDocs.map(doc => {
+            const label = doc.fileName || doc.displayLabel || 'Workbook';
+            const locked = Boolean(doc?.is_locked);
+            const generated = Boolean(doc?.fileAvailable);
+            const hasPdf = doc?.fileAvailable ? pdfBaseNames.has(baseNameNoExt(doc.file_path)) : false;
+            return (
+              <div key={`xl:${doc.document_id || doc.file_path}`} className="flex items-center justify-between rounded px-2 py-2">
+                <div className="min-w-0">
+                  <div className={`flex items-center gap-2 text-sm font-medium truncate ${generated ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
+                    <span aria-hidden>{generated ? '✅' : '❌'}</span>
+                    <span className="truncate" title={doc.file_path}>{label}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <IconButton
+                    label={locked ? 'Unlock workbook' : 'Lock workbook'}
+                    onClick={async () => {
+                      try {
+                        await window.api?.setDocumentLock?.(doc.document_id, !locked);
+                        // Notify without triggering full refresh in main pane
+                        window.api?.notifyJobsheetChange?.({
+                          type: 'document-lock-toggled',
+                          businessId: business.id,
+                          jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+                          documentId: doc.document_id,
+                          locked: !locked
+                        });
+                      } catch (err) {
+                        console.error('Failed to toggle lock', err);
+                        setError(err?.message || 'Unable to toggle lock');
+                      }
+                    }}
+                    disabled={!generated || !doc?.document_id}
+                    className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
+                  >
+                    <span className="text-base" aria-hidden>{locked ? '🔒' : '🔓'}</span>
+                  </IconButton>
+                  {/* Export removed in main pane */}
+                  <div className="flex items-center gap-1.5">
+                    <IconButton label="Open" onClick={() => handleOpenDocumentFile(doc.file_path)} disabled={!generated}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label="Reveal in Finder" onClick={() => handleRevealDocument(doc.file_path)} disabled={!generated}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!generated || doc?.document_id == null || locked} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {excelDocs.length === 0 ? (
+            <div className="px-2 py-2 text-sm text-slate-500">No Excel workbooks.</div>
+          ) : null}
+        </div>
       </div>
-    ));
-  }, [documentsGroup, filteredDocuments, groupedDocuments, renderDocumentTable, emptyStateMessage]);
+    );
+
+    const PdfPane = (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-semibold text-slate-700">PDFs</div>
+          <div className="flex items-center gap-2 text-xs">
+            <button type="button" onClick={handleRefreshDocuments} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+          </div>
+        </div>
+        <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
+          {pdfDocs.map(doc => {
+            const label = doc.displayLabel || doc.fileName || 'PDF';
+            const exported = Boolean(doc?.fileAvailable);
+            const locked = Boolean(doc?.is_locked);
+            return (
+              <div key={`pdf:${doc.document_id || doc.file_path}`} className="flex items-center justify-between rounded px-2 py-2">
+                <div className="min-w-0">
+                  <div className={`flex items-center gap-2 text-sm font-medium truncate ${exported ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
+                    <span aria-hidden>{exported ? '✅' : '❌'}</span>
+                    <span className="truncate" title={doc.file_path}>{label}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <IconButton label={locked ? 'Unlock PDF' : 'Lock PDF'} onClick={async () => {
+                    try {
+                      await window.api?.setDocumentLock?.(doc.document_id, !locked);
+                      window.api?.notifyJobsheetChange?.({
+                        type: 'document-lock-toggled',
+                        businessId: business.id,
+                        jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+                        documentId: doc.document_id,
+                        locked: !locked
+                      });
+                    } catch (err) { console.error('Failed to toggle lock', err); setError(err?.message || 'Unable to toggle lock'); }
+                  }} disabled={!exported || !doc?.document_id} className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}><span className="text-base" aria-hidden>{locked ? '🔒' : '🔓'}</span></IconButton>
+                  <div className="flex items-center gap-1.5">
+                    <IconButton label="Open" onClick={() => handleOpenDocumentFile(doc.file_path)} disabled={!exported}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label="Reveal in Finder" onClick={() => handleRevealDocument(doc.file_path)} disabled={!exported}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!exported || doc?.document_id == null || locked} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+          {pdfDocs.length === 0 ? (
+            <div className="px-2 py-2 text-sm text-slate-500">No PDFs.</div>
+          ) : null}
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="space-y-4">
+        {ExcelPane}
+        {PdfPane}
+      </div>
+    );
+  }, [filteredDocuments, handleRefreshDocuments, handleOpenDocumentFile, handleRevealDocument, handleDeleteDocumentRecord, pdfBaseNames, baseNameNoExt, setError, refreshDocuments]);
 
   const documentTreeRoot = documentTree?.root || null;
   const documentTreeTrash = documentTree?.trash || null;
@@ -5301,6 +5722,8 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     isConfigured={documentsConfigured}
                     collapsed={documentTreeCollapsed}
                     onCollapsedChange={value => setDocumentTreeCollapsed(Boolean(value))}
+                    persist={persistUi}
+                    persistKey={`ui:${business.id}:documents`}
                   />
                   <div className="space-y-4">
                     <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-4">
@@ -5309,7 +5732,9 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                           <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
                           <p className="text-sm text-slate-500">
                             {headerSubtitle}
-                            {documentsLoading ? <span className="ml-2 text-xs text-slate-400">Loading…</span> : null}
+                            <span className="ml-2 inline-block align-middle text-xs text-slate-400 w-[64px]">
+                              {showDocumentsLoading ? 'Loading…' : '\u00A0'}
+                            </span>
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-2">
@@ -5439,6 +5864,17 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                 <div>
                   <h2 className="text-lg font-semibold text-slate-700">Business settings</h2>
                   <p className="text-sm text-slate-500">Update folders and review business information.</p>
+                </div>
+
+                <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Persist UI state</h3>
+                    <p className="text-xs text-slate-500">When enabled, restores the exact last view, including selected tabs, open jobsheets and scroll position.</p>
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-600">
+                    <input type="checkbox" checked={persistUi} onChange={e => setPersistUi(e.target.checked)} />
+                    <span>{persistUi ? 'Enabled' : 'Disabled'}</span>
+                  </label>
                 </div>
 
                 <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
@@ -5818,6 +6254,7 @@ function JobsheetEditorWindow({
   const [definitionSaving, setDefinitionSaving] = useState(false);
   const formStateRef = useRef(DEFAULT_JOBSHEET(numericBusinessId));
   const [activeEditorSection, setActiveEditorSection] = useState('client');
+  const sectionRestoredRef = useRef(false);
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
@@ -5832,7 +6269,13 @@ function JobsheetEditorWindow({
     const id = jobsheetValue != null ? Number(jobsheetValue) : null;
     if (!id || Number.isNaN(id)) return null;
     try {
-      return window.sessionStorage.getItem(`${storagePrefix}${id}`) || null;
+      const sessionVal = window.sessionStorage.getItem(`${storagePrefix}${id}`) || null;
+      const persistFlag = window.localStorage.getItem('app:persistUiState') === 'true';
+      if (sessionVal) return sessionVal;
+      if (persistFlag) {
+        return window.localStorage.getItem(`${storagePrefix}${id}`) || null;
+      }
+      return null;
     } catch (_err) {
       return null;
     }
@@ -5844,6 +6287,9 @@ function JobsheetEditorWindow({
     if (!section) return;
     try {
       window.sessionStorage.setItem(`${storagePrefix}${id}`, section);
+      if (window.localStorage.getItem('app:persistUiState') === 'true') {
+        window.localStorage.setItem(`${storagePrefix}${id}`, section);
+      }
     } catch (_err) {
       // ignore storage errors
     }
@@ -5856,6 +6302,8 @@ function JobsheetEditorWindow({
   useEffect(() => {
     const id = jobsheetId != null ? Number(jobsheetId) : null;
     if (!id || !activeEditorSection) return;
+    // Avoid writing a default tab before we restore the saved one
+    if (!sectionRestoredRef.current) return;
     storeSection(id, activeEditorSection);
   }, [jobsheetId, activeEditorSection, storeSection]);
 
@@ -6104,7 +6552,7 @@ function JobsheetEditorWindow({
     }
     try {
       setJobsheetDocumentsError('');
-      const result = await window.api?.exportWorkbookPdfs?.({ filePath: doc.file_path });
+      const result = await window.api?.exportWorkbookPdfs?.({ businessId: numericBusinessId, filePath: doc.file_path });
       if (result && result.ok === false) {
         throw new Error(result.message || 'Unable to export workbook to PDF');
       }
@@ -6135,23 +6583,16 @@ function JobsheetEditorWindow({
     }
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
 
+  
+
   const handleDeleteJobsheetDocument = useCallback(async (doc) => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocumentsError('Document access is currently disabled.');
       return;
     }
     if (!doc || doc.document_id == null) return;
-    const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
-    const title = typeLabel
-      ? `${typeLabel}${doc.number ? ` #${doc.number}` : ''}`
-      : 'this document';
-    const confirmed = window.confirm(`Delete ${title}? This removes it from this jobsheet.`);
-    if (!confirmed) return;
-
-    let removeFile = false;
-    if (doc.file_path) {
-      removeFile = window.confirm('Also remove the generated file from disk?');
-    }
+    // Delete silently and also remove the generated file from disk
+    const removeFile = true;
 
     try {
       setJobsheetDocumentsError('');
@@ -6496,10 +6937,12 @@ function JobsheetEditorWindow({
     setMessage('');
     if (nextTarget != null) {
       const storedSection = getStoredSection(nextTarget);
-      const fallbackSection = storedSection || activeEditorSection || 'client';
+      const fallbackSection = storedSection || 'client';
       setActiveEditorSection(fallbackSection);
+      sectionRestoredRef.current = true;
     } else {
       setActiveEditorSection('client');
+      sectionRestoredRef.current = true;
     }
     setLastOutputPath('');
 
@@ -6513,7 +6956,7 @@ function JobsheetEditorWindow({
       formStateRef.current = resetState;
       setLoading(false);
     }
-  }, [isInline, targetJobsheetId, jobsheetId, numericBusinessId, getStoredSection, activeEditorSection]);
+  }, [isInline, targetJobsheetId, jobsheetId, numericBusinessId, getStoredSection]);
 
   useEffect(() => {
     if (isInline) return () => {};
@@ -6532,10 +6975,12 @@ function JobsheetEditorWindow({
       setMessage('');
       if (requestedId != null) {
         const storedSection = getStoredSection(requestedId);
-        const fallbackSection = storedSection || activeEditorSection || 'client';
+        const fallbackSection = storedSection || 'client';
         setActiveEditorSection(fallbackSection);
+        sectionRestoredRef.current = true;
       } else {
         setActiveEditorSection('client');
+        sectionRestoredRef.current = true;
       }
       if (payload.businessName) {
         setBusiness(prev => prev || { id: numericBusinessId, business_name: payload.businessName });
@@ -6558,7 +7003,7 @@ function JobsheetEditorWindow({
       }
     });
     return () => unsubscribe();
-  }, [isInline, numericBusinessId, jobsheetId, getStoredSection, activeEditorSection]);
+  }, [isInline, numericBusinessId, jobsheetId, getStoredSection]);
 
   const buildSnapshot = useCallback((state, id) => ({
     jobsheet_id: id ?? state.jobsheet_id ?? null,
@@ -6633,12 +7078,14 @@ function JobsheetEditorWindow({
             } else if (initialLoadRef.current) {
               setActiveEditorSection(prev => prev || 'client');
             }
+            sectionRestoredRef.current = true;
           }
         } else {
           setFormState(DEFAULT_JOBSHEET(numericBusinessId));
           setActiveEditorSection('client');
+          sectionRestoredRef.current = true;
         }
-        initialLoadRef.current = true;
+        initialLoadRef.current = false;
       } catch (err) {
         if (!mounted) return;
         console.error('Failed to load jobsheet editor', err);
@@ -6651,7 +7098,7 @@ function JobsheetEditorWindow({
     return () => {
       mounted = false;
     };
-  }, [numericBusinessId, initialJobsheetId, jobsheetId, isInline, getStoredSection, activeEditorSection]);
+  }, [numericBusinessId, initialJobsheetId, jobsheetId, isInline, getStoredSection]);
 
   useEffect(() => {
     formStateRef.current = formState;
@@ -7134,7 +7581,7 @@ function JobsheetEditorWindow({
 
     const targetKey = definitionKey || 'workbook';
     const currentDoc = existingDoc
-      || jobsheetDocuments.find(doc => (doc.definition_key || 'workbook') === targetKey || (doc.doc_type === 'workbook' && !doc.definition_key));
+      || jobsheetDocuments.find(doc => doc?.definition_key === targetKey);
 
     const proceed = window.confirm('Regenerate the workbook using the latest jobsheet details?');
     if (!proceed) {
@@ -7682,7 +8129,7 @@ function JobsheetEditorWindow({
   if (message) editorToasts.push({ id: 'jobsheet-message', tone: 'success', text: message });
 
   if (isInline) {
-    const inlineStatus = saving ? 'Saving…' : message;
+    const inlineStatus = saving ? 'Saving…' : '';
     const inlineMessageVisible = !error && Boolean(inlineStatus);
     const inlineDisplay = inlineStatus || '\u00A0';
     return (

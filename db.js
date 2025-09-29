@@ -275,6 +275,10 @@ function initializeDatabase() {
     db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_merge_field_bindings_unique
       ON ${MERGE_FIELD_BINDINGS_TABLE} (${MERGE_FIELD_BINDING_UNIQUE_COLUMNS.join(', ')})`);
 
+    // Backfill timestamps for merge field bindings if columns don't exist
+    db.run(`ALTER TABLE ${MERGE_FIELD_BINDINGS_TABLE} ADD COLUMN created_at TEXT`, logDuplicateColumn);
+    db.run(`ALTER TABLE ${MERGE_FIELD_BINDINGS_TABLE} ADD COLUMN updated_at TEXT`, logDuplicateColumn);
+
     db.run(`CREATE TABLE IF NOT EXISTS merge_field_value_sources (
       field_key TEXT PRIMARY KEY,
       source_type TEXT NOT NULL,
@@ -491,6 +495,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN updated_at TEXT DEFAULT (datetime(\'now\'))', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN definition_key TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN invoice_variant TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN is_locked INTEGER DEFAULT 0', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
 
@@ -553,6 +558,31 @@ function initializeDatabase() {
     db.run(
       `INSERT OR IGNORE INTO ${MERGE_FIELD_BINDINGS_TABLE} (field_key, template, sheet, cell, data_type, style, format)
        VALUES ('ahmen_fee', 'ahmen_excel', 'Client Data', 'B27', 'number', '12', NULL)`
+    );
+    // Ensure numeric currency formatting on key fee fields (don't override if already set)
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET data_type = 'number', format = 'currency', updated_at = datetime('now')
+       WHERE template = 'ahmen_excel' AND (data_type IS NULL OR data_type = '' OR data_type = 'string')
+         AND field_key IN ('total_amount','deposit_amount','balance_amount','production_fees','extra_fees')`
+    );
+    // Ensure date data type on date fields
+    db.run(
+      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
+       SET data_type = 'date', updated_at = datetime('now')
+       WHERE template = 'ahmen_excel' AND (data_type IS NULL OR data_type = '' OR data_type = 'string')
+         AND field_key IN ('event_date','balance_due_date','balance_reminder_date')`
+    );
+    // Cleanup: remove legacy AHMEN_FEE bindings on Quote/Invoice F21 now that templates use curly placeholders
+    db.run(
+      `DELETE FROM ${MERGE_FIELD_BINDINGS_TABLE}
+       WHERE field_key = 'ahmen_fee' AND template = 'ahmen_excel' AND cell = 'F21'
+         AND sheet IN ('Quote','Quotes','QUOTE','Invoice','INVOICE','Invoice – Deposit','Invoice - Deposit','Invoice – Balance','Invoice - Balance')`
+    );
+    db.run(
+      `DELETE FROM ${MERGE_FIELD_BINDINGS_TABLE}
+       WHERE field_key = 'ahmen_fee' AND template = 'ahmen_excel' AND cell = 'F49'
+         AND sheet IN ('Booking Schedule','Booking schedule')`
     );
     seedMergeFieldValueSources();
     migrateDocumentDefinitionsTable(() => {
@@ -754,7 +784,7 @@ function seedDocumentDefinitions() {
                 sort_order,
                 created_at,
                 updated_at
-              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`,
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, datetime('now'), datetime('now'))`,
               [
                 businessId,
                 definition.key,
@@ -1696,6 +1726,23 @@ async function deleteDocumentFolder(options = {}) {
     throw new Error('Target is not a folder');
   }
 
+  // Prevent deleting folders that contain locked documents
+  const escaped = escapeLikePattern(path.resolve(targetPath));
+  const likeValue = `${escaped}%`;
+  const lockedCount = await new Promise((resolve, reject) => {
+    db.get(
+      "SELECT COUNT(1) AS c FROM documents WHERE business_id = ? AND file_path LIKE ? ESCAPE '\\' AND is_locked = 1",
+      [businessId, likeValue],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve(row?.c || 0);
+      }
+    );
+  });
+  if (lockedCount > 0) {
+    throw new Error('Cannot delete folder: contains locked documents');
+  }
+
   const trashedPath = await moveEntryToTrash(rootPath, targetPath);
   await clearDocumentPathsByPrefix(businessId, targetPath);
   return { ok: true, trashedPath };
@@ -1730,6 +1777,21 @@ async function deleteDocumentByPath(options = {}) {
   if (stats.isDirectory()) {
     const relative = path.relative(rootPath, targetPath);
     return deleteDocumentFolder({ businessId, relativePath: relative });
+  }
+
+  // Block deletion of locked documents
+  const lockedRow = await new Promise((resolve, reject) => {
+    db.get(
+      `SELECT is_locked FROM documents WHERE business_id = ? AND file_path = ? LIMIT 1`,
+      [businessId, targetPath],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve(row || null);
+      }
+    );
+  });
+  if (lockedRow && lockedRow.is_locked) {
+    throw new Error('This document is locked and cannot be deleted');
   }
 
   const trashedPath = await moveEntryToTrash(rootPath, targetPath);
@@ -3276,6 +3338,25 @@ module.exports = {
     });
   },
 
+  setDocumentLock: (documentId, locked) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(documentId);
+      if (!Number.isInteger(id)) {
+        reject(new Error('Invalid document id'));
+        return;
+      }
+      const value = locked ? 1 : 0;
+      db.run(
+        `UPDATE documents SET is_locked = ?, updated_at = datetime('now') WHERE document_id = ?`,
+        [value, id],
+        function (err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  },
+
   deleteDocument: (documentId) => {
     return new Promise((resolve, reject) => {
       const id = Number(documentId);
@@ -3294,6 +3375,9 @@ module.exports = {
       );
     });
   },
+  // Expose utility to update a single document's file_path (used for dedup cleanup)
+  setDocumentFilePath: (documentId, filePath) => setDocumentFilePath(documentId, filePath),
+  clearDocumentPath: (businessId, absolutePath) => clearDocumentPath(businessId, absolutePath),
 
   deleteMusician: (musicianId) => {
     return new Promise((resolve, reject) => {

@@ -283,7 +283,8 @@
         "sheet": "Client Data",
         "cell": "B27",
         "data_type": "number",
-        "style": "12"
+        "style": "12",
+        "format": "currency"
       }
     ]
   },
