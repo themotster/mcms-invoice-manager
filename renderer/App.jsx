@@ -313,6 +313,10 @@ const FIELD_META = {
     component: 'productionPanel',
     always: true
   },
+  documents_panel: {
+    component: 'documentsPanel',
+    always: true
+  },
   notes: {
     label: 'Internal Notes',
     type: 'textarea',
@@ -477,6 +481,12 @@ const GROUP_CONFIG = {
     category: 'services',
     order: ['service_types', 'specialist_singers'],
     append: ['notes']
+  },
+  documents: {
+    title: 'Documents',
+    description: 'Generate Excel outputs and manage PDFs.',
+    staticOnly: true,
+    fields: ['documents_panel']
   }
 };
 
@@ -487,7 +497,8 @@ const GROUP_ICON_MAP = {
   pricing: '🎶',
   production: '🎛️',
   billing: '💷',
-  services: '📝'
+  services: '📝',
+  documents: '🗂️'
 };
 
 function startCaseKey(key) {
@@ -2896,6 +2907,213 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   );
 }
 
+function DocumentsInlinePanel({
+  jobsheetId,
+  documents,
+  documentDefinitions,
+  loading,
+  definitionsLoading,
+  error,
+  onRefresh,
+  onGenerate,
+  onExportPdf,
+  onOpenFile,
+  onRevealFile,
+  onDelete,
+  documentFolder
+}) {
+  const list = Array.isArray(documents) ? documents : [];
+  const excelDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
+  const pdfDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
+  const defs = Array.isArray(documentDefinitions) ? documentDefinitions : [];
+
+  const [menuOpenId, setMenuOpenId] = useState('');
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (!menuOpenId) return;
+      if (menuRef.current && menuRef.current.contains(e.target)) return;
+      setMenuOpenId('');
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [menuOpenId]);
+
+  // (previous simple renderRow removed; panes now render rows inline)
+
+  // helpers to match PDFs to workbook by base name
+  const baseNameNoExt = (fp) => {
+    const name = fp ? String(fp).split(/[\\/]+/).pop() : '';
+    return name ? name.replace(/\.[^.]+$/, '') : '';
+  };
+  const workbookDocsByKey = new Map(
+    excelDocs.map(d => [d.definition_key || 'workbook', d])
+  );
+  const pdfByBase = new Map(
+    pdfDocs.map(d => [baseNameNoExt(d.file_path || ''), d])
+  );
+
+  const EXCEL_TARGETS = [
+    { key: 'client_data', label: 'Client Data' },
+    { key: 'quote', label: 'Quote' },
+    { key: 'booking_schedule', label: 'Booking Schedule' },
+    { key: 't_and_cs', label: 'T&Cs' },
+    { key: 'invoice_deposit', label: 'Invoice – Deposit' },
+    { key: 'invoice_balance', label: 'Invoice – Balance' }
+  ];
+  const defByKey = new Map(defs.map(d => [d.key, d]));
+  const excelItems = EXCEL_TARGETS.map(target => {
+    const def = defByKey.get(target.key) || defs.find(d => (d.label || '').toLowerCase() === target.label.toLowerCase()) || null;
+    const doc = def ? workbookDocsByKey.get(def.key) : null;
+    return { target, def, doc };
+  });
+  const pdfItems = excelItems.map(({ target, def }) => {
+    const wbDoc = def ? workbookDocsByKey.get(def.key) : null;
+    const pdfDoc = wbDoc ? pdfByBase.get(baseNameNoExt(wbDoc?.file_path || '')) : null;
+    return { target, def, wbDoc, pdfDoc };
+  });
+
+  const handleGenerate = (key) => onGenerate?.(key);
+  const canGenerateAll = Boolean(jobsheetId && excelItems.some(i => i.def && i.def.template_path) && !definitionsLoading);
+
+  const handleExportForDef = async (item) => {
+    if (!item) return;
+    const { def, wbDoc, pdfDoc } = item;
+    if (!wbDoc || !wbDoc.file_path) {
+      const proceed = window.confirm('No workbook found for this document. Generate it first?');
+      if (!proceed) return;
+      await onGenerate?.(def.key);
+      return;
+    }
+    await onExportPdf?.(wbDoc);
+  };
+
+  const handleExportAll = async () => {
+    // ensure all workbooks exist first
+    const missing = pdfItems.filter(i => !i.wbDoc || !i.wbDoc.file_path);
+    if (missing.length) {
+      const ok = window.confirm('Some PDFs need a workbook. Generate missing workbooks first?');
+      if (!ok) return;
+      for (const i of missing) { // sequential
+        // eslint-disable-next-line no-await-in-loop
+        await onGenerate?.(i.def.key);
+      }
+    }
+    for (const i of pdfItems) {
+      if (i.wbDoc && i.wbDoc.file_path) {
+        // eslint-disable-next-line no-await-in-loop
+        await onExportPdf?.(i.wbDoc);
+      }
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
+      <div className="space-y-4">
+        {/* Excel Pane */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">Excel</div>
+            <div className="flex items-center gap-2 text-xs">
+              <button type="button" onClick={onRefresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+              <button type="button" onClick={() => excelItems.forEach(i => i.def.template_path && handleGenerate(i.def.key))} disabled={!canGenerateAll} className="inline-flex items-center rounded border border-indigo-200 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-60">Generate all</button>
+            </div>
+          </div>
+          <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
+            {excelItems.map(({ target, def, doc }) => {
+              const label = target.label;
+              const disabled = !jobsheetId || !def || !def.template_path || definitionsLoading;
+              const generated = Boolean(doc && doc.file_path);
+              return (
+                <div key={def ? def.key : `missing:${label}`} className="flex items-center justify-between rounded px-2 py-2">
+                  <div className="min-w-0">
+                    <div className={`flex items-center gap-2 text-sm font-medium truncate ${generated ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
+                      <span aria-hidden>{generated ? '✅' : '❌'}</span>
+                      <span className="truncate">{label}</span>
+                    </div>
+                    {/* Do not display file path when generated */}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => def && handleGenerate(def.key)} disabled={disabled} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">Generate</button>
+                    <div className="relative">
+                      {(() => { const rowId = `excel:${def ? def.key : label}`; return (
+                        <>
+                          <button type="button" onClick={() => setMenuOpenId(menuOpenId === rowId ? '' : rowId)} className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 hover:bg-slate-100" aria-label="More actions">⋯</button>
+                          {menuOpenId === rowId ? (
+                            <div ref={menuRef} className="absolute right-0 z-10 mt-2 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
+                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onOpenFile?.(doc?.file_path); }} disabled={!generated}>Open</button>
+                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onRevealFile?.(doc?.file_path); }} disabled={!generated}>Reveal</button>
+                              {onDelete ? <>
+                                <div className="my-1 border-t border-slate-200" />
+                                <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => { setMenuOpenId(''); onDelete?.(doc); }} disabled={!generated || doc?.document_id == null}>Delete</button>
+                              </> : null}
+                            </div>
+                          ) : null}
+                        </>
+                      ); })()}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* PDFs Pane */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">PDFs</div>
+            <div className="flex items-center gap-2 text-xs">
+              <button type="button" onClick={onRefresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+              <button type="button" onClick={handleExportAll} className="inline-flex items-center rounded border border-indigo-200 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50">Export all</button>
+            </div>
+          </div>
+          <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
+            {pdfItems.map((item) => {
+              const { target, def, wbDoc, pdfDoc } = item;
+              const label = target.label;
+              const exported = Boolean(pdfDoc && pdfDoc.file_path);
+              return (
+                <div key={def ? def.key : `pdf:${label}`} className="flex items-center justify-between rounded px-2 py-2">
+                  <div className="min-w-0">
+                    <div className={`flex items-center gap-2 text-sm font-medium truncate ${exported ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
+                      <span aria-hidden>{exported ? '✅' : '❌'}</span>
+                      <span className="truncate">{label}</span>
+                    </div>
+                    {/* Do not display file path when exported */}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={() => handleExportForDef(item)} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Export</button>
+                    <div className="relative">
+                      {(() => { const rowId = `pdf:${def ? def.key : label}`; return (
+                        <>
+                          <button type="button" onClick={() => setMenuOpenId(menuOpenId === rowId ? '' : rowId)} className="inline-flex h-8 w-8 items-center justify-center rounded border border-slate-300 hover:bg-slate-100" aria-label="More actions">⋯</button>
+                          {menuOpenId === rowId ? (
+                            <div ref={menuRef} className="absolute right-0 z-10 mt-2 w-44 rounded border border-slate-200 bg-white p-1 shadow-lg">
+                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onOpenFile?.(pdfDoc?.file_path); }} disabled={!exported}>Open</button>
+                              <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-slate-700 hover:bg-slate-100" onClick={() => { setMenuOpenId(''); onRevealFile?.(pdfDoc?.file_path); }} disabled={!exported}>Reveal</button>
+                              {onDelete ? <>
+                                <div className="my-1 border-t border-slate-200" />
+                                <button type="button" className="block w-full rounded px-3 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50" onClick={() => { setMenuOpenId(''); onDelete?.(pdfDoc); }} disabled={!exported || pdfDoc?.document_id == null}>Delete</button>
+                              </> : null}
+                            </div>
+                          ) : null}
+                        </>
+                      ); })()}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ProductionPanel({ formState, onChange, totals }) {
   const productionItems = useMemo(
     () => normalizeProductionItems(formState.pricing_production_items),
@@ -3315,7 +3533,19 @@ function JobsheetEditor({
   onUpdateSingerPool,
   activeGroupKey: activeGroupKeyProp,
   onActiveGroupChange,
-  groups
+  groups,
+  documents,
+  documentsLoading,
+  documentsError,
+  documentDefinitions,
+  definitionsLoading,
+  onRefreshDocuments,
+  onGenerateDocument,
+  onExportPdf,
+  onOpenDocumentFile,
+  onRevealDocument,
+  onDeleteDocument,
+  documentFolder
 }) {
   const handleFieldChange = (name, value) => {
     onChange(prev => {
@@ -3573,6 +3803,26 @@ function JobsheetEditor({
                         formState={formState}
                         onChange={handleFieldChange}
                         totals={pricingTotals}
+                      />
+                    );
+                  }
+                  if (field.component === 'documentsPanel') {
+                    return (
+                      <DocumentsInlinePanel
+                        key="documentsPanel"
+                        jobsheetId={jobsheetId}
+                        documentDefinitions={documentDefinitions}
+                        documents={documents}
+                        loading={documentsLoading}
+                        definitionsLoading={definitionsLoading}
+                        error={documentsError}
+                        onRefresh={onRefreshDocuments}
+                        onGenerate={onGenerateDocument}
+                        onExportPdf={onExportPdf}
+                        onOpenFile={onOpenDocumentFile}
+                        onRevealFile={onRevealDocument}
+                        onDelete={onDeleteDocument}
+                        documentFolder={documentFolder}
                       />
                     );
                   }
@@ -5270,73 +5520,36 @@ function JobsheetDocumentsPanel({
   const workbooks = list.filter(doc => (doc?.doc_type || '').toLowerCase() === 'workbook');
   const pdfExports = list.filter(doc => (doc?.doc_type || '').toLowerCase().includes('pdf'));
   const otherDocuments = list.filter(doc => !workbooks.includes(doc) && !pdfExports.includes(doc));
-  const workbookDefs = Array.isArray(documentDefinitions)
-    ? documentDefinitions.filter(def => (def.doc_type || '').toLowerCase() === 'workbook')
-    : [];
-  const workbookKey = workbookDefinition?.key || (workbookDefs[0]?.key ?? 'workbook');
+  // minimal generation actions
+  const workbookDefs = useMemo(() => (
+    Array.isArray(documentDefinitions)
+      ? documentDefinitions.filter(def => (def.doc_type || '').toLowerCase() === 'workbook')
+      : []
+  ), [documentDefinitions]);
+  const lastWorkbook = workbooks.length ? workbooks[0] : null;
+  const canExportPdfs = Boolean(lastWorkbook && lastWorkbook.file_path);
+  const [generatingAll, setGeneratingAll] = useState(false);
+  const handleGenerateAll = useCallback(async () => {
+    if (!onGenerate || !jobsheetId) return;
+    const ready = workbookDefs.filter(def => def && def.template_path);
+    if (!ready.length) return;
+    try {
+      setGeneratingAll(true);
+      for (const def of ready) {
+        // eslint-disable-next-line no-await-in-loop
+        await onGenerate(def.key);
+      }
+    } finally {
+      setGeneratingAll(false);
+    }
+  }, [onGenerate, jobsheetId, workbookDefs]);
   const documentLabel = (doc) => {
     return doc?.display_label
       || doc?.definition_label
       || (doc?.definition_key ? startCaseKey(doc.definition_key) : 'Document');
   };
 
-  const renderDefinitionEntry = (definition) => {
-    if (!definition) return null;
-    const definitionKey = definition.key || 'workbook';
-    const definitionLabel = definition.label || startCaseKey(definitionKey);
-    const templatePath = definition.template_path || '';
-    const hasTemplate = Boolean(templatePath);
-    const isGenerating = generatingKey === definitionKey;
-    const disableGenerate = !jobsheetId || !hasTemplate || isGenerating || definitionsLoading;
-    const existingDoc = workbooks.find(doc => (doc.definition_key || 'workbook') === definitionKey) || null;
-    const lastGeneratedPath = existingDoc?.file_path || '';
-
-    const buttonLabel = isGenerating
-      ? 'Generating…'
-      : existingDoc
-        ? 'Regenerate workbook'
-        : 'Generate workbook';
-
-    return (
-      <div
-        key={definitionKey}
-        className="rounded border border-slate-200 bg-white px-3 py-3 sm:flex sm:items-start sm:justify-between sm:gap-3"
-      >
-        <div className="space-y-1 text-xs text-slate-500">
-          <div className="text-sm font-semibold text-slate-700">{definitionLabel}</div>
-          <div className="break-all">{templatePath || 'No template selected yet.'}</div>
-          {lastGeneratedPath ? (
-            <div className="break-all">Last generated: {lastGeneratedPath}</div>
-          ) : null}
-        </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2 sm:mt-0">
-          <button
-            type="button"
-            onClick={() => onEditTemplate?.(definition)}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-          >
-            Edit template settings
-          </button>
-          <button
-            type="button"
-            disabled={!hasTemplate}
-            onClick={() => onOpenTemplate?.(definition)}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Open template file
-          </button>
-          <button
-            type="button"
-            onClick={() => onGenerate?.(definitionKey)}
-            disabled={disableGenerate}
-            className="inline-flex items-center rounded border border-indigo-200 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {buttonLabel}
-          </button>
-        </div>
-      </div>
-    );
-  };
+  // generation UI removed; keep outputs only
 
   const renderDocumentRow = (doc, options = {}) => {
     if (!doc) return null;
@@ -5437,33 +5650,46 @@ function JobsheetDocumentsPanel({
 
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div>
+      <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="min-w-0">
           <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-          <p className="text-sm text-slate-500">Generate the master workbook for this jobsheet and open the latest exports.</p>
+          {documentFolder ? (
+            <div className="text-xs text-slate-500 break-all">{documentFolder}</div>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {workbookDefs.map(def => {
+              const disabled = !jobsheetId || !def.template_path || definitionsLoading;
+              return (
+                <button
+                  key={def.key}
+                  type="button"
+                  onClick={() => onGenerate?.(def.key)}
+                  disabled={disabled}
+                  className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                  title={def.template_path || 'No template configured'}
+                >
+                  Generate {def.label || startCaseKey(def.key)}
+                </button>
+              );
+            })}
+          </div>
           <button
             type="button"
-            onClick={onRefresh}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            onClick={handleGenerateAll}
+            disabled={generatingAll || definitionsLoading || !jobsheetId || workbookDefs.every(d => !d.template_path)}
+            className="inline-flex items-center rounded border border-indigo-200 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Refresh list
+            {generatingAll ? 'Generating…' : 'Generate all'}
           </button>
           <button
             type="button"
-            onClick={onOpenOutputFolder}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-          >
-            Open documents folder
-          </button>
-          <button
-            type="button"
-            onClick={onOpenOutputFile}
-            disabled={!lastOutputPath}
+            onClick={() => onExportPdf?.(lastWorkbook)}
+            disabled={!canExportPdfs}
             className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            Open latest export
+            Export PDFs
           </button>
         </div>
       </div>
@@ -5472,34 +5698,9 @@ function JobsheetDocumentsPanel({
         <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>
       ) : null}
 
-      <div className="space-y-3 rounded border border-slate-200 bg-slate-50 px-3 py-3 text-sm text-slate-600">
-        <div className="font-medium text-slate-700">Workbook templates</div>
-        {definitionsLoading ? (
-          <div>Loading template details…</div>
-        ) : workbookDefs.length ? (
-          <div className="space-y-2">
-            {workbookDefs.map(renderDefinitionEntry)}
-          </div>
-        ) : (
-          <div>
-            Configure workbook templates in the Templates tab before generating documents.
-          </div>
-        )}
-        {!jobsheetId ? (
-          <p className="text-xs text-slate-500">Save the jobsheet before generating workbook documents.</p>
-        ) : null}
-      </div>
+      {/* Document generation UI removed as requested */}
 
       <div className="space-y-4">
-        <div className="flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <div className="font-medium text-slate-700">Job documents</div>
-            {documentFolder ? (
-              <div className="text-xs text-slate-500 break-all">{documentFolder}</div>
-            ) : null}
-          </div>
-          {loading ? <span className="text-xs text-slate-500">Loading…</span> : null}
-        </div>
 
         {workbooks.length === 0 && pdfExports.length === 0 && otherDocuments.length === 0 && !loading ? (
           <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
@@ -6866,12 +7067,11 @@ function JobsheetEditorWindow({
       payload.jobsheet_id = Number(jobsheetId);
     }
 
-    const meta = DOC_TYPE_META[definition.doc_type] || null;
 
     setDocumentGeneratingKey(definition.key);
     setError('');
     try {
-      if (templatePath && meta?.supportsNormalize && templatePath.toLowerCase().endsWith('.xlsx')) {
+      if (templatePath && templatePath.toLowerCase().endsWith('.xlsx')) {
         try {
           await window.api?.normalizeTemplate?.({ templatePath });
         } catch (normalizeErr) {
@@ -7269,30 +7469,20 @@ function JobsheetEditorWindow({
         activeGroupKey={activeEditorSection}
         onActiveGroupChange={setActiveEditorSection}
         groups={fieldGroups}
-      />
-      <JobsheetDocumentsPanel
-        jobsheetId={jobsheetId}
         documents={jobsheetDocuments}
+        documentsLoading={jobsheetDocumentsLoading}
+        documentsError={jobsheetDocumentsError}
         documentDefinitions={documentDefinitions}
-        loading={jobsheetDocumentsLoading}
         definitionsLoading={documentDefinitionsLoading}
-        error={jobsheetDocumentsError}
-        onRefresh={refreshJobsheetDocuments}
-        onGenerate={handlePopulateExcel}
-        onRegenerate={handleRegenerateWorkbook}
-        generatingKey={documentGeneratingKey}
-        workbookDefinition={workbookDefinition}
-        onOpenTemplate={handleOpenDefinitionTemplate}
-        onEditTemplate={openEditDefinitionModal}
-        onOpenOutputFolder={handleOpenOutputFolder}
-        onOpenOutputFile={handleOpenOutputFile}
-        onOpenFile={handleOpenDocumentFile}
-        onRevealFile={handleRevealDocument}
-        onDelete={handleDeleteJobsheetDocument}
+        onRefreshDocuments={refreshJobsheetDocuments}
+        onGenerateDocument={handlePopulateExcel}
         onExportPdf={handleExportWorkbookPdf}
+        onOpenDocumentFile={handleOpenDocumentFile}
+        onRevealDocument={handleRevealDocument}
+        onDeleteDocument={handleDeleteJobsheetDocument}
         documentFolder={jobsheetDocumentsFolder}
-        lastOutputPath={lastOutputPath}
       />
+      {/* Inline documents tab renders documents; legacy panel removed */}
     </>
   );
 
