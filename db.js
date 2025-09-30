@@ -22,22 +22,14 @@ const DEFAULT_BUSINESSES = [
     business_name: 'Motti Cohen Music Services',
     last_invoice_number: 704,
     last_quote_number: 0,
-    save_path: '/Users/Shared/Invoices/MCMS',
-    invoice_template_path: null,
-    quote_template_path: null,
-    contract_template_path: null,
-    gig_sheet_template_path: null
+    save_path: '/Users/Shared/Invoices/MCMS'
   },
   {
     id: 2,
     business_name: 'AhMen A Cappella Ltd',
     last_invoice_number: 882,
     last_quote_number: 0,
-    save_path: '/Users/Shared/Invoices/AhMen',
-    invoice_template_path: null,
-    quote_template_path: null,
-    contract_template_path: null,
-    gig_sheet_template_path: null
+    save_path: '/Users/Shared/Invoices/AhMen'
   }
 ];
 
@@ -132,10 +124,6 @@ const MAX_TREE_ENTRIES = 4000;
 
 const BUSINESS_SETTINGS_MUTABLE_FIELDS = new Set([
   'save_path',
-  'invoice_template_path',
-  'quote_template_path',
-  'contract_template_path',
-  'gig_sheet_template_path',
   'last_invoice_number',
   'last_quote_number'
 ]);
@@ -241,11 +229,7 @@ function initializeDatabase() {
       business_name TEXT NOT NULL UNIQUE,
       last_invoice_number INTEGER DEFAULT 0,
       last_quote_number INTEGER DEFAULT 0,
-      save_path TEXT NOT NULL,
-      invoice_template_path TEXT,
-      quote_template_path TEXT,
-      contract_template_path TEXT,
-      gig_sheet_template_path TEXT
+      save_path TEXT NOT NULL
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS ${MERGE_FIELD_TABLE} (
@@ -502,10 +486,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
 
-    db.run('ALTER TABLE business_settings ADD COLUMN invoice_template_path TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE business_settings ADD COLUMN quote_template_path TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE business_settings ADD COLUMN contract_template_path TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE business_settings ADD COLUMN gig_sheet_template_path TEXT', logDuplicateColumn);
+    // Template path columns removed; definitions manage their own template_path now.
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_type TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_value REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_items TEXT', logDuplicateColumn);
@@ -588,8 +569,27 @@ function initializeDatabase() {
          AND sheet IN ('Booking Schedule','Booking schedule')`
     );
     seedMergeFieldValueSources();
-    migrateDocumentDefinitionsTable(() => {
-      seedDocumentDefinitions();
+    migrateBusinessSettingsDropTemplateColumns(() => {
+      migrateDocumentDefinitionsTable(() => {
+        seedDocumentDefinitions();
+        // Log quick summary of template_path coverage per business
+        try {
+          db.all(
+            `SELECT business_id, COUNT(*) AS total, SUM(CASE WHEN template_path IS NULL OR template_path = '' THEN 1 ELSE 0 END) AS missing
+             FROM document_definitions GROUP BY business_id`,
+            [],
+            (_err, rows) => {
+              if (Array.isArray(rows)) {
+                rows.forEach(r => {
+                  if (r && Number(r.missing) > 0) {
+                    console.log(`[defs] business ${r.business_id}: ${r.missing}/${r.total} templates missing path`);
+                  }
+                });
+              }
+            }
+          );
+        } catch (_err) {}
+      });
     });
   });
 }
@@ -600,41 +600,28 @@ function seedBusinesses() {
   DEFAULT_BUSINESSES.forEach(business => {
     db.run(
       `INSERT OR IGNORE INTO business_settings (
-        id, business_name, last_invoice_number, last_quote_number, save_path,
-        invoice_template_path, quote_template_path, contract_template_path, gig_sheet_template_path
+        id, business_name, last_invoice_number, last_quote_number, save_path
       )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?)`,
       [
         business.id,
         business.business_name,
         business.last_invoice_number,
         business.last_quote_number,
-        business.save_path,
-        business.invoice_template_path,
-        business.quote_template_path,
-        business.contract_template_path,
-        business.gig_sheet_template_path
+        business.save_path
       ]
     );
 
     db.run(
       `UPDATE business_settings
        SET business_name = ?, last_invoice_number = ?, last_quote_number = ?,
-           save_path = CASE WHEN save_path IS NULL OR save_path = '' THEN ? ELSE save_path END,
-           invoice_template_path = COALESCE(?, invoice_template_path),
-           quote_template_path = COALESCE(?, quote_template_path),
-           contract_template_path = COALESCE(?, contract_template_path),
-           gig_sheet_template_path = COALESCE(?, gig_sheet_template_path)
+           save_path = CASE WHEN save_path IS NULL OR save_path = '' THEN ? ELSE save_path END
        WHERE id = ?`,
       [
         business.business_name,
         business.last_invoice_number,
         business.last_quote_number,
         business.save_path,
-        business.invoice_template_path,
-        business.quote_template_path,
-        business.contract_template_path,
-        business.gig_sheet_template_path,
         business.id
       ]
     );
@@ -717,25 +704,10 @@ function seedMergeFieldValueSources() {
   });
 }
 
-function resolveDefinitionTemplatePath(business, definitionKey) {
-  if (!business) return null;
-  switch (definitionKey) {
-    case 'workbook':
-      return business.gig_sheet_template_path || business.invoice_template_path || null;
-    case 'quote':
-      return business.quote_template_path || null;
-    case 'contract':
-      return business.contract_template_path || null;
-    case 'invoice_deposit':
-    case 'invoice_balance':
-      return business.invoice_template_path || null;
-    default:
-      return null;
-  }
-}
+// Business-level template defaults removed: definitions own template_path
 
 function seedDocumentDefinitions() {
-  db.all(`SELECT id, invoice_template_path, quote_template_path, contract_template_path, gig_sheet_template_path FROM business_settings`, (err, businesses) => {
+  db.all(`SELECT id FROM business_settings`, (err, businesses) => {
     if (err) {
       console.error('Failed to load businesses for document definition seeding', err);
       return;
@@ -771,7 +743,7 @@ function seedDocumentDefinitions() {
                 if (tombstonedKeys.has(definition.key)) {
                   return;
                 }
-                const templatePath = resolveDefinitionTemplatePath(business, definition.key);
+              const templatePath = null;
 
             db.run(
               `INSERT OR IGNORE INTO document_definitions (
@@ -907,6 +879,77 @@ function migrateDocumentDefinitionsTable(done) {
     });
   } catch (err) {
     console.error('Migration error for document_definitions', err);
+    if (typeof done === 'function') done();
+  }
+}
+
+// Drop legacy template path columns from business_settings after migrating their values into document_definitions
+function migrateBusinessSettingsDropTemplateColumns(done) {
+  try {
+    db.all(`PRAGMA table_info(business_settings)`, (err, rows) => {
+      if (err) { if (typeof done === 'function') done(); return; }
+      const columns = Array.isArray(rows) ? rows.map(r => r.name) : [];
+      const legacy = ['invoice_template_path', 'quote_template_path', 'contract_template_path', 'gig_sheet_template_path'];
+      const hasAnyLegacy = legacy.some(c => columns.includes(c));
+      if (!hasAnyLegacy) { if (typeof done === 'function') done(); return; }
+
+      // Migrate any existing business-level template paths into definitions first
+      db.all(
+        `SELECT id, invoice_template_path, quote_template_path, contract_template_path, gig_sheet_template_path FROM business_settings`,
+        [],
+        (selErr, businesses) => {
+          if (!selErr && Array.isArray(businesses) && businesses.length) {
+            businesses.forEach(biz => {
+              const id = biz.id;
+              const apply = (value, keys) => {
+                if (!value || !keys || !keys.length) return;
+                keys.forEach(key => {
+                  db.run(
+                    "UPDATE document_definitions SET template_path = COALESCE(template_path, ?) WHERE business_id = ? AND key = ?",
+                    [value, id, key],
+                    () => {}
+                  );
+                });
+              };
+              apply(biz.invoice_template_path || null, ['invoice_deposit', 'invoice_balance']);
+              apply(biz.quote_template_path || null, ['quote']);
+              apply(biz.contract_template_path || null, ['contract']);
+              apply(biz.gig_sheet_template_path || null, ['workbook']);
+            });
+          }
+
+          // Rebuild table without legacy columns
+          db.serialize(() => {
+            // Temporarily disable foreign key enforcement for schema change
+            db.run('PRAGMA foreign_keys = OFF');
+            db.run('BEGIN');
+            // Ensure staging table is clean to avoid UNIQUE constraint issues on repeated runs
+            db.run('DROP TABLE IF EXISTS business_settings_new');
+            db.run(
+              `CREATE TABLE IF NOT EXISTS business_settings_new (
+                id INTEGER PRIMARY KEY,
+                business_name TEXT NOT NULL UNIQUE,
+                last_invoice_number INTEGER DEFAULT 0,
+                last_quote_number INTEGER DEFAULT 0,
+                save_path TEXT NOT NULL
+              )`
+            );
+            db.run(
+              `INSERT INTO business_settings_new (id, business_name, last_invoice_number, last_quote_number, save_path)
+               SELECT id, business_name, last_invoice_number, last_quote_number, save_path FROM business_settings`
+            );
+            db.run('DROP TABLE business_settings');
+            db.run('ALTER TABLE business_settings_new RENAME TO business_settings');
+            db.run('COMMIT', () => {
+              // Re-enable foreign key enforcement after migration completes
+              db.run('PRAGMA foreign_keys = ON');
+              if (typeof done === 'function') done();
+            });
+          });
+        }
+      );
+    });
+  } catch (_err) {
     if (typeof done === 'function') done();
   }
 }
@@ -1926,31 +1969,7 @@ function clearJobsheetTemplateOverride(jobsheetId, definitionKey) {
   });
 }
 
-function applyTemplatePathUpdates(businessId, updates = {}) {
-  const id = Number(businessId);
-  if (!Number.isInteger(id)) return;
-
-  const templateMap = {
-    invoice_template_path: ['invoice_deposit', 'invoice_balance'],
-    quote_template_path: ['quote'],
-    contract_template_path: ['contract'],
-    gig_sheet_template_path: ['workbook']
-  };
-
-  Object.entries(templateMap).forEach(([field, keys]) => {
-    if (!(field in updates)) return;
-    const value = updates[field] == null || updates[field] === '' ? null : updates[field];
-    keys.forEach(key => {
-      db.run(
-        "UPDATE document_definitions SET template_path = ?, updated_at = datetime('now') WHERE business_id = ? AND key = ?",
-        [value, id, key],
-        err => {
-          if (err) console.error('Failed to sync template path for definition', key, err);
-        }
-      );
-    });
-  });
-}
+// No longer sync template paths from business settings; managed per-definition only
 
 function getMergeFields() {
   return new Promise((resolve, reject) => {
@@ -2286,7 +2305,7 @@ function updateBusinessSettingsRecord(businessId, updates = {}) {
             if (selectErr) {
               reject(selectErr);
             } else {
-              applyTemplatePathUpdates(id, updates);
+              // No per-business template path syncing; definitions own template paths
               resolve({ changes, record: row || null });
             }
           }

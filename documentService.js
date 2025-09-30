@@ -207,6 +207,144 @@ async function readInvoicePrefixFromWorkbook(workbookPath) {
   }
 }
 
+// Extract jobsheet data from a folder containing legacy files
+function parseFolderNameForJob(folderName) {
+  if (!folderName) return { client_name: '', event_date: '' };
+  const name = String(folderName).trim();
+  // Pattern: YYYY-MM-DD - Client Name - Human date (last part optional)
+  const re = /^(\d{4}-\d{2}-\d{2})\s*-\s*([^\-]+?)(?:\s*-\s*.*)?$/;
+  const m = name.match(re);
+  if (!m) return { client_name: '', event_date: '' };
+  const event_date = m[1] || '';
+  const client_name = (m[2] || '').trim();
+  return { client_name, event_date };
+}
+
+async function tryReadClientDataSheet(workbookPath) {
+  if (!workbookPath) return {};
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(workbookPath);
+    const ws = wb.getWorksheet('Client Data') || wb.worksheets.find(s => /client\s*data/i.test(String(s.name || '')));
+    if (!ws) return {};
+    const val = (addr) => {
+      try { const cell = ws.getCell(addr); return cell ? cell.value : undefined; } catch (_) { return undefined; }
+    };
+    const num = (addr) => {
+      const v = val(addr);
+      const n = typeof v === 'object' && v && v.result != null ? Number(v.result) : Number(v);
+      return Number.isFinite(n) ? n.toFixed(2) : '';
+    };
+    const date = (addr) => {
+      const v = val(addr);
+      if (!v) return '';
+      if (v instanceof Date) return v.toISOString().slice(0, 10);
+      const asNum = Number(v);
+      if (Number.isFinite(asNum) && asNum > 0) {
+        // Excel serial date (rough; ExcelJS often gives JS Date already)
+        const js = new Date(Math.round((asNum - 25569) * 86400 * 1000));
+        if (!Number.isNaN(js.valueOf())) return js.toISOString().slice(0, 10);
+      }
+      const js = new Date(v);
+      return Number.isNaN(js.valueOf()) ? '' : js.toISOString().slice(0, 10);
+    };
+    const str = (addr) => {
+      const v = val(addr);
+      if (v == null) return '';
+      if (typeof v === 'object' && v && v.text) return String(v.text);
+      return String(v);
+    };
+    return {
+      // Client
+      client_name: str('B3'),
+      client_email: str('B4'),
+      client_phone: str('B5'),
+      client_address1: str('B6'),
+      client_address2: str('B7'),
+      client_address3: str('B8'),
+      client_town: str('B9'),
+      client_postcode: str('B10'),
+      // Event
+      event_type: str('B13'),
+      event_date: date('B14'),
+      event_start: str('B15'),
+      event_end: str('B16'),
+      // Venue
+      venue_name: str('B19'),
+      venue_address1: str('B20'),
+      venue_address2: str('B21'),
+      venue_address3: str('B22'),
+      venue_town: str('B23'),
+      venue_postcode: str('B24'),
+      // Financials (advisory; editor derives deposit/balance later)
+      ahmen_fee: num('B27'),
+      extra_fees: num('B28'),
+      production_fees: num('B29'),
+      total_amount: num('B30'),
+      deposit_amount: num('B31'),
+      balance_amount: num('B32'),
+      balance_due_date: date('B33'),
+      balance_reminder_date: date('B34'),
+      // Services / notes
+      service_types: str('B37'),
+      specialist_singers: str('B38'),
+      caterer_name: str('B40')
+    };
+  } catch (_err) {
+    return {};
+  }
+}
+
+async function extractJobsheetDataFromFolder(options = {}) {
+  const folderPath = options.folderPath || options.path;
+  if (!folderPath) return { ok: false, message: 'folderPath is required' };
+  const resolved = path.resolve(folderPath);
+  let stat = null;
+  try { stat = await fs.promises.stat(resolved); } catch (err) { return { ok: false, message: 'Folder not found' }; }
+  if (!stat.isDirectory()) return { ok: false, message: 'Path is not a folder' };
+
+  const base = path.basename(resolved);
+  const fromName = parseFolderNameForJob(base);
+
+  let entries = [];
+  try { entries = await fs.promises.readdir(resolved); } catch (_) { entries = []; }
+  const excelCandidates = entries.filter(n => /\.xlsx$/i.test(n)).map(n => path.join(resolved, n));
+  let workbookPath = null;
+  let workbookFields = {};
+  for (const p of excelCandidates) {
+    const fields = await tryReadClientDataSheet(p); // eslint-disable-line no-await-in-loop
+    const hasAny = Object.values(fields).some(v => v != null && v !== '');
+    if (hasAny) {
+      workbookPath = p;
+      workbookFields = fields;
+      break;
+    }
+  }
+
+  // collect invoice PDFs with (INV-###)
+  const pdfs = entries.filter(n => /\.pdf$/i.test(n)).map(n => path.join(resolved, n));
+  const invoices = pdfs.filter(fp => /\(\s*INV[-\s]?\d+\s*\)\.pdf$/i.test(path.basename(fp)));
+
+  // Build suggested values excluding financial fields (manual entry in jobsheet)
+  const FINANCIAL_KEYS = new Set([
+    'ahmen_fee','extra_fees','production_fees','total_amount','deposit_amount','balance_amount','balance_due_date','balance_reminder_date'
+  ]);
+  const suggested = {};
+  Object.entries(workbookFields || {}).forEach(([k, v]) => {
+    if (!FINANCIAL_KEYS.has(k) && v !== undefined && v !== '') suggested[k] = v;
+  });
+  if (fromName.client_name && !suggested.client_name) suggested.client_name = fromName.client_name;
+  if (fromName.event_date && !suggested.event_date) suggested.event_date = fromName.event_date;
+
+  return {
+    ok: true,
+    folder: resolved,
+    workbook_path: workbookPath,
+    invoices,
+    suggested
+  };
+}
+
 async function createStampedWorkbookCopy(sourcePath, stampText) {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(sourcePath);
@@ -769,7 +907,11 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
     '-e', 'set pdfAlias to POSIX file targetPdfPosix',
     '-e', 'tell application "Microsoft Excel"',
     '-e', 'launch',
-    '-e', 'activate',
+    // Keep Excel in background: no activate, hide UI and alerts
+    '-e', 'try',
+    '-e', 'set visible to false',
+    '-e', 'set display alerts to false',
+    '-e', 'end try',
     '-e', 'set wb to missing value',
     '-e', 'try',
     '-e', 'set wb to open workbook workbook file name workbookHfs',
@@ -844,6 +986,10 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
     '-e', 'end repeat',
     '-e', 'delay 0.1',
     '-e', 'end tell',
+    // Ensure Excel is not frontmost as a fallback
+    '-e', 'try',
+    '-e', 'tell application "System Events" to set frontmost of process "Microsoft Excel" to false',
+    '-e', 'end try',
     '-e', 'end run',
     sourcePath,
     targetPath
@@ -1897,7 +2043,11 @@ async function preflightPdfExport(options = {}) {
       '-e', 'set workbookHfs to (POSIX file workbookPosixPath) as text',
       '-e', 'tell application "Microsoft Excel"',
       '-e', 'launch',
-      '-e', 'activate',
+      // Keep Excel in background: do not activate, hide UI and alerts
+      '-e', 'try',
+      '-e', 'set visible to false',
+      '-e', 'set display alerts to false',
+      '-e', 'end try',
       '-e', 'set wb to missing value',
       '-e', 'try',
       '-e', 'set wb to open workbook workbook file name workbookHfs',
@@ -1914,6 +2064,10 @@ async function preflightPdfExport(options = {}) {
       '-e', 'close workbook wb saving no',
       '-e', 'end try',
       '-e', 'end tell',
+      // Ensure Excel is not frontmost as a fallback
+      '-e', 'try',
+      '-e', 'tell application "System Events" to set frontmost of process "Microsoft Excel" to false',
+      '-e', 'end try',
       '-e', 'end run',
       normalizedPath
     ];
@@ -1956,6 +2110,7 @@ module.exports = {
   listJobsheetDocuments,
   preflightPdfExport
   ,
+  extractJobsheetDataFromFolder,
   indexInvoicesFromFilenames: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
     if (!Number.isInteger(businessId)) {

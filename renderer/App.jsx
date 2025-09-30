@@ -1920,6 +1920,7 @@ function BusinessChooser({ businesses, loading, error, onSelect }) {
 }
 
 function JobsheetList({
+  business,
   jobsheets,
   onOpen,
   onNew,
@@ -2181,12 +2182,15 @@ function JobsheetList({
             <h2 className="text-lg font-semibold text-slate-700">Jobsheets</h2>
             <p className="text-sm text-slate-500">{summaryLabel}</p>
           </div>
-          <button
-            onClick={onNew}
-            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 rounded"
-          >
-            + New Jobsheet
-          </button>
+          <div className="flex items-center gap-2">
+            <ImportJobsheetButton business={business} onCreated={(id) => onOpen?.(id)} />
+            <button
+              onClick={onNew}
+              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 rounded"
+            >
+              + New Jobsheet
+            </button>
+          </div>
         </div>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div className="relative w-full md:max-w-xs">
@@ -2275,6 +2279,321 @@ function JobsheetList({
         )}
       </div>
     </div>
+  );
+}
+
+function ImportJobsheetButton({ business, onCreated }) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorLocal, setErrorLocal] = useState('');
+  const [source, setSource] = useState({ folder: '', workbook_path: '', invoices: [] });
+  const [draft, setDraft] = useState({
+    // Client
+    client_name: '',
+    client_email: '',
+    client_phone: '',
+    client_address1: '',
+    client_address2: '',
+    client_address3: '',
+    client_town: '',
+    client_postcode: '',
+    // Event
+    event_type: '',
+    event_date: '',
+    event_start: '',
+    event_end: '',
+    // Venue
+    venue_name: '',
+    venue_address1: '',
+    venue_address2: '',
+    venue_address3: '',
+    venue_town: '',
+    venue_postcode: '',
+    // Services
+    service_types: '',
+    specialist_singers: '',
+    caterer_name: ''
+  });
+
+  const setField = (key, value) => setDraft(prev => ({ ...prev, [key]: value }));
+
+  useEffect(() => {
+    // Lock background scroll when modal is open
+    try {
+      if (open) {
+        const prev = document.body.style.overflow;
+        document.body.dataset.prevOverflow = prev || '';
+        document.body.style.overflow = 'hidden';
+      } else if (document.body.dataset.prevOverflow !== undefined) {
+        document.body.style.overflow = document.body.dataset.prevOverflow;
+        delete document.body.dataset.prevOverflow;
+      }
+    } catch (_) {}
+    return () => {
+      try {
+        if (document.body.dataset.prevOverflow !== undefined) {
+          document.body.style.overflow = document.body.dataset.prevOverflow;
+          delete document.body.dataset.prevOverflow;
+        }
+      } catch (_) {}
+    };
+  }, [open]);
+
+  const handleChoose = async () => {
+    try {
+      setErrorLocal('');
+      const folder = await window.api?.chooseDirectory?.({ title: 'Select source for import', defaultPath: business?.save_path || undefined });
+      if (!folder) return;
+      setLoading(true);
+      const res = await window.api?.extractJobsheetFromFolder?.({ folderPath: folder });
+      setLoading(false);
+      if (!res || res.ok === false) { setErrorLocal(res?.message || 'Unable to extract'); return; }
+      const sug = res.suggested || {};
+      const init = {
+        client_name: sug.client_name || '',
+        client_email: sug.client_email || '',
+        client_phone: sug.client_phone || '',
+        client_address1: sug.client_address1 || '',
+        client_address2: sug.client_address2 || '',
+        client_address3: sug.client_address3 || '',
+        client_town: sug.client_town || '',
+        client_postcode: sug.client_postcode || '',
+        event_type: sug.event_type || '',
+        event_date: sug.event_date || '',
+        event_start: sug.event_start || '',
+        event_end: sug.event_end || '',
+        venue_name: sug.venue_name || '',
+        venue_address1: sug.venue_address1 || '',
+        venue_address2: sug.venue_address2 || '',
+        venue_address3: sug.venue_address3 || '',
+        venue_town: sug.venue_town || '',
+        venue_postcode: sug.venue_postcode || '',
+        service_types: sug.service_types || '',
+        specialist_singers: sug.specialist_singers || '',
+        caterer_name: sug.caterer_name || ''
+      };
+      setDraft(init);
+      setSource({ folder: res.folder || folder, workbook_path: res.workbook_path || '', invoices: Array.isArray(res.invoices) ? res.invoices : [] });
+      setOpen(true);
+    } catch (err) {
+      setLoading(false);
+      console.error('Import failed', err);
+      setErrorLocal(err?.message || 'Import failed');
+    }
+  };
+
+  const handleApply = async () => {
+    try {
+      setErrorLocal('');
+      const client = (draft.client_name || '').trim();
+      if (!client) { setErrorLocal('Client name is required'); return; }
+      const payload = {
+        business_id: business?.id,
+        status: 'contracting',
+        client_name: client,
+        event_date: draft.event_date || null,
+        client_email: draft.client_email || null,
+        client_phone: draft.client_phone || null,
+        client_address1: draft.client_address1 || null,
+        client_address2: draft.client_address2 || null,
+        client_address3: draft.client_address3 || null,
+        client_town: draft.client_town || null,
+        client_postcode: draft.client_postcode || null,
+        event_type: draft.event_type || null,
+        event_start: draft.event_start || null,
+        event_end: draft.event_end || null,
+        venue_name: draft.venue_name || null,
+        venue_address1: draft.venue_address1 || null,
+        venue_address2: draft.venue_address2 || null,
+        venue_address3: draft.venue_address3 || null,
+        venue_town: draft.venue_town || null,
+        venue_postcode: draft.venue_postcode || null,
+        service_types: draft.service_types || null,
+        specialist_singers: draft.specialist_singers || null,
+        caterer_name: draft.caterer_name || null
+      };
+      const id = await window.api?.addAhmenJobsheet?.(payload);
+      if (id) {
+        window.api?.notifyJobsheetChange?.({ type: 'jobsheet-created', businessId: business?.id, jobsheetId: id });
+        setOpen(false);
+        onCreated?.(id);
+      } else {
+        setErrorLocal('Failed to create jobsheet');
+      }
+    } catch (err) {
+      console.error('Create from import failed', err);
+      setErrorLocal(err?.message || 'Unable to create jobsheet');
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+        onClick={handleChoose}
+        disabled={loading}
+      >
+        {loading ? 'Scanning…' : 'Import'}
+      </button>
+
+      {open ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+          <div
+            className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl overflow-y-auto"
+            style={{ maxHeight: '60vh' }}
+          >
+            <div className="flex items-start justify-between border-b border-slate-200 pb-4">
+              <div>
+                <h3 className="text-lg font-semibold text-slate-800">Import</h3>
+                <p className="text-sm text-slate-500">Review and edit values before creating the jobsheet.</p>
+              </div>
+              <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600" aria-label="Close import modal">✕</button>
+            </div>
+            <div className="mt-4 space-y-4">
+              {errorLocal ? (
+                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{errorLocal}</div>
+              ) : null}
+              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 flex items-center justify-between gap-2">
+                <div className="truncate">
+                  <div><span className="font-medium">Source:</span> <span className="truncate" title={source.folder}>{source.folder || '—'}</span></div>
+                  <div><span className="font-medium">Workbook:</span> <span className="truncate" title={source.workbook_path}>{source.workbook_path || '—'}</span></div>
+                  <div><span className="font-medium">Invoices:</span> {source.invoices && source.invoices.length ? `${source.invoices.length} found` : 'none'}</div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {source.workbook_path ? (
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={() => window.api?.openPath?.(source.workbook_path)}>Open workbook</button>
+                  ) : null}
+                  {source.folder ? (
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={() => window.api?.openPath?.(source.folder)}>Open folder</button>
+                  ) : null}
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Client</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-medium text-slate-600">
+                  Client name
+                  <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_name} onChange={e => setField('client_name', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Email
+                    <input type="email" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_email} onChange={e => setField('client_email', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Phone
+                    <input type="tel" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_phone} onChange={e => setField('client_phone', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Address line 1
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_address1} onChange={e => setField('client_address1', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Address line 2
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_address2} onChange={e => setField('client_address2', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Address line 3
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_address3} onChange={e => setField('client_address3', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Town / City
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_town} onChange={e => setField('client_town', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Postcode
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_postcode} onChange={e => setField('client_postcode', e.target.value)} />
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Event</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-medium text-slate-600">
+                  Event date
+                  <input type="date" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={formatDateInput(draft.event_date)} onChange={e => setField('event_date', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Event type
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.event_type} onChange={e => setField('event_type', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Start time
+                    <input type="time" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.event_start} onChange={e => setField('event_start', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    End time
+                    <input type="time" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.event_end} onChange={e => setField('event_end', e.target.value)} />
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Venue</div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-medium text-slate-600">
+                    Venue name
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_name} onChange={e => setField('venue_name', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Address line 1 (venue)
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_address1} onChange={e => setField('venue_address1', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Address line 2 (venue)
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_address2} onChange={e => setField('venue_address2', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Address line 3 (venue)
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_address3} onChange={e => setField('venue_address3', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Town / City
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_town} onChange={e => setField('venue_town', e.target.value)} />
+                  </label>
+                  <label className="text-sm font-medium text-slate-600">
+                    Postcode
+                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_postcode} onChange={e => setField('venue_postcode', e.target.value)} />
+                  </label>
+                </div>
+              </div>
+
+              
+
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Services & Notes</div>
+                <label className="text-sm font-medium text-slate-600">
+                  Service types / ensemble
+                  <textarea rows={2} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.service_types} onChange={e => setField('service_types', e.target.value)} />
+                </label>
+                <label className="text-sm font-medium text-slate-600">
+                  Specialist singers
+                  <textarea rows={2} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.specialist_singers} onChange={e => setField('specialist_singers', e.target.value)} />
+                </label>
+                <label className="text-sm font-medium text-slate-600">
+                  Caterer name
+                  <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.caterer_name} onChange={e => setField('caterer_name', e.target.value)} />
+                </label>
+              </div>
+
+              <p className="text-[11px] text-slate-500">You can adjust or add missing fields in the editor after creation.</p>
+            </div>
+            <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
+              <button type="button" onClick={() => setOpen(false)} className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
+              <button
+                type="button"
+                className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+                onClick={handleApply}
+              >
+                Create jobsheet
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -4434,6 +4753,8 @@ function JobsheetEditor({
     }
   };
 
+  
+
   return (
     <>
       <div className="space-y-6">
@@ -6287,6 +6608,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
             {workspaceSection === 'jobsheets' ? (
               <section className="space-y-4">
                 <JobsheetList
+                  business={business}
                   jobsheets={jobsheets}
                   onOpen={handleOpenExisting}
                   onNew={handleNew}

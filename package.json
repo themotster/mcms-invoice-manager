@@ -10,6 +10,7 @@
     "watch": "webpack --mode development --watch",
     "start:electron": "wait-on renderer/bundle.js && electronmon .",
     "dev": "npm run build:dev && concurrently \"npm:watch\" \"npm:start:electron\"",
+    "migrate:import-jobsheets": "node scripts/import_jobsheets.js --dry-run",
     "test": "jest"
   },
   "dependencies": {

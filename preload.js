@@ -74,6 +74,7 @@ contextBridge.exposeInMainWorld('api', {
   unwatchDocuments: async (options) => await ipcRenderer.invoke('unwatch-documents', options || {}),
   filterDocumentsByExistingFiles: async (documents, options) => await documentService.filterDocumentsByExistingFiles(documents || [], options || {}),
   listJobsheetDocuments: async (options) => await documentService.listJobsheetDocuments(options || {}),
+  extractJobsheetFromFolder: async (options) => await documentService.extractJobsheetDataFromFolder(options || {}),
   cleanOrphanDocuments: async (options) => await documentService.cleanOrphanDocuments(options || {}),
   deleteEvent: async (eventId) => await db.deleteEvent(eventId),
   deleteClient: async (clientId) => await db.deleteClient(clientId),

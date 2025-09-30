@@ -37,6 +37,7 @@ function slugify(value, fallback = 'workbook') {
 }
 
 function TemplatesManager({ business, onTemplatesUpdated }) {
+  const MISSING_TPL_NOTICE_KEY = 'invoiceMaster:templatesMissingNotice:v1';
   const [placeholders, setPlaceholders] = useState([]);
   const [valueSources, setValueSources] = useState({});
   const [definitions, setDefinitions] = useState([]);
@@ -164,6 +165,18 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       const data = await api.getDocumentDefinitions(business.id, { includeInactive: true });
       const allDefinitions = Array.isArray(data) ? data : [];
       setDefinitions(allDefinitions);
+
+      // One-time notice if any definitions are missing a template path
+      try {
+        const seen = window.localStorage.getItem(MISSING_TPL_NOTICE_KEY);
+        if (seen !== '1') {
+          const missingCount = allDefinitions.filter(d => !d?.template_path).length;
+          if (missingCount > 0) {
+            setMessage(`${missingCount} template${missingCount === 1 ? '' : 's'} need a workbook path. Use “Replace” to select a file.`);
+            window.localStorage.setItem(MISSING_TPL_NOTICE_KEY, '1');
+          }
+        }
+      } catch (_err) {}
     } catch (err) {
       console.error('Failed to load document definitions', err);
       setError(err?.message || 'Unable to load templates');
