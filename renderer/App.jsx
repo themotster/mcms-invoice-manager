@@ -4796,6 +4796,10 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       return null;
     }
   });
+
+  // Settings: Set last invoice number inline modal state
+  const [setLastOpen, setSetLastOpen] = useState(false);
+  const [setLastDraft, setSetLastDraft] = useState('');
   const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
   const [workspaceSection, setWorkspaceSection] = useState(() => {
@@ -6550,26 +6554,9 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     </button>
                     <button
                       type="button"
-                      onClick={async () => {
-                        const input = window.prompt('Set last invoice number to…', business.last_invoice_number != null ? String(business.last_invoice_number) : '0');
-                        if (input == null) return;
-                        const val = Number(input);
-                        if (!Number.isInteger(val) || val < 0) { window.alert('Enter a non-negative integer'); return; }
-                        try {
-                          await window.api?.setLastInvoiceNumber?.(business.id, val);
-                          const list = await window.api?.businessSettings?.();
-                          if (Array.isArray(list)) {
-                            const refreshed = list.find(b => b.id === business.id);
-                            if (refreshed && typeof onBusinessUpdate === 'function') {
-                              onBusinessUpdate(refreshed);
-                            }
-                          }
-                          setMessage(`Set last invoice number to ${val}`);
-                          setTimeout(() => setMessage(''), 2000);
-                        } catch (err) {
-                          console.error('Failed to set counter', err);
-                          setError(err?.message || 'Unable to set counter');
-                        }
+                      onClick={() => {
+                        setSetLastDraft(business.last_invoice_number != null ? String(business.last_invoice_number) : '0');
+                        setSetLastOpen(true);
                       }}
                       className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
                     >
@@ -6577,6 +6564,54 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                     </button>
                   </div>
                 </div>
+
+                {setLastOpen ? (
+                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
+                    <div className="text-sm text-slate-700">Set last invoice number</div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        value={setLastDraft}
+                        onChange={e => setSetLastDraft(e.target.value)}
+                        className="w-32 rounded border border-slate-300 px-2 py-1 text-sm"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const val = Number(setLastDraft);
+                          if (!Number.isInteger(val) || val < 0) { setError('Enter a non-negative integer'); return; }
+                          try {
+                            await window.api?.setLastInvoiceNumber?.(business.id, val);
+                            const list = await window.api?.businessSettings?.();
+                            if (Array.isArray(list)) {
+                              const refreshed = list.find(b => b.id === business.id);
+                              if (refreshed && typeof onBusinessUpdate === 'function') {
+                                onBusinessUpdate(refreshed);
+                              }
+                            }
+                            setSetLastOpen(false);
+                            setMessage(`Set last invoice number to ${val}`);
+                            setTimeout(() => setMessage(''), 2000);
+                          } catch (err) {
+                            console.error('Failed to set counter', err);
+                            setError(err?.message || 'Unable to set counter');
+                          }
+                        }}
+                        className="inline-flex items-center rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSetLastOpen(false)}
+                        className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
 
                 <p className="text-xs text-slate-500">
                   Template management has moved to the “Templates” tab for a simpler workflow. Use it to copy placeholders and replace template files in one place.
