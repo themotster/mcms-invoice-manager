@@ -181,6 +181,48 @@ async function ensureDirectoryExists(targetPath) {
   await fs.promises.mkdir(targetPath, { recursive: true });
 }
 
+function extractPrefixFromInvoiceCell(value) {
+  if (value == null) return 'INV-';
+  const text = String(value).trim();
+  if (!text) return 'INV-';
+  // Take all leading non-digit characters (preserve hyphens and spaces)
+  const match = text.match(/^([^0-9]+)/);
+  const prefix = match ? match[1].trim() : '';
+  return prefix || 'INV-';
+}
+
+async function readInvoicePrefixFromWorkbook(workbookPath) {
+  try {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(workbookPath);
+    // Prefer an invoice sheet if present
+    let ws = wb.worksheets.find(s => /invoice/i.test(String(s.name || '')));
+    if (!ws) ws = wb.worksheets && wb.worksheets.length ? wb.worksheets[0] : null;
+    if (!ws) return 'INV-';
+    const cell = ws.getCell('E9');
+    const val = cell ? cell.value : null;
+    return extractPrefixFromInvoiceCell(val);
+  } catch (_err) {
+    return 'INV-';
+  }
+}
+
+async function createStampedWorkbookCopy(sourcePath, stampText) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(sourcePath);
+  const targets = wb.worksheets.filter(s => /invoice/i.test(String(s.name || '')));
+  const list = targets.length ? targets : wb.worksheets.slice(0, 1);
+  list.forEach(ws => {
+    try {
+      ws.getCell('E9').value = stampText;
+    } catch (_err) {}
+  });
+  const dir = path.dirname(sourcePath);
+  const tmpPath = path.join(dir, `.inv_tmp_${Date.now()}_${Math.random().toString(36).slice(2)}.xlsx`);
+  await wb.xlsx.writeFile(tmpPath);
+  return tmpPath;
+}
+
 function buildContext(payload, business = {}) {
   const jobsheet = { ...(payload.jobsheet_snapshot || {}) };
   const client = { ...payload.client_override };
@@ -702,11 +744,26 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
   }
 
   // Primary: simple AppleScript using Excel's PDF file format
+  const { activeSheetOnly } = _options || {};
+  const stampCell = (_options && _options.stampCell) ? String(_options.stampCell) : '';
+  const stampText = (_options && _options.stampText) ? String(_options.stampText) : '';
+  const stampSheetName = (_options && _options.stampSheetName) ? String(_options.stampSheetName) : '';
+  const stampVariant = (_options && _options.stampVariant) ? String(_options.stampVariant) : '';
+
   const osaArgs = [
     '-e', 'on run argv',
     '-e', 'if (count of argv) < 2 then error "Missing arguments"',
     '-e', 'set workbookPosixPath to item 1 of argv',
     '-e', 'set targetPdfPosix to item 2 of argv',
+    // Optional args for stamping
+    '-e', 'set stampCell to missing value',
+    '-e', 'set stampText to missing value',
+    '-e', 'set stampSheetName to missing value',
+    '-e', 'set stampVariant to missing value',
+    '-e', 'if (count of argv) ≥ 3 then set stampCell to item 3 of argv',
+    '-e', 'if (count of argv) ≥ 4 then set stampText to item 4 of argv',
+    '-e', 'if (count of argv) ≥ 5 then set stampSheetName to item 5 of argv',
+    '-e', 'if (count of argv) ≥ 6 then set stampVariant to item 6 of argv',
     '-e', 'set workbookHfs to (POSIX file workbookPosixPath) as text',
     '-e', 'set targetPdfHfs to (POSIX file targetPdfPosix) as text',
     '-e', 'set pdfAlias to POSIX file targetPdfPosix',
@@ -717,17 +774,42 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
     '-e', 'try',
     '-e', 'set wb to open workbook workbook file name workbookHfs',
     '-e', 'end try',
-    '-e', 'if wb is missing value then',
-    '-e', 'tell application "Finder" to open file workbookHfs',
     '-e', 'repeat with i from 1 to 50',
+    '-e', 'if wb is not missing value then exit repeat',
     '-e', 'delay 0.1',
     '-e', 'try',
     '-e', 'set wb to active workbook',
-    '-e', 'exit repeat',
     '-e', 'end try',
     '-e', 'end repeat',
-    '-e', 'end if',
     '-e', 'if wb is missing value then error "Unable to open workbook"',
+    // If stamping info was provided, update the cell value on the target or active sheet before export
+    '-e', 'if stampCell is not missing value and stampText is not missing value then',
+    '-e', 'try',
+    '-e', 'set theSheet to active sheet of wb',
+    '-e', 'if stampSheetName is not missing value then',
+    '-e', 'try',
+    '-e', 'set theSheet to worksheet stampSheetName of wb',
+    '-e', 'end try',
+    '-e', 'end if',
+    '-e', 'if stampVariant is not missing value then',
+    '-e', 'if theSheet is missing value then set theSheet to active sheet of wb',
+    '-e', 'try',
+    '-e', 'set found to false',
+    '-e', 'repeat with ws in (worksheets of wb)',
+    '-e', 'set nm to (name of ws) as text',
+    '-e', 'ignoring case',
+    '-e', 'if (nm contains "invoice") and (nm contains stampVariant) then',
+    '-e', 'set theSheet to ws',
+    '-e', 'set found to true',
+    '-e', 'exit repeat',
+    '-e', 'end if',
+    '-e', 'end ignoring',
+    '-e', 'end repeat',
+    '-e', 'end try',
+    '-e', 'end if',
+    '-e', 'set value of range stampCell of theSheet to stampText',
+    '-e', 'end try',
+    '-e', 'end if',
     '-e', 'set wbName to name of wb',
     '-e', 'delay 0.2',
     '-e', 'try',
@@ -766,6 +848,14 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
     sourcePath,
     targetPath
   ];
+
+  // Pass optional stamping args if provided
+  if (stampCell && stampText) {
+    osaArgs.push(stampCell);
+    osaArgs.push(stampText);
+    if (stampSheetName) osaArgs.push(stampSheetName); else osaArgs.push('');
+    if (stampVariant) osaArgs.push(stampVariant);
+  }
 
   await new Promise((resolve, reject) => {
     execFile('osascript', osaArgs, { timeout: 120000 }, (error, stdout, stderr) => {
@@ -1289,13 +1379,36 @@ async function exportWorkbookPdfs(options = {}) {
     const info = entry.info || parseWorkbookName(workbookPath);
     const targetPdfName = `${info.baseName}.pdf`;
     const targetPdfPath = path.join(jobDirectory, targetPdfName);
+    let effectivePdfPath = targetPdfPath;
 
     try {
-      // Treat existing PDFs as immutable: do not overwrite existing files
+      // Determine if this is an invoice export up front to allow safe versioning
+      let variantForVersioning = null;
+      if (businessId != null) {
+        try {
+          const wbDoc = await db.getDocumentByFilePath(businessId, workbookPath);
+          const defKey = wbDoc?.definition_key || null;
+          if (defKey) {
+            try {
+              const def = await db.getDocumentDefinition(businessId, defKey);
+              const v = (def?.invoice_variant || '').toLowerCase();
+              if (v === 'deposit' || v === 'balance') variantForVersioning = v;
+            } catch (_) {}
+          }
+        } catch (_) {}
+      }
+      // Fallback: infer from file suffix if definition missing
+      if (!variantForVersioning && info && info.suffix) {
+        const sfx = String(info.suffix).toLowerCase();
+        if (sfx.includes('deposit')) variantForVersioning = 'deposit';
+        else if (sfx.includes('balance')) variantForVersioning = 'balance';
+      }
+
+      // Treat existing PDFs as immutable: do not overwrite; version invoices instead
       try {
         const exists = await pathExists(targetPdfPath);
         if (exists) {
-          // If DB has a locked record, report locked; otherwise report already exists
+          // If DB has a locked record, report locked
           if (businessId != null) {
             try {
               const existing = await db.getDocumentByFilePath(businessId, targetPdfPath);
@@ -1303,17 +1416,33 @@ async function exportWorkbookPdfs(options = {}) {
                 outputs.push({ success: false, sheet: info.suffix, error: 'PDF is locked' });
                 continue;
               }
-            } catch (_err) {}
+            } catch (_) {}
           }
-          outputs.push({ success: false, sheet: info.suffix, error: 'PDF already exists' });
-          continue;
+          if (variantForVersioning) {
+            // Create a versioned filename: "name (2).pdf", "name (3).pdf", ...
+            const base = path.basename(targetPdfPath, '.pdf');
+            const dir = path.dirname(targetPdfPath);
+            let n = 2;
+            // eslint-disable-next-line no-constant-condition
+            while (true) {
+              const candidate = path.join(dir, `${base} (${n}).pdf`);
+              // eslint-disable-next-line no-await-in-loop
+              const taken = await pathExists(candidate);
+              if (!taken) { effectivePdfPath = candidate; break; }
+              n += 1;
+              if (n > 1000) { break; }
+            }
+          } else {
+            outputs.push({ success: false, sheet: info.suffix, error: 'PDF already exists' });
+            continue;
+          }
         }
       } catch (_err) {}
 
       // If a PDF already exists and is locked in DB, block export (defensive)
       if (businessId != null) {
         try {
-          const existing = await db.getDocumentByFilePath(businessId, targetPdfPath);
+          const existing = await db.getDocumentByFilePath(businessId, effectivePdfPath);
           if (existing && existing.is_locked) {
             outputs.push({ success: false, sheet: info.suffix, error: 'PDF is locked' });
             continue;
@@ -1321,19 +1450,165 @@ async function exportWorkbookPdfs(options = {}) {
         } catch (_err) {}
       }
 
-      await saveWorkbookAsPdf(workbookPath, targetPdfPath, { activeSheetOnly });
+      // Determine if this workbook corresponds to an invoice (deposit/balance) for stamping + numbering
+      let stampedLabel = 'PDF';
+      let performedStamp = false;
+      let createdInvoiceId = null;
+
+      if (businessId != null) {
+        try {
+          const wbDoc = await db.getDocumentByFilePath(businessId, workbookPath);
+          const definitionKey = wbDoc?.definition_key || null;
+          const jobsheetId = wbDoc?.jobsheet_id != null ? Number(wbDoc.jobsheet_id) : null;
+          let variant = null;
+          if (definitionKey) {
+            try {
+              const def = await db.getDocumentDefinition(businessId, definitionKey);
+              const v = (def?.invoice_variant || '').toLowerCase();
+              if (v === 'deposit' || v === 'balance') variant = v;
+            } catch (_err) {}
+          }
+          // Fallback: infer from workbook file name suffix if definition is missing
+          if (!variant && info && info.suffix) {
+            const s = String(info.suffix).toLowerCase();
+            if (s.includes('deposit')) variant = 'deposit';
+            else if (s.includes('balance')) variant = 'balance';
+          }
+
+          if (variant) {
+            // Ensure environment is ready before reserving an invoice number (Excel only, no Finder fallback)
+            try {
+              const pf = await preflightPdfExport({ filePath: workbookPath, excelOnly: true });
+              if (!pf?.ok) {
+                throw new Error(pf?.message || 'Preflight failed');
+              }
+            } catch (pfErr) {
+              throw pfErr;
+            }
+            // Reserve the next invoice number by creating the DB row first (so counter increments only when success, we’ll roll back on failure)
+            const clientName = wbDoc?.client_name || null;
+            const eventName = wbDoc?.event_name || null;
+            const eventDate = wbDoc?.event_date || null;
+            const documentDate = new Date().toISOString();
+            const totalAmount = wbDoc?.total_amount ?? null;
+            const balanceDue = wbDoc?.balance_due ?? null;
+            const dueDate = wbDoc?.due_date ?? null;
+
+            // Insert invoice row with auto-assigned number, without file_path yet
+            const inserted = await db.addDocument({
+              business_id: businessId,
+              jobsheet_id: jobsheetId,
+              doc_type: 'invoice',
+              number: options && Number.isInteger(options.requestedNumber) && options.requestedNumber > 0 ? Number(options.requestedNumber) : undefined,
+              status: 'issued',
+              total_amount: totalAmount,
+              balance_due: balanceDue,
+              due_date: dueDate,
+              file_path: null,
+              client_name: clientName,
+              event_name: eventName,
+              event_date: eventDate,
+              document_date: documentDate,
+              definition_key: definitionKey,
+              invoice_variant: variant
+            });
+
+            const invoiceNumber = inserted?.number != null ? Number(inserted.number) : null;
+            createdInvoiceId = inserted?.id || null;
+
+            // Determine prefix and stamp
+            const prefix = await readInvoicePrefixFromWorkbook(workbookPath);
+            const stampText = `${prefix}${invoiceNumber != null ? invoiceNumber : ''}`;
+
+            // Build final numbered filename: base name + " (INV-###).pdf" (with versioning if necessary)
+            try {
+              if (invoiceNumber != null) {
+                const invBase = `${info.baseName} (INV-${invoiceNumber})`;
+                let candidate = path.join(jobDirectory, `${invBase}.pdf`);
+                let n = 2;
+                // eslint-disable-next-line no-constant-condition
+                while (await pathExists(candidate)) {
+                  candidate = path.join(jobDirectory, `${invBase} (${n}).pdf`);
+                  n += 1;
+                  if (n > 1000) break;
+                }
+                effectivePdfPath = candidate;
+              }
+            } catch (_) {}
+            // Stamp directly via AppleScript; target the expected invoice sheet
+            const stampSheetName = variant === 'deposit' ? 'Invoice – Deposit' : 'Invoice – Balance';
+            await saveWorkbookAsPdf(workbookPath, effectivePdfPath, {
+              activeSheetOnly,
+              stampCell: 'E9',
+              stampText,
+              stampSheetName,
+              stampVariant: variant
+            });
+            performedStamp = true;
+            stampedLabel = invoiceNumber != null ? `Invoice #${invoiceNumber}` : 'Invoice PDF';
+
+            // Update the invoice record with final file path and reminder date per variant
+            let reminderDate = null;
+            if (variant === 'balance' && jobsheetId != null) {
+              try {
+                const js = await db.getAhmenJobsheet(jobsheetId);
+                reminderDate = js?.balance_reminder_date || null;
+              } catch (_err) {}
+            }
+            await db.updateDocumentStatus(createdInvoiceId, {
+              file_path: effectivePdfPath,
+              status: 'issued',
+              reminder_date: reminderDate,
+              due_date: dueDate,
+              balance_due: balanceDue,
+              total_amount: totalAmount
+            });
+          }
+        } catch (_err) {
+          // Do not export unnumbered invoice PDFs; record failure and continue
+          outputs.push({ success: false, sheet: info.suffix, error: _err?.message || 'Invoice export failed' });
+          continue;
+        }
+      }
+
+      if (!performedStamp) {
+        await saveWorkbookAsPdf(workbookPath, effectivePdfPath, { activeSheetOnly });
+      }
+
       outputs.push({
         success: true,
         sheet: info.suffix,
-        label: `PDF`,
-        file_path: targetPdfPath
+        label: stampedLabel,
+        file_path: effectivePdfPath
       });
     } catch (err) {
-      outputs.push({
-        success: false,
-        sheet: info.suffix,
-        error: err?.message || 'Unable to export sheet'
-      });
+      // If export errored but the PDF exists (e.g., macOS prompt timing), salvage success and keep invoice row
+      try {
+        const existsAfterFail = await pathExists(effectivePdfPath);
+        if (existsAfterFail) {
+          if (businessId != null && (typeof createdInvoiceId === 'number' || (createdInvoiceId != null && Number.isInteger(Number(createdInvoiceId))))) {
+            try {
+              await db.updateDocumentStatus(createdInvoiceId, { file_path: effectivePdfPath, status: 'issued' });
+            } catch (_) {}
+          }
+          outputs.push({ success: true, sheet: info.suffix, label: stampedLabel || 'Invoice PDF', file_path: effectivePdfPath });
+        } else {
+          // No file; roll back the invoice row and counter if we reserved one
+          try {
+            if (businessId != null && (typeof createdInvoiceId === 'number' || (createdInvoiceId != null && Number.isInteger(Number(createdInvoiceId))))) {
+              try { await db.deleteDocument(createdInvoiceId); } catch (_err) {}
+              try {
+                const maxNum = await db.getMaxInvoiceNumber(businessId);
+                const last = Number.isInteger(Number(maxNum)) ? Number(maxNum) : 0;
+                await db.setLastInvoiceNumber(businessId, last);
+              } catch (_err) {}
+            }
+          } catch (_) {}
+          outputs.push({ success: false, sheet: info.suffix, error: err?.message || 'Unable to export sheet' });
+        }
+      } catch (_checkErr) {
+        outputs.push({ success: false, sheet: info.suffix, error: err?.message || 'Unable to export sheet' });
+      }
     }
   }
 
@@ -1349,6 +1624,14 @@ async function exportWorkbookPdfs(options = {}) {
       message = 'Export failed.';
     }
   }
+  try {
+    if (businessId != null && ok) {
+      const cb = watcherCallbacks.get(businessId);
+      if (typeof cb === 'function') {
+        cb({ businessId });
+      }
+    }
+  } catch (_err) {}
   return { ok, workbook_path: normalizedPath, outputs, message };
 }
 
@@ -1535,7 +1818,22 @@ async function deleteDocument(documentId, options = {}) {
     }
   }
 
+  // Capture potential rollback for invoice numbering
+  const wasInvoice = (record?.doc_type || '').toLowerCase() === 'invoice';
+  const businessId = record?.business_id != null ? Number(record.business_id) : null;
+  const deletedNumber = record?.number != null ? Number(record.number) : null;
+
   await db.deleteDocument(id);
+
+  // If deleting an invoice, ensure last_invoice_number remains consistent (set to current max)
+  if (wasInvoice && Number.isInteger(businessId)) {
+    try {
+      const maxNum = await db.getMaxInvoiceNumber(businessId);
+      const last = Number.isInteger(Number(maxNum)) ? Number(maxNum) : 0;
+      await db.setLastInvoiceNumber(businessId, last);
+    } catch (_err) {}
+  }
+
   return { ok: true };
 }
 
@@ -1604,16 +1902,13 @@ async function preflightPdfExport(options = {}) {
       '-e', 'try',
       '-e', 'set wb to open workbook workbook file name workbookHfs',
       '-e', 'end try',
-      '-e', 'if wb is missing value then',
-      '-e', 'tell application "Finder" to open file workbookHfs',
       '-e', 'repeat with i from 1 to 50',
+      '-e', 'if wb is not missing value then exit repeat',
       '-e', 'delay 0.1',
       '-e', 'try',
       '-e', 'set wb to active workbook',
-      '-e', 'exit repeat',
       '-e', 'end try',
       '-e', 'end repeat',
-      '-e', 'end if',
       '-e', 'if wb is missing value then error "Unable to open workbook"',
       '-e', 'try',
       '-e', 'close workbook wb saving no',
@@ -1661,6 +1956,159 @@ module.exports = {
   listJobsheetDocuments,
   preflightPdfExport
   ,
+  indexInvoicesFromFilenames: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    if (!Number.isInteger(businessId)) {
+      throw new Error('businessId is required');
+    }
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) {
+      throw new Error('Documents folder not configured for this business.');
+    }
+    const root = path.resolve(business.save_path);
+
+    // Collect candidate PDFs with (INV-###) in their filename
+    async function walk(dir, depth = 0, maxDepth = 6) {
+      let entries = [];
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return []; }
+      const results = [];
+      for (const e of entries) {
+        if (e.name.startsWith('.')) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (depth < maxDepth) {
+            // eslint-disable-next-line no-await-in-loop
+            const sub = await walk(full, depth + 1, maxDepth);
+            results.push(...sub);
+          }
+          continue;
+        }
+        const lower = e.name.toLowerCase();
+        if (!lower.endsWith('.pdf')) continue;
+        if (!/inv[\-\s]?\d+/i.test(e.name)) continue;
+        results.push(full);
+      }
+      return results;
+    }
+
+    const files = await walk(root);
+    if (!files.length) return { imported: 0 };
+
+    // Preload jobsheets for matching
+    let sheets = [];
+    try { sheets = await db.getAhmenJobsheets({ businessId }); } catch (_) { sheets = []; }
+    const norm = s => (s || '').toString().trim().toLowerCase();
+
+    const matchJobsheet = (filePath) => {
+      try {
+        const dirBase = path.basename(path.dirname(filePath));
+        const parts = dirBase.split(' - ');
+        const dateStr = parts[0] || '';
+        const client = parts[1] || '';
+        const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : '';
+        const cand = sheets.find(js => (!dateOk || norm(js.event_date) === norm(dateOk)) && (client ? norm(js.client_name) === norm(client) : true));
+        return cand || null;
+      } catch (_) { return null; }
+    };
+
+    let imported = 0;
+    for (const pdfPath of files) {
+      try {
+        // Skip if invoice already recorded
+        // eslint-disable-next-line no-await-in-loop
+        const existing = await db.getDocumentByFilePath(businessId, pdfPath);
+        if (existing && String(existing.doc_type || '').toLowerCase() === 'invoice') continue;
+
+        const base = path.basename(pdfPath);
+        const numMatch = base.match(/inv[\-\s]?(\d+)/i);
+        const number = numMatch ? Number(numMatch[1]) : null;
+        if (number == null || !Number.isInteger(number)) continue;
+
+        const nameLower = base.toLowerCase();
+        const variant = nameLower.includes('deposit') ? 'deposit' : (nameLower.includes('balance') ? 'balance' : null);
+        const js = matchJobsheet(pdfPath);
+
+        const payload = {
+          business_id: businessId,
+          jobsheet_id: js?.jobsheet_id || null,
+          doc_type: 'invoice',
+          number,
+          status: 'issued',
+          total_amount: variant === 'deposit' ? (js?.deposit_amount ?? null) : (js?.balance_amount ?? null),
+          balance_due: variant === 'balance' ? (js?.balance_amount ?? null) : (js?.deposit_amount ?? js?.balance_amount ?? null),
+          due_date: variant === 'balance' ? (js?.balance_due_date ?? null) : (js?.event_date ?? null),
+          file_path: pdfPath,
+          client_name: js?.client_name || null,
+          event_name: js?.event_type || null,
+          event_date: js?.event_date || null,
+          document_date: js?.updated_at || new Date().toISOString(),
+          definition_key: null,
+          invoice_variant: variant
+        };
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await db.addDocument(payload);
+          imported += 1;
+        } catch (insErr) {
+          // Number conflict: ensure last_invoice_number sync but skip create
+          // eslint-disable-next-line no-console
+          console.warn('Invoice import skipped', base, insErr?.message || insErr);
+        }
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('Failed to import invoice pdf', pdfPath, err);
+      }
+    }
+
+    try {
+      const maxNum = await db.getMaxInvoiceNumber(businessId);
+      const last = Number.isInteger(Number(maxNum)) ? Number(maxNum) : 0;
+      await db.setLastInvoiceNumber(businessId, last);
+    } catch (_) {}
+
+    return { imported };
+  },
+  computeFinderInvoiceMax: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    if (!Number.isInteger(businessId)) {
+      throw new Error('businessId is required');
+    }
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) {
+      throw new Error('Documents folder not configured for this business.');
+    }
+    const root = path.resolve(business.save_path);
+
+    async function walk(dir, depth = 0, maxDepth = 6) {
+      let entries = [];
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return []; }
+      const results = [];
+      for (const e of entries) {
+        if (e.name.startsWith('.')) continue;
+        const full = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (depth < maxDepth) {
+            // eslint-disable-next-line no-await-in-loop
+            const sub = await walk(full, depth + 1, maxDepth);
+            results.push(...sub);
+          }
+          continue;
+        }
+        const lower = e.name.toLowerCase();
+        if (!lower.endsWith('.pdf')) continue;
+        const m = e.name.match(/inv[\-\s]?(\d+)/i);
+        if (m && m[1]) {
+          const num = Number(m[1]);
+          if (Number.isInteger(num)) results.push(num);
+        }
+      }
+      return results;
+    }
+
+    const numbers = await walk(root);
+    const max = numbers.length ? Math.max(...numbers) : 0;
+    return { max };
+  },
   cleanOrphanDocuments: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
     if (!Number.isInteger(businessId)) {

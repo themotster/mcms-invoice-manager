@@ -28,7 +28,7 @@ const AHMEN_BOOLEAN_FIELDS = new Set(['venue_same_as_client']);
 const STATUS_OPTIONS = [
   { value: 'enquiry', label: 'Enquiry' },
   { value: 'quoted', label: 'Quoted' },
-  { value: 'contracting', label: 'Contracting (gate open)' },
+  { value: 'contracting', label: 'Contracting' },
   { value: 'confirmed', label: 'Confirmed' },
   { value: 'completed', label: 'Completed' }
 ];
@@ -108,6 +108,7 @@ function getDocumentIcon(docType) {
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
   documents: '🗃️',
+  invoices: '🧾',
   templates: '📁',
   settings: '⚙️'
 };
@@ -115,6 +116,7 @@ const WORKSPACE_ICON_MAP = {
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
   { key: 'documents', label: 'Documents', description: 'Browse and manage files', icon: WORKSPACE_ICON_MAP.documents },
+  { key: 'invoices', label: 'Invoice Log', description: 'Issued invoices and status', icon: WORKSPACE_ICON_MAP.invoices },
   { key: 'templates', label: 'Templates', description: 'Manage document templates', icon: WORKSPACE_ICON_MAP.templates },
   { key: 'settings', label: 'Settings', description: 'Business preferences', icon: WORKSPACE_ICON_MAP.settings }
 ];
@@ -860,7 +862,7 @@ function getComparableValueForSort(sheet, field) {
   }
 }
 
-function IconButton({ label, onClick, disabled, className = '', children }) {
+function IconButton({ label, onClick, disabled, className = '', children, size = 'md' }) {
   const handleClick = useCallback((event) => {
     event.stopPropagation();
     onClick?.(event);
@@ -868,13 +870,14 @@ function IconButton({ label, onClick, disabled, className = '', children }) {
 
   const wantsCustomColors = /\b(border-|text-|hover:bg-)\w/.test(className || '');
   const colorClasses = wantsCustomColors ? '' : 'border-slate-300 text-slate-600 hover:bg-slate-100';
+  const sizeClasses = size === 'sm' ? 'h-7 w-7' : (size === 'lg' ? 'h-10 w-10' : 'h-9 w-9');
 
   return (
     <button
       type="button"
       onClick={handleClick}
       disabled={disabled}
-      className={`inline-flex h-8 w-8 items-center justify-center rounded border transition disabled:cursor-not-allowed disabled:opacity-60 ${colorClasses} ${className}`}
+      className={`inline-flex ${sizeClasses} items-center justify-center rounded border transition disabled:cursor-not-allowed disabled:opacity-60 ${colorClasses} ${className}`}
       aria-label={label}
       title={label}
     >
@@ -902,6 +905,411 @@ function TreeActionButton({ title, onClick, disabled, children }) {
     >
       {children}
     </button>
+  );
+}
+
+// InvoiceNumberingCard removed per filename-driven numbering model
+
+function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument }) {
+  const businessId = business?.id;
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [list, setList] = useState([]);
+  const [filter, setFilter] = useState('all'); // all | unpaid | overdue | duesoon | paid
+  const [search, setSearch] = useState('');
+  const [importing, setImporting] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!businessId) return;
+    try {
+      setLoading(true);
+      setError('');
+      // First, index any PDFs named with (INV-###) into invoice rows
+      try { await window.api?.indexInvoicesFromFilenames?.({ businessId }); } catch (_err) {}
+      // Reconcile DB with filesystem to avoid ghost files before loading
+      try { await window.api?.cleanOrphanDocuments?.({ businessId }); } catch (_err) {}
+      const allDocs = await window.api?.getDocuments?.({ businessId });
+      const docs = Array.isArray(allDocs) ? allDocs : [];
+
+      const isInvoiceLike = (doc) => {
+        if (!doc) return false;
+        const type = String(doc.doc_type || '').toLowerCase();
+        if (type === 'invoice') return true;
+        if (type !== 'pdf_export') return false;
+        const fp = String(doc.file_path || '').toLowerCase();
+        const name = String(doc.file_name || doc.definition_label || doc.label || '').toLowerCase();
+        const hay = fp || name;
+        return hay.includes('invoice') && (hay.includes('deposit') || hay.includes('balance'));
+      };
+
+      // Filter by invoice-like documents
+      const invoiceLike = docs.filter(isInvoiceLike);
+
+      // Deduplicate by file_path, prefer real invoice rows over pdf_export
+      const byPath = new Map();
+      invoiceLike.forEach(d => {
+        const key = String(d.file_path || '').trim();
+        const existing = key ? byPath.get(key) : null;
+        if (!existing) { byPath.set(key, d); return; }
+        const existingIsInvoice = String(existing.doc_type || '').toLowerCase() === 'invoice';
+        const currentIsInvoice = String(d.doc_type || '').toLowerCase() === 'invoice';
+        if (!existingIsInvoice && currentIsInvoice) byPath.set(key, d);
+      });
+      const merged = Array.from(byPath.values());
+
+      // Only show items whose files exist
+      let filtered = merged;
+      try {
+        filtered = await window.api?.filterDocumentsByExistingFiles?.(merged, { includeMissing: false });
+      } catch (_err) {
+        filtered = merged.filter(d => d && d.file_path);
+      }
+      // Enrich missing totals/dates from jobsheets when available
+      const variantOf = (doc) => {
+        const a = String(doc.definition_invoice_variant || doc.invoice_variant || '').toLowerCase();
+        if (a === 'deposit' || a === 'balance') return a;
+        const fp = String(doc.file_path || '').toLowerCase();
+        const label = String(doc.display_label || doc.label || '').toLowerCase();
+        const hay = `${fp} ${label}`;
+        if (hay.includes('deposit')) return 'deposit';
+        if (hay.includes('balance')) return 'balance';
+        return '';
+      };
+
+      const ids = Array.from(new Set((filtered || []).map(d => d?.jobsheet_id).filter(id => id != null).map(Number)));
+      const jsMap = new Map();
+      for (const jid of ids) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const js = await window.api?.getAhmenJobsheet?.(jid);
+          if (js) jsMap.set(jid, js);
+        } catch (_) {}
+      }
+
+      const enriched = (filtered || []).map(d => {
+        let amount = d?.total_amount ?? d?.balance_due ?? null;
+        let due_date = d?.due_date ?? null;
+        let reminder_date = d?.reminder_date ?? null;
+        if ((!Number.isFinite(Number(amount)) || Number(amount) === 0) || (!due_date && !reminder_date)) {
+          const js = d?.jobsheet_id != null ? jsMap.get(Number(d.jobsheet_id)) : null;
+          const v = variantOf(d);
+          if (js && v) {
+            if (v === 'deposit') {
+              amount = js.deposit_amount != null ? Number(js.deposit_amount) : amount;
+              // Deposit: no reminder, due on contract signing (leave blank)
+              reminder_date = null;
+            } else if (v === 'balance') {
+              amount = js.balance_amount != null ? Number(js.balance_amount) : amount;
+              due_date = js.balance_due_date || due_date;
+              reminder_date = js.balance_reminder_date != null ? js.balance_reminder_date : reminder_date;
+            }
+          }
+        }
+        return { ...d, total_amount: amount, due_date, reminder_date };
+      });
+
+      setList(enriched || []);
+    } catch (err) {
+      console.error('Failed to load invoices', err);
+      setError(err?.message || 'Unable to load invoices');
+    } finally {
+      setLoading(false);
+    }
+  }, [businessId]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const handleImportHistoric = useCallback(async () => {
+    if (!businessId || !window.api || typeof window.api.indexInvoicesFromFilenames !== 'function') return;
+    try {
+      setImporting(true);
+      const result = await window.api.indexInvoicesFromFilenames({ businessId });
+      await refresh();
+      const count = result && typeof result.imported === 'number' ? result.imported : 0;
+      window.alert(`Imported ${count} invoice${count === 1 ? '' : 's'} from filenames`);
+    } catch (err) {
+      console.error('Historic import failed', err);
+      setError(err?.message || 'Unable to import historic invoices');
+    } finally {
+      setImporting(false);
+    }
+  }, [businessId, refresh]);
+
+  // Auto-refresh on document change events and jobsheet document updates
+  useEffect(() => {
+    if (!businessId || !window.api) return () => {};
+    // Ensure a watcher is running for this business (idempotent)
+    window.api.watchDocuments?.({ businessId }).catch(() => {});
+    const unsubDocs = window.api.onDocumentsChange?.((payload) => {
+      if (!payload || payload.businessId !== businessId) return;
+      refresh();
+    });
+    const unsubJobsheet = window.api.onJobsheetChange?.((payload) => {
+      if (!payload || payload.businessId !== businessId) return;
+      if (payload.type === 'documents-updated') refresh();
+    });
+    return () => { unsubDocs?.(); unsubJobsheet?.(); };
+  }, [businessId, refresh]);
+
+  const toggleLock = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    try {
+      await window.api?.setDocumentLock?.(doc.document_id, !doc.is_locked);
+      refresh();
+      try {
+        window.api?.notifyJobsheetChange?.({
+          type: 'documents-updated',
+          businessId,
+          jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+          documentId: doc.document_id
+        });
+      } catch (_) {}
+    } catch (err) {
+      console.error('Failed to toggle lock', err);
+      setError(err?.message || 'Unable to toggle lock');
+    }
+  }, [refresh]);
+
+  const handleMarkPaidToggle = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    try {
+      const isPaid = String(doc.status || '').toLowerCase() === 'paid' || !!doc.paid_at;
+      await window.api?.updateDocumentStatus?.(doc.document_id, isPaid ? { status: 'Issued', paid_at: null } : { status: 'Paid', paid_at: new Date().toISOString() });
+      refresh();
+      try {
+        window.api?.notifyJobsheetChange?.({
+          type: 'documents-updated',
+          businessId,
+          jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+          documentId: doc.document_id
+        });
+      } catch (_) {}
+    } catch (err) {
+      console.error('Failed to update payment status', err);
+      setError(err?.message || 'Unable to update payment status');
+    }
+  }, [refresh]);
+
+  const handleSetNumber = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const isInvoice = String(doc.doc_type || '').toLowerCase() === 'invoice';
+    const doUnlock = async () => {
+      if (!doc.is_locked) return true;
+      const proceed = window.confirm('This record is locked. Unlock to continue?');
+      if (!proceed) return false;
+      try { await window.api?.setDocumentLock?.(doc.document_id, false); } catch (_) {}
+      return true;
+    };
+    if (!(await doUnlock())) return;
+
+    let requested = window.prompt('Set invoice number (leave blank for next)', isInvoice && doc.number != null ? String(doc.number) : '');
+    if (requested === '') requested = null;
+
+    try {
+      if (isInvoice) {
+        if (requested == null) {
+          // Auto: set to next by syncing last_invoice_number to max(existing)
+          await refresh();
+          window.alert('This is already an invoice record. Use manual number to change, or re-export to keep.');
+        } else {
+          const val = Number(requested);
+          if (!Number.isInteger(val) || val < 1) throw new Error('Please enter a valid positive integer');
+          await window.api?.setDocumentNumber?.(doc.document_id, val);
+        }
+      } else {
+        const val = requested != null ? Number(requested) : null;
+        const promoteOpts = val != null && Number.isInteger(val) ? { number: val } : {};
+        await window.api?.promotePdfToInvoice?.(doc.document_id, promoteOpts);
+      }
+      refresh();
+      try {
+        window.api?.notifyJobsheetChange?.({
+          type: 'documents-updated',
+          businessId,
+          jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
+          documentId: doc.document_id
+        });
+      } catch (_) {}
+    } catch (err) {
+      console.error('Failed to apply invoice number', err);
+      window.alert(err?.message || 'Unable to apply invoice number');
+    }
+  }, [refresh]);
+
+  const handleOpen = useCallback(async (doc) => {
+    const filePath = doc?.file_path || '';
+    if (!filePath) { setError('PDF not available for this invoice'); return; }
+    try {
+      setError('');
+      const res = await window.api?.openPath?.(filePath);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to open file');
+    } catch (err) {
+      console.error('Open failed', err);
+      setError(err?.message || 'Unable to open file');
+    }
+  }, []);
+
+  const handleReveal = useCallback(async (doc) => {
+    const filePath = doc?.file_path || '';
+    if (!filePath) { setError('PDF not available for this invoice'); return; }
+    try {
+      setError('');
+      const res = await window.api?.showItemInFolder?.(filePath);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to reveal file');
+    } catch (err) {
+      console.error('Reveal failed', err);
+      setError(err?.message || 'Unable to reveal file');
+    }
+  }, []);
+
+  const computed = useMemo(() => {
+    const today = new Date();
+    const seven = 7 * 24 * 60 * 60 * 1000;
+    const rows = (Array.isArray(list) ? list : []).map(d => {
+      const parseInv = () => {
+        const fp = String(d.file_path || '');
+        const base = fp ? fp.split(/[\\/]+/).pop() || '' : '';
+        const m = base.match(/INV[-\s]?(\d+)/i);
+        return m ? Number(m[1]) : null;
+      };
+      const numberParsed = d?.number != null ? Number(d.number) : parseInv();
+      const due = d?.due_date ? new Date(d.due_date) : null;
+      const paid = String(d.status || '').toLowerCase() === 'paid' || !!d.paid_at;
+      let derived = paid ? 'Paid' : 'Issued';
+      if (!paid && due instanceof Date && !Number.isNaN(due.valueOf())) {
+        if (due.valueOf() < today.valueOf()) derived = 'Overdue';
+        else if (due.valueOf() - today.valueOf() <= seven) derived = 'Due soon';
+      }
+      return { ...d, derived_status: derived, number: d.number != null ? d.number : numberParsed };
+    });
+
+    const s = (search || '').trim().toLowerCase();
+    let filtered = rows;
+    if (filter !== 'all') {
+      filtered = rows.filter(r => {
+        const st = (r.derived_status || '').toLowerCase();
+        if (filter === 'paid') return st === 'paid';
+        if (filter === 'unpaid') return st !== 'paid';
+        if (filter === 'overdue') return st === 'overdue';
+        if (filter === 'duesoon') return st === 'due soon';
+        return true;
+      });
+    }
+    if (s) {
+      filtered = filtered.filter(r => {
+        const hay = [
+          r.number != null ? String(r.number) : '',
+          r.display_client_name || r.client_name || '',
+          r.display_event_name || r.event_name || ''
+        ].join(' ').toLowerCase();
+        return hay.includes(s);
+      });
+    }
+    return filtered;
+  }, [list, filter, search]);
+
+  const formatDate = (val) => {
+    if (!val) return '';
+    const d = new Date(val);
+    if (Number.isNaN(d.valueOf())) return '';
+    return new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(d);
+  };
+
+  const toCurrency = (val) => {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return '';
+    try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n); } catch (_err) { return `£${n.toFixed(2)}`; }
+  };
+
+  const statusPill = (value) => {
+    const v = (value || '').toLowerCase();
+    let classes = 'border-slate-300 text-slate-600 bg-slate-50';
+    if (v === 'paid') classes = 'border-green-300 text-green-700 bg-green-50';
+    else if (v === 'overdue') classes = 'border-red-300 text-red-700 bg-red-50';
+    else if (v === 'due soon') classes = 'border-amber-300 text-amber-700 bg-amber-50';
+    return (
+      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${classes}`}>{value || '—'}</span>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-700">Invoice Log</h2>
+          <p className="text-sm text-slate-500">Manage issued invoices and reminders.</p>
+        </div>
+        <div className="flex items-center gap-2 text-sm">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by #, client, or event…"
+            className="w-64 rounded border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+          />
+          <select value={filter} onChange={e => setFilter(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-sm">
+            <option value="all">All</option>
+            <option value="unpaid">Unpaid</option>
+            <option value="overdue">Overdue</option>
+            <option value="duesoon">Due soon</option>
+            <option value="paid">Paid</option>
+          </select>
+          <button type="button" onClick={handleImportHistoric} disabled={importing} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">{importing ? 'Importing…' : 'Import from filenames'}</button>
+          <button type="button" onClick={refresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+        </div>
+      </div>
+
+      {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
+      {loading ? <div className="text-sm text-slate-500">Loading…</div> : null}
+
+      <div className="rounded border border-slate-200 overflow-hidden">
+        <div className="grid grid-cols-8 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+          <div className="col-span-2">Invoice #</div>
+          <div className="col-span-2">Client / Event</div>
+          <div>Amount</div>
+          <div>Due</div>
+          <div>Reminder</div>
+          <div className="text-right">Status / Actions</div>
+        </div>
+        <div className="divide-y divide-slate-200">
+          {computed.map(doc => {
+            const variant = (doc.definition_invoice_variant || doc.invoice_variant || '').toLowerCase();
+            const variantLabel = variant === 'deposit' ? 'Deposit' : (variant === 'balance' ? 'Balance' : '');
+            const title = [doc.number != null ? `INV-${doc.number}` : '—', variantLabel].filter(Boolean).join(' · ');
+            const clientEvent = [doc.display_client_name || doc.client_name || '', doc.display_event_name || doc.event_name || ''].filter(Boolean).join(' — ');
+            const status = doc.derived_status || doc.status || '';
+            const locked = !!doc.is_locked;
+            return (
+              <div key={doc.document_id} className="grid grid-cols-8 items-center px-3 py-3 text-sm">
+                <div className="col-span-2 truncate" title={title}>{title}</div>
+                <div className="col-span-2 truncate" title={clientEvent}>{clientEvent}</div>
+                <div className="pr-3">{toCurrency(doc.total_amount ?? doc.balance_due)}</div>
+                <div className="whitespace-nowrap">{formatDate(doc.due_date)}</div>
+                <div className="whitespace-nowrap">{formatDate(doc.reminder_date)}</div>
+                <div className="flex items-center justify-end gap-2">
+                  <span className="pr-2">{statusPill(status)}</span>
+                  <IconButton size="md" label={locked ? 'Unlock' : 'Lock'} onClick={() => toggleLock(doc)} className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}>
+                    <span aria-hidden>{locked ? '🔒' : '🔓'}</span>
+                  </IconButton>
+                  <IconButton size="md" label="Open" onClick={() => handleOpen(doc)} disabled={!doc.file_path}><OpenIcon className="h-4 w-4" /></IconButton>
+                  <IconButton size="md" label="Reveal" onClick={() => handleReveal(doc)} disabled={!doc.file_path}><RevealIcon className="h-4 w-4" /></IconButton>
+                  <IconButton size="md" label={String(status).toLowerCase() === 'paid' ? 'Mark unpaid' : 'Mark paid'} onClick={() => handleMarkPaidToggle(doc)}>
+                    <span aria-hidden>💳</span>
+                  </IconButton>
+                  
+                  <IconButton size="md" label="Delete" onClick={() => onDeleteDocument?.(doc)} disabled={locked || !doc?.document_id} className="border-red-200 text-red-600 hover:bg-red-50">
+                    <DeleteIcon className="h-4 w-4" />
+                  </IconButton>
+                </div>
+              </div>
+            );
+          })}
+          {(!loading && computed.length === 0) ? (
+            <div className="px-3 py-4 text-sm text-slate-500">No invoices yet.</div>
+          ) : null}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -2959,8 +3367,11 @@ function DocumentsInlinePanel({
   onOpenFile,
   onRevealFile,
   onDelete,
-  documentFolder
+  documentFolder,
+  businessId,
+  lastInvoiceNumber
 }) {
+  const INVOICE_GATE_BYPASS_KEY = 'invoiceMaster:bypassInvoiceGate';
   const list = Array.isArray(documents) ? documents : [];
   const excelDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
   const pdfDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
@@ -2968,6 +3379,8 @@ function DocumentsInlinePanel({
 
   const [menuOpenId, setMenuOpenId] = useState('');
   const menuRef = useRef(null);
+  const [overrideNumbers, setOverrideNumbers] = useState({});
+  const [defaultNext, setDefaultNext] = useState(null);
 
   useEffect(() => {
     const onDoc = (e) => {
@@ -2979,6 +3392,30 @@ function DocumentsInlinePanel({
     return () => document.removeEventListener('mousedown', onDoc);
   }, [menuOpenId]);
 
+  // Bypass gate toggle (persisted)
+  const [bypassInvoiceGate, setBypassInvoiceGate] = useState(false);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(INVOICE_GATE_BYPASS_KEY);
+      setBypassInvoiceGate(raw === '1');
+    } catch (_) {}
+  }, []);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(INVOICE_GATE_BYPASS_KEY, bypassInvoiceGate ? '1' : '0');
+    } catch (_) {}
+  }, [bypassInvoiceGate]);
+
+  // Load default next number from business settings; update when it changes
+  useEffect(() => {
+    const val = Number(lastInvoiceNumber);
+    if (Number.isInteger(val)) {
+      setDefaultNext(val + 1);
+    } else {
+      setDefaultNext(null);
+    }
+  }, [lastInvoiceNumber]);
+
   // (previous simple renderRow removed; panes now render rows inline)
 
   // helpers to match PDFs to workbook by base name
@@ -2986,11 +3423,22 @@ function DocumentsInlinePanel({
     const name = fp ? String(fp).split(/[\\/]+/).pop() : '';
     return name ? name.replace(/\.[^.]+$/, '') : '';
   };
+  const normalizeBase = (base) => {
+    if (!base) return '';
+    let s = String(base);
+    // unify dash types
+    s = s.replace(/[–—]/g, '-');
+    // strip trailing (INV-###)
+    s = s.replace(/\s*\(INV[-\s]?\d+\)\s*$/i, '');
+    // strip trailing (n) copies
+    s = s.replace(/\s*\(\d+\)\s*$/g, '');
+    return s.trim();
+  };
   const workbookDocsByKey = new Map(
     excelDocs.map(d => [d.definition_key || 'workbook', d])
   );
   const pdfByBase = new Map(
-    pdfDocs.map(d => [baseNameNoExt(d.file_path || ''), d])
+    pdfDocs.map(d => [normalizeBase(baseNameNoExt(d.file_path || '')), d])
   );
 
   // Dynamic: show all definitions that point to an .xlsx template
@@ -3013,13 +3461,14 @@ function DocumentsInlinePanel({
 
   const pdfItems = excelItems.map(({ def, label }) => {
     const wbDoc = def ? workbookDocsByKey.get(def.key) : null;
-    const pdfDoc = wbDoc ? pdfByBase.get(baseNameNoExt(wbDoc?.file_path || '')) : null;
+    const wbBase = normalizeBase(baseNameNoExt(wbDoc?.file_path || ''));
+    const pdfDoc = wbDoc ? pdfByBase.get(wbBase) : null;
     return { def, wbDoc, pdfDoc, label };
   });
 
   const handleGenerate = (key) => onGenerate?.(key);
   const statusKey = normalizeStatus(jobsheetStatus) || 'enquiry';
-  const invoiceGateOpen = statusKey === 'contracting' || statusKey === 'confirmed' || statusKey === 'completed';
+  const invoiceGateOpen = bypassInvoiceGate || statusKey === 'contracting' || statusKey === 'confirmed' || statusKey === 'completed';
   const canGenerateAll = Boolean(
     jobsheetId && excelItems.some(i => {
       const isInvoiceDef = i.def && (i.def.invoice_variant === 'deposit' || i.def.invoice_variant === 'balance');
@@ -3044,7 +3493,12 @@ function DocumentsInlinePanel({
       await onGenerate?.(def.key);
       return;
     }
-    await onExportPdf?.(wbDoc);
+    const requested = isInvoiceDef ? Number(overrideNumbers[def.key]) : null;
+    const opts = isInvoiceDef && Number.isInteger(requested) && requested > 0 ? { requestedNumber: requested } : {};
+    const res = await onExportPdf?.(wbDoc, opts);
+    if (res && res.ok === false && /exists/i.test(res.message || '')) {
+      window.alert(res.message || 'Invoice number conflict. Choose another number.');
+    }
   };
 
   const handleExportAll = async () => {
@@ -3070,6 +3524,19 @@ function DocumentsInlinePanel({
 
   return (
     <div className="space-y-4">
+      {/* Gate toggle */}
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-semibold text-slate-700">Documents</div>
+        <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            checked={bypassInvoiceGate}
+            onChange={e => setBypassInvoiceGate(e.target.checked)}
+          />
+          <span>Bypass invoice export gate</span>
+        </label>
+      </div>
+
       {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
       <div className="space-y-4">
         {/* Excel Pane */}
@@ -3177,6 +3644,17 @@ function DocumentsInlinePanel({
                     >
                       <span className="text-base" aria-hidden>{pdfDoc?.is_locked ? '🔒' : '🔓'}</span>
                     </IconButton>
+                    {(def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance') && !exported) ? (
+                      <input
+                        type="number"
+                        min={1}
+                        placeholder={defaultNext != null ? String(defaultNext) : 'INV #'}
+                        value={overrideNumbers[def.key] ?? ''}
+                        onChange={(e) => setOverrideNumbers(prev => ({ ...prev, [def.key]: e.target.value }))}
+                        className="w-24 rounded border border-slate-300 px-2 py-1 text-xs"
+                        title="Invoice number (optional override)"
+                      />
+                    ) : null}
                     <button type="button" onClick={() => handleExportForDef(item)} disabled={exported || Boolean(pdfDoc?.is_locked)} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">Export</button>
                     <div className="flex items-center gap-1.5">
                       <IconButton
@@ -3811,6 +4289,27 @@ function JobsheetEditor({
     openVenueModal(venue);
   };
 
+  // Keep status in Client Details (editor) and Jobsheet list in sync
+  useEffect(() => {
+    if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
+    const unsubscribe = window.api.onJobsheetChange(payload => {
+      if (!payload || payload.businessId !== businessId) return;
+      if (payload.type !== 'jobsheet-updated') return;
+      const payloadId = payload.jobsheetId != null
+        ? Number(payload.jobsheetId)
+        : (payload.snapshot && payload.snapshot.jobsheet_id != null ? Number(payload.snapshot.jobsheet_id) : null);
+      if (payloadId == null || (jobsheetId != null && Number(jobsheetId) !== payloadId)) return;
+      const nextStatus = normalizeStatus(payload.snapshot?.status) || null;
+      if (!nextStatus) return;
+      onChange(prev => {
+        const current = normalizeStatus(prev?.status) || '';
+        if (current === nextStatus) return prev; // no change; avoid save loop
+        return { ...prev, status: nextStatus };
+      });
+    });
+    return () => unsubscribe?.();
+  }, [businessId, jobsheetId, onChange]);
+
   const handleDeleteSavedVenue = async () => {
     if (!savedVenueId) return;
     const venue = venues.find(v => String(v.venue_id) === savedVenueId);
@@ -3963,6 +4462,8 @@ function JobsheetEditor({
                         onRevealFile={onRevealDocument}
                         onDelete={onDeleteDocument}
                         documentFolder={documentFolder}
+                        businessId={businessId}
+                        lastInvoiceNumber={business?.last_invoice_number}
                       />
                     );
                   }
@@ -5879,6 +6380,17 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
               </section>
             ) : null}
 
+            {workspaceSection === 'invoices' ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-6">
+                <InvoiceLogPanel
+                  business={business}
+                  onOpenFile={handleOpenDocumentFile}
+                  onRevealFile={handleRevealDocument}
+                  onDeleteDocument={handleDeleteDocumentRecord}
+                />
+              </section>
+            ) : null}
+
             {workspaceSection === 'settings' ? (
               <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
                 <div>
@@ -5923,14 +6435,64 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                   </div>
                 </div>
 
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div className="rounded border border-slate-200 p-4">
+                <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
+                  <div>
                     <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last invoice number</div>
                     <div className="mt-1 text-sm text-slate-700">{business.last_invoice_number ?? '—'}</div>
                   </div>
-                  <div className="rounded border border-slate-200 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last quote number</div>
-                    <div className="mt-1 text-sm text-slate-700">{business.last_quote_number ?? '—'}</div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          const result = await window.api?.computeFinderInvoiceMax?.({ businessId: business.id });
+                          const max = result && Number.isInteger(Number(result.max)) ? Number(result.max) : 0;
+                          await window.api?.setLastInvoiceNumber?.(business.id, max);
+                          const list = await window.api?.businessSettings?.();
+                          if (Array.isArray(list)) {
+                            const refreshed = list.find(b => b.id === business.id);
+                            if (refreshed && typeof onBusinessUpdate === 'function') {
+                              onBusinessUpdate(refreshed);
+                            }
+                          }
+                          setMessage(`Reset last invoice number to ${max} (Finder)`);
+                          setTimeout(() => setMessage(''), 2000);
+                        } catch (err) {
+                          console.error('Failed to reset counter', err);
+                          setError(err?.message || 'Unable to reset counter');
+                        }
+                      }}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      Reset to max (Finder)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const input = window.prompt('Set last invoice number to…', business.last_invoice_number != null ? String(business.last_invoice_number) : '0');
+                        if (input == null) return;
+                        const val = Number(input);
+                        if (!Number.isInteger(val) || val < 0) { window.alert('Enter a non-negative integer'); return; }
+                        try {
+                          await window.api?.setLastInvoiceNumber?.(business.id, val);
+                          const list = await window.api?.businessSettings?.();
+                          if (Array.isArray(list)) {
+                            const refreshed = list.find(b => b.id === business.id);
+                            if (refreshed && typeof onBusinessUpdate === 'function') {
+                              onBusinessUpdate(refreshed);
+                            }
+                          }
+                          setMessage(`Set last invoice number to ${val}`);
+                          setTimeout(() => setMessage(''), 2000);
+                        } catch (err) {
+                          console.error('Failed to set counter', err);
+                          setError(err?.message || 'Unable to set counter');
+                        }
+                      }}
+                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      Set last…
+                    </button>
                   </div>
                 </div>
 
@@ -6327,6 +6889,10 @@ function JobsheetEditorWindow({
     storeSection(id, activeEditorSection);
   }, [jobsheetId, activeEditorSection, storeSection]);
 
+  // Note: restoration of the active editor section is handled on mount
+  // via getStoredSection when a jobsheet is loaded; no dependency on
+  // workspaceSection here to avoid undefined references in this window.
+
   const loadDocumentDefinitions = useCallback(async () => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDocumentDefinitions([]);
@@ -6561,7 +7127,7 @@ function JobsheetEditorWindow({
     }
   }, []);
 
-  const handleExportWorkbookPdf = useCallback(async (doc) => {
+  const handleExportWorkbookPdf = useCallback(async (doc, options = {}) => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocumentsError('Document export is currently disabled.');
       return;
@@ -6572,7 +7138,11 @@ function JobsheetEditorWindow({
     }
     try {
       setJobsheetDocumentsError('');
-      const result = await window.api?.exportWorkbookPdfs?.({ businessId: numericBusinessId, filePath: doc.file_path });
+      const payload = { businessId: numericBusinessId, filePath: doc.file_path };
+      if (options && Number.isInteger(options.requestedNumber) && options.requestedNumber > 0) {
+        payload.requestedNumber = Number(options.requestedNumber);
+      }
+      const result = await window.api?.exportWorkbookPdfs?.(payload);
       if (result && result.ok === false) {
         throw new Error(result.message || 'Unable to export workbook to PDF');
       }
@@ -6597,9 +7167,11 @@ function JobsheetEditorWindow({
         businessId: numericBusinessId,
         jobsheetId: jobsheetId != null ? Number(jobsheetId) : null
       });
+      return result;
     } catch (err) {
       console.error('Failed to export workbook PDFs', err);
       setJobsheetDocumentsError(err?.message || 'Unable to export workbook to PDF');
+      return { ok: false, message: err?.message || 'Unable to export workbook to PDF' };
     }
   }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
 
@@ -7296,14 +7868,7 @@ function JobsheetEditorWindow({
     }
   }, [buildSnapshot, jobsheetId, numericBusinessId, loading]);
 
-  useEffect(() => {
-    if (loading || !jobsheetId) return;
-    if (initialLoadRef.current) {
-      initialLoadRef.current = false;
-      return;
-    }
-    saveJobsheet();
-  }, [formState, jobsheetId, loading, saveJobsheet]);
+  // Debounced autosave handles persistence; avoid immediate save loop here
 
   const resolvedBusiness = useMemo(() => (
     business ? { ...business } : {

@@ -3382,6 +3382,171 @@ module.exports = {
     });
   },
 
+  // Promote a pdf_export (or any doc) to a real invoice row with assigned number.
+  // Copies metadata and links the existing PDF path. If an invoice already exists for the same file_path,
+  // returns that invoice without creating a duplicate.
+  promotePdfToInvoice: (documentId, options = {}) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(documentId);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid document id')); return; }
+
+      db.get(`SELECT * FROM documents WHERE document_id = ?`, [id], async (err, row) => {
+        if (err) { reject(err); return; }
+        if (!row) { reject(new Error('Document not found')); return; }
+
+        try {
+          const doc = row;
+          const businessId = Number(doc.business_id);
+          if (!Number.isInteger(businessId)) { reject(new Error('Invalid business id for document')); return; }
+          const filePath = doc.file_path || null;
+          if (!filePath) { reject(new Error('Document file path is required to promote')); return; }
+
+          // If an invoice record already exists for this path, return it
+          const existingInvoice = await new Promise((res, rej) => {
+            db.get(
+              `SELECT * FROM documents WHERE business_id = ? AND file_path = ? AND lower(doc_type) = 'invoice' LIMIT 1`,
+              [businessId, filePath],
+              (e, r) => e ? rej(e) : res(r || null)
+            );
+          });
+          if (existingInvoice) { resolve({ id: existingInvoice.document_id, number: existingInvoice.number }); return; }
+
+          const jobsheetId = doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null;
+          let js = null;
+          if (Number.isInteger(jobsheetId)) {
+            try {
+              js = await new Promise((res, rej) => {
+                db.get(`SELECT * FROM ahmen_jobsheets WHERE jobsheet_id = ?`, [jobsheetId], (e, r) => e ? rej(e) : res(r || null));
+              });
+            } catch (_) { js = null; }
+          }
+
+          const lower = (v) => (v == null ? '' : String(v).toLowerCase());
+          const inferVariant = () => {
+            const fromDoc = lower(doc.definition_invoice_variant || doc.invoice_variant);
+            if (fromDoc === 'deposit' || fromDoc === 'balance') return fromDoc;
+            const pathName = lower(doc.file_path || '');
+            const labelName = lower(doc.definition_label || doc.label || '');
+            const hay = `${pathName} ${labelName}`;
+            if (hay.includes('deposit')) return 'deposit';
+            if (hay.includes('balance')) return 'balance';
+            return '';
+          };
+          const variant = inferVariant();
+
+          // Derive amounts/dates
+          let totalAmount = doc.total_amount != null ? Number(doc.total_amount) : null;
+          let balanceDue = doc.balance_due != null ? Number(doc.balance_due) : null;
+          let dueDate = doc.due_date || null;
+          let reminderDate = doc.reminder_date || null;
+
+          if (js) {
+            if (variant === 'deposit') {
+              totalAmount = Number.isFinite(Number(js.deposit_amount)) ? Number(js.deposit_amount) : totalAmount;
+              // No reminder for deposit
+              reminderDate = null;
+              // Use event_date as due if no explicit due date
+              if (!dueDate) dueDate = js.event_date || null;
+            } else if (variant === 'balance') {
+              totalAmount = Number.isFinite(Number(js.balance_amount)) ? Number(js.balance_amount) : totalAmount;
+              balanceDue = totalAmount;
+              if (!dueDate) dueDate = js.balance_due_date || null;
+              if (reminderDate == null && js.balance_reminder_date != null) reminderDate = js.balance_reminder_date;
+            }
+          }
+
+          // Compose insert via addDocument to get an assigned number
+          const requestedNumber = options && options.number != null ? Number(options.number) : null;
+          const payload = {
+            business_id: businessId,
+            jobsheet_id: jobsheetId,
+            doc_type: 'invoice',
+            number: requestedNumber != null && Number.isInteger(requestedNumber) ? requestedNumber : undefined,
+            status: 'issued',
+            total_amount: totalAmount,
+            balance_due: balanceDue != null ? balanceDue : totalAmount,
+            due_date: dueDate,
+            file_path: filePath,
+            client_name: doc.client_name || null,
+            event_name: doc.event_name || null,
+            event_date: doc.event_date || null,
+            document_date: doc.document_date || new Date().toISOString(),
+            definition_key: doc.definition_key || null,
+            invoice_variant: variant || null
+          };
+
+          try {
+            const inserted = await module.exports.addDocument(payload);
+            // Update reminder_date/payed if needed
+            if (reminderDate != null) {
+              try { await module.exports.updateDocumentStatus(inserted.id, { reminder_date: reminderDate }); } catch(_){}
+            }
+            resolve({ id: inserted.id, number: inserted.number });
+          } catch (e) {
+            reject(e);
+          }
+        } catch (ex) {
+          reject(ex);
+        }
+      });
+    });
+  },
+
+  // Set/override a specific invoice's number with validation and counter sync
+  setDocumentNumber: (documentId, newNumber) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(documentId);
+      const num = Number(newNumber);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid document id')); return; }
+      if (!Number.isInteger(num) || num < 0) { reject(new Error('Invalid invoice number')); return; }
+
+      db.get(
+        `SELECT document_id, business_id, doc_type FROM documents WHERE document_id = ?`,
+        [id],
+        (err, row) => {
+          if (err) { reject(err); return; }
+          if (!row) { reject(new Error('Document not found')); return; }
+          const docType = String(row.doc_type || '').toLowerCase();
+          if (docType !== 'invoice') { reject(new Error('Only invoice documents can be renumbered')); return; }
+          const businessId = row.business_id;
+          if (!Number.isInteger(businessId)) { reject(new Error('Invalid business id for document')); return; }
+
+          // Ensure uniqueness within this business/type
+          db.get(
+            `SELECT document_id FROM documents WHERE business_id = ? AND lower(doc_type) = 'invoice' AND number = ? AND document_id <> ? LIMIT 1`,
+            [businessId, num, id],
+            (dupErr, existing) => {
+              if (dupErr) { reject(dupErr); return; }
+              if (existing) { reject(new Error('Invoice number already exists')); return; }
+
+              db.run(
+                `UPDATE documents SET number = ?, updated_at = datetime('now') WHERE document_id = ?`,
+                [num, id],
+                function (updateErr) {
+                  if (updateErr) { reject(updateErr); return; }
+                  // Sync the last_invoice_number to the current max for safety
+                  db.get(
+                    `SELECT MAX(number) AS maxnum FROM documents WHERE business_id = ? AND lower(doc_type) = 'invoice'`,
+                    [businessId],
+                    (maxErr, maxRow) => {
+                      if (maxErr) { /* ignore sync error */ resolve(); return; }
+                      const maxNum = maxRow?.maxnum != null ? Number(maxRow.maxnum) : 0;
+                      db.run(
+                        `UPDATE business_settings SET last_invoice_number = ? WHERE id = ?`,
+                        [maxNum, businessId],
+                        function (_syncErr) { resolve(); }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
+        }
+      );
+    });
+  },
+
   setDocumentLock: (documentId, locked) => {
     return new Promise((resolve, reject) => {
       const id = Number(documentId);
