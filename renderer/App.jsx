@@ -1221,16 +1221,68 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n); } catch (_err) { return `£${n.toFixed(2)}`; }
   };
 
+  // Narrower INV column, wider Client/Event column
+  const GRID_COLS = '0.8fr 3.4fr 1fr 0.9fr 1fr 0.9fr 64px';
+  const GRID_TEMPLATE_WITH_SEP = '0.8fr 1px 3.4fr 1px 1fr 1px 0.9fr 1px 1fr 1px 0.9fr 1px 64px';
+  const CELL_BORDER = '#94a3b8'; // clearer divider (slate-400)
+
   const statusPill = (value) => {
     const v = (value || '').toLowerCase();
-    let classes = 'border-slate-300 text-slate-600 bg-slate-50';
-    if (v === 'paid') classes = 'border-green-300 text-green-700 bg-green-50';
-    else if (v === 'overdue') classes = 'border-red-300 text-red-700 bg-red-50';
-    else if (v === 'due soon') classes = 'border-amber-300 text-amber-700 bg-amber-50';
+    const palette = {
+      paid:   { bg: '#ecfdf5', border: '#86efac', color: '#166534' }, // green-50/300/800-ish
+      overdue:{ bg: '#fef2f2', border: '#fca5a5', color: '#991b1b' }, // red-50/300/800-ish
+      'due soon': { bg: '#fffbeb', border: '#fcd34d', color: '#92400e' }, // amber-50/300/800-ish
+      default:{ bg: '#f8fafc', border: '#cbd5e1', color: '#334155' } // slate-50/300/700-ish
+    };
+    const p = palette[v] || palette.default;
     return (
-      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ${classes}`}>{value || '—'}</span>
+      <span
+        className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
+        style={{ backgroundColor: p.bg, borderColor: p.border, color: p.color }}
+      >
+        {value || '—'}
+      </span>
     );
   };
+
+  const [menuOpenId, setMenuOpenId] = useState(null);
+  const closeMenus = useCallback(() => setMenuOpenId(null), []);
+  useEffect(() => {
+    const onDoc = (e) => {
+      if (!menuOpenId) return;
+      try {
+        const target = e.target;
+        if (target && typeof target.closest === 'function') {
+          const container = target.closest('[data-kebab-for]');
+          if (container) {
+            const idAttr = container.getAttribute('data-kebab-for');
+            const idNum = idAttr != null ? Number(idAttr) : null;
+            if (idNum != null && idNum === menuOpenId) {
+              // Click was inside the open menu/button container; do not auto-close
+              return;
+            }
+          }
+        }
+      } catch (_) {}
+      closeMenus();
+    };
+    document.addEventListener('scroll', onDoc, true);
+    document.addEventListener('mousedown', onDoc);
+    return () => { document.removeEventListener('scroll', onDoc, true); document.removeEventListener('mousedown', onDoc); };
+  }, [menuOpenId, closeMenus]);
+
+  // Close kebab on Escape
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!menuOpenId) return;
+      if (e.key === 'Escape' || e.key === 'Esc') {
+        e.stopPropagation();
+        closeMenus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [menuOpenId, closeMenus]);
 
   return (
     <div className="space-y-4">
@@ -1262,44 +1314,74 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
       {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
       {loading ? <div className="text-sm text-slate-500">Loading…</div> : null}
 
-      <div className="rounded border border-slate-200 overflow-hidden">
-        <div className="grid grid-cols-8 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
-          <div className="col-span-2">Invoice #</div>
-          <div className="col-span-2">Client / Event</div>
+      <div className="rounded border border-slate-200 overflow-visible">
+        <div
+          className="grid items-center px-3 py-3 text-xs font-semibold text-slate-600"
+          style={{ gridTemplateColumns: GRID_COLS, textAlign: 'left' }}
+        >
+          <div>Invoice #</div>
+          <div>Client / Event</div>
           <div>Amount</div>
           <div>Due</div>
           <div>Reminder</div>
-          <div className="text-right">Status / Actions</div>
+          <div style={{ textAlign: 'center' }}>Status</div>
+          <div style={{ textAlign: 'center' }}>Actions</div>
         </div>
         <div className="divide-y divide-slate-200">
           {computed.map(doc => {
-            const variant = (doc.definition_invoice_variant || doc.invoice_variant || '').toLowerCase();
+            const detectVariant = (d) => {
+              const raw = String(d.definition_invoice_variant || d.invoice_variant || '').toLowerCase();
+              if (raw === 'deposit' || raw === 'balance') return raw;
+              const hay = `${String(d.file_path || '').toLowerCase()} ${String(d.display_label || d.label || '').toLowerCase()}`;
+              if (hay.includes('deposit')) return 'deposit';
+              if (hay.includes('balance')) return 'balance';
+              return '';
+            };
+            const variant = detectVariant(doc);
             const variantLabel = variant === 'deposit' ? 'Deposit' : (variant === 'balance' ? 'Balance' : '');
-            const title = [doc.number != null ? `INV-${doc.number}` : '—', variantLabel].filter(Boolean).join(' · ');
-            const clientEvent = [doc.display_client_name || doc.client_name || '', doc.display_event_name || doc.event_name || ''].filter(Boolean).join(' — ');
+            const numberLabel = doc.number != null ? `INV-${doc.number}` : '—';
+            const title = numberLabel; // keep tooltip consistent with visible value
+            const eventDateLabel = formatDate(doc.display_event_date || doc.event_date || '');
+            const clientEventBase = [doc.display_client_name || doc.client_name || '', eventDateLabel || ''].filter(Boolean).join(' — ');
+            const clientEvent = variantLabel ? `${clientEventBase} · ${variantLabel}` : clientEventBase;
             const status = doc.derived_status || doc.status || '';
             const locked = !!doc.is_locked;
+            const statusKey = String(status || '').toLowerCase();
+            const rowBg = (() => {
+              if (statusKey === 'paid') return '#ecfdf5';
+              if (statusKey === 'overdue') return '#fef2f2';
+              if (statusKey === 'due soon') return '#fffbeb';
+              return 'transparent';
+            })();
             return (
-              <div key={doc.document_id} className="grid grid-cols-8 items-center px-3 py-3 text-sm">
-                <div className="col-span-2 truncate" title={title}>{title}</div>
-                <div className="col-span-2 truncate" title={clientEvent}>{clientEvent}</div>
-                <div className="pr-3">{toCurrency(doc.total_amount ?? doc.balance_due)}</div>
+              <div
+                key={doc.document_id}
+                className="grid items-center px-3 py-3 text-sm relative"
+                style={{ gridTemplateColumns: GRID_COLS, backgroundColor: rowBg, textAlign: 'left' }}
+              >
+                <div className="truncate" title={title}>{numberLabel}</div>
+                <div className="truncate" title={clientEvent}>{clientEvent}</div>
+                <div>{toCurrency(doc.total_amount ?? doc.balance_due)}</div>
                 <div className="whitespace-nowrap">{formatDate(doc.due_date)}</div>
                 <div className="whitespace-nowrap">{formatDate(doc.reminder_date)}</div>
-                <div className="flex items-center justify-end gap-2">
-                  <span className="pr-2">{statusPill(status)}</span>
-                  <IconButton size="md" label={locked ? 'Unlock' : 'Lock'} onClick={() => toggleLock(doc)} className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}>
-                    <span aria-hidden>{locked ? '🔒' : '🔓'}</span>
+                <div style={{ textAlign: 'center' }}>{statusPill(status)}</div>
+                <div className="flex items-center justify-center gap-2 relative" data-kebab-for={doc.document_id}>
+                  <IconButton size="md" label="Actions" className="bg-white" onClick={(e) => { e.stopPropagation(); setMenuOpenId(prev => prev === doc.document_id ? null : doc.document_id); }}>
+                    <span aria-hidden>⋮</span>
                   </IconButton>
-                  <IconButton size="md" label="Open" onClick={() => handleOpen(doc)} disabled={!doc.file_path}><OpenIcon className="h-4 w-4" /></IconButton>
-                  <IconButton size="md" label="Reveal" onClick={() => handleReveal(doc)} disabled={!doc.file_path}><RevealIcon className="h-4 w-4" /></IconButton>
-                  <IconButton size="md" label={String(status).toLowerCase() === 'paid' ? 'Mark unpaid' : 'Mark paid'} onClick={() => handleMarkPaidToggle(doc)}>
-                    <span aria-hidden>💳</span>
-                  </IconButton>
-                  
-                  <IconButton size="md" label="Delete" onClick={() => onDeleteDocument?.(doc)} disabled={locked || !doc?.document_id} className="border-red-200 text-red-600 hover:bg-red-50">
-                    <DeleteIcon className="h-4 w-4" />
-                  </IconButton>
+                  {menuOpenId === doc.document_id ? (
+                    <div className="absolute right-0 top-full z-20 mt-2 w-48 rounded border border-slate-200 bg-white p-1 shadow-lg">
+                      <button type="button" onClick={() => { toggleLock(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
+                        {locked ? 'Unlock' : 'Lock'}
+                      </button>
+                      <button type="button" onClick={() => { handleOpen(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Open</button>
+                      <button type="button" onClick={() => { handleReveal(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Reveal in Finder</button>
+                      <button type="button" onClick={() => { handleMarkPaidToggle(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
+                        {String(status).toLowerCase() === 'paid' ? 'Mark unpaid' : 'Mark paid'}
+                      </button>
+                      <button type="button" onClick={() => { onDeleteDocument?.(doc); closeMenus(); }} disabled={locked || !doc?.document_id} className="w-full text-left rounded px-2 py-1 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60">Delete</button>
+                    </div>
+                  ) : null}
                 </div>
               </div>
             );
