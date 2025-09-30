@@ -6922,7 +6922,7 @@ function JobsheetEditorWindow({
 
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
-  const creatingRef = useRef(initialResolvedJobsheetId == null);
+  const creatingRef = useRef(false);
   const previousJobsheetIdRef = useRef(initialResolvedJobsheetId);
 
   const storagePrefix = useMemo(() => (
@@ -7606,7 +7606,7 @@ function JobsheetEditorWindow({
     if (nextTarget === current) return;
 
     initialLoadRef.current = true;
-    creatingRef.current = nextTarget == null;
+    creatingRef.current = false;
     setError('');
     setMessage('');
     if (nextTarget != null) {
