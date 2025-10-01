@@ -2623,7 +2623,7 @@ function InlineJobsheetEditorPanel({
 
   return (
     <div className="mx-auto max-w-7xl">
-      <div className="rounded-lg border border-slate-200 bg-slate-100 shadow-sm overflow-hidden">
+      <div className="rounded-lg border border-slate-200 bg-slate-100 shadow-sm">
         <div className="flex flex-col gap-3 border-b border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between lg:px-6 lg:py-4">
           <div>
             <h3 className="text-base font-semibold text-slate-700">{headerTitle}</h3>
@@ -3770,18 +3770,23 @@ function DocumentsInlinePanel({
   onDelete,
   documentFolder,
   businessId,
-  lastInvoiceNumber
+  lastInvoiceNumber,
+  jobsheetSnapshot
 }) {
   const INVOICE_GATE_BYPASS_KEY = 'invoiceMaster:bypassInvoiceGate';
   const list = Array.isArray(documents) ? documents : [];
   const excelDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
   const pdfDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
+  const workbookPathSet = useMemo(() => new Set((excelItems || []).map(i => (i.doc?.file_path || '').toString()).filter(Boolean)), [excelItems]);
+  const pdfPanePathSet = useMemo(() => new Set((pdfItems || []).map(i => (i.pdfDoc?.file_path || '').toString()).filter(Boolean)), [pdfItems]);
   const defs = Array.isArray(documentDefinitions) ? documentDefinitions : [];
 
   const [menuOpenId, setMenuOpenId] = useState('');
   const menuRef = useRef(null);
   const [overrideNumbers, setOverrideNumbers] = useState({});
   const [defaultNext, setDefaultNext] = useState(null);
+  const [otherFiles, setOtherFiles] = useState([]);
+  const [otherFolderPath, setOtherFolderPath] = useState(documentFolder || '');
 
   useEffect(() => {
     const onDoc = (e) => {
@@ -3806,6 +3811,41 @@ function DocumentsInlinePanel({
       window.localStorage.setItem(INVOICE_GATE_BYPASS_KEY, bypassInvoiceGate ? '1' : '0');
     } catch (_) {}
   }, [bypassInvoiceGate]);
+
+  useEffect(() => { setOtherFolderPath(documentFolder || ''); }, [documentFolder]);
+
+  const loadOtherFiles = useCallback(async () => {
+    try {
+      const target = otherFolderPath || documentFolder;
+      if (!target || !window.api?.listOtherFilesInFolder) { setOtherFiles([]); return; }
+      const list = await window.api.listOtherFilesInFolder({ folderPath: target });
+      setOtherFiles(Array.isArray(list) ? list : []);
+    } catch (err) {
+      setOtherFiles([]);
+    }
+  }, [otherFolderPath, documentFolder]);
+
+  useEffect(() => { loadOtherFiles(); }, [loadOtherFiles, documents]);
+  useEffect(() => {
+    if (!window.api || typeof window.api.onDocumentsChange !== 'function') return () => {};
+    const unsub = window.api.onDocumentsChange((payload) => {
+      if (!payload || payload.businessId !== businessId) return;
+      loadOtherFiles();
+    });
+    return () => unsub && unsub();
+  }, [businessId, loadOtherFiles]);
+  const filteredOtherFiles = useMemo(() => (
+    Array.isArray(otherFiles)
+      ? otherFiles.filter(f => {
+          const p = f && f.file_path ? String(f.file_path) : '';
+          if (!p) return false;
+          // Exclude files already shown in the Excel or PDFs panes
+          if (workbookPathSet.has(p)) return false;
+          if (pdfPanePathSet.has(p)) return false;
+          return true;
+        })
+      : []
+  ), [otherFiles, workbookPathSet, pdfPanePathSet]);
 
   // Load default next number from business settings; update when it changes
   useEffect(() => {
@@ -3928,14 +3968,44 @@ function DocumentsInlinePanel({
       {/* Gate toggle */}
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold text-slate-700">Documents</div>
-        <label className="inline-flex items-center gap-2 text-xs text-slate-600">
-          <input
-            type="checkbox"
-            checked={bypassInvoiceGate}
-            onChange={e => setBypassInvoiceGate(e.target.checked)}
-          />
-          <span>Bypass invoice export gate</span>
-        </label>
+        <div className="flex items-center gap-2">
+          {/* Sync with Finder button removed per request */}
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const files = (await window.api?.chooseFiles?.({ title: 'Import files to job folder' })) || [];
+                const list = Array.isArray(files) ? files : (files ? [files] : []);
+                let targetPath = documentFolder || '';
+                for (const src of list) {
+                  // eslint-disable-next-line no-await-in-loop
+                  const res = await window.api?.importFileToJobsheetFolder?.({ businessId, jobsheetId, folderPath: documentFolder, sourcePath: src, jobsheetSnapshot });
+                  if (res && res.folder_path) targetPath = res.folder_path;
+                }
+                if (targetPath) {
+                  setOtherFolderPath(targetPath);
+                  const refreshed = await window.api?.listOtherFilesInFolder?.({ folderPath: targetPath });
+                  setOtherFiles(Array.isArray(refreshed) ? refreshed : []);
+                } else {
+                  await loadOtherFiles();
+                }
+              } catch (err) {
+                // ignore
+              }
+            }}
+            className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Import files to folder
+          </button>
+          <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+            <input
+              type="checkbox"
+              checked={bypassInvoiceGate}
+              onChange={e => setBypassInvoiceGate(e.target.checked)}
+            />
+            <span>Bypass invoice export gate</span>
+          </label>
+        </div>
       </div>
 
       {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
@@ -4034,7 +4104,6 @@ function DocumentsInlinePanel({
                       <span aria-hidden>{exported ? '✅' : '❌'}</span>
                       <span className="truncate">{label}</span>
                     </div>
-                    {/* Do not display file path when exported */}
                   </div>
                   <div className="flex items-center gap-2">
                     <IconButton
@@ -4087,6 +4156,46 @@ function DocumentsInlinePanel({
                 </div>
               );
             })}
+          </div>
+        </div>
+
+        {/* Other Files Pane */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">Other files</div>
+            <div className="flex items-center gap-2 text-xs">
+              <button type="button" onClick={loadOtherFiles} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+            </div>
+          </div>
+          <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
+            {filteredOtherFiles.length === 0 ? (
+              <div className="px-2 py-2 text-sm text-slate-500">No other files.</div>
+            ) : filteredOtherFiles.map(file => (
+              <div key={file.file_path} className="flex items-center justify-between rounded px-2 py-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 text-sm font-medium truncate text-slate-700">
+                    <span className="truncate" title={file.file_path}>{file.file_name || file.file_path}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <IconButton label="Open" onClick={() => onOpenFile?.(file.file_path)}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
+                  <IconButton label="Reveal in Finder" onClick={() => onRevealFile?.(file.file_path)}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
+                  <IconButton
+                    label="Promote"
+                    onClick={async () => {
+                      try {
+                        await window.api?.promoteFileToDocument?.({ businessId, jobsheetId, filePath: file.file_path, jobsheetSnapshot });
+                        await onRefresh?.();
+                        await loadOtherFiles();
+                      } catch (_) {}
+                    }}
+                    className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+                  >
+                    <span className="text-[11px] font-semibold">+</span>
+                  </IconButton>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </div>
@@ -4867,6 +4976,7 @@ function JobsheetEditor({
                         documentFolder={documentFolder}
                         businessId={businessId}
                         lastInvoiceNumber={business?.last_invoice_number}
+                        jobsheetSnapshot={formState}
                       />
                     );
                   }
@@ -8913,7 +9023,10 @@ function JobsheetEditorWindow({
   ) : (
     <>
       {isInline ? (
-        summaryCard
+        // Make the summary sticky in inline variant too
+        <div className="sticky top-0 z-20 py-2 bg-slate-100/95 backdrop-blur">
+          {summaryCard}
+        </div>
       ) : (
         <div className="sticky top-0 z-20 -mx-6 px-6 pt-2 pb-4 bg-slate-100/95 backdrop-blur">
           {summaryCard}
