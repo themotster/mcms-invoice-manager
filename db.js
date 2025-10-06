@@ -15,6 +15,13 @@ function escapeLikePattern(value) {
     .replace(/_/g, '\\_');
 }
 
+function toSqliteDateTime(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.valueOf())) return null;
+  return date.toISOString().slice(0, 19).replace('T', ' ');
+}
+
 const DEFAULT_BUSINESS_ID = 1;
 const DEFAULT_BUSINESSES = [
   {
@@ -348,6 +355,35 @@ function initializeDatabase() {
       FOREIGN KEY (business_id) REFERENCES business_settings(id),
       FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id)
     )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS scheduled_emails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email_log_id INTEGER,
+      business_id INTEGER,
+      jobsheet_id INTEGER,
+      to_address TEXT NOT NULL,
+      cc_address TEXT,
+      bcc_address TEXT,
+      subject TEXT,
+      body TEXT,
+      attachments TEXT,
+      is_html INTEGER DEFAULT 1,
+      send_at TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      attempt_count INTEGER DEFAULT 0,
+      last_error TEXT,
+      sent_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (email_log_id) REFERENCES email_log(id) ON DELETE SET NULL,
+      FOREIGN KEY (business_id) REFERENCES business_settings(id),
+      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id)
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_scheduled_emails_status_sendat
+      ON scheduled_emails (status, send_at)`);
+
+    db.run('ALTER TABLE scheduled_emails ADD COLUMN is_html INTEGER DEFAULT 1', logDuplicateColumn);
 
   db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
     definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3819,17 +3855,31 @@ emptyDocumentsTrash
 };
 
 // Email log helpers (exported after main object)
-module.exports.logEmail = ({ business_id = null, jobsheet_id = null, to, cc, bcc, subject, body, attachments = [], provider = 'graph', status = 'sent', message_id = null }) => {
+module.exports.logEmail = ({
+  business_id = null,
+  jobsheet_id = null,
+  to,
+  cc,
+  bcc,
+  subject,
+  body,
+  attachments = [],
+  provider = 'graph',
+  status = 'sent',
+  message_id = null,
+  sent_at = null
+}) => {
   return new Promise((resolve, reject) => {
     const toAddr = (to || '').toString();
     if (!toAddr) { reject(new Error('to is required')); return; }
     const ccAddr = Array.isArray(cc) ? cc.join(', ') : (cc || '');
     const bccAddr = Array.isArray(bcc) ? bcc.join(', ') : (bcc || '');
     const atts = JSON.stringify(Array.isArray(attachments) ? attachments : (attachments ? [attachments] : []));
+    const sentAt = toSqliteDateTime(sent_at);
     db.run(
       `INSERT INTO email_log (business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
-      [business_id, jobsheet_id, toAddr, ccAddr, bccAddr, subject || '', body || '', atts, provider, status, message_id || null],
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))`,
+      [business_id, jobsheet_id, toAddr, ccAddr, bccAddr, subject || '', body || '', atts, provider, status, message_id || null, sentAt],
       function (err) {
         if (err) reject(err);
         else resolve(this.lastID);
@@ -3860,12 +3910,150 @@ module.exports.deleteEmailLog = (id) => {
       reject(new Error('Invalid email log id'));
       return;
     }
-    db.run('DELETE FROM email_log WHERE id = ?', [numericId], function (err) {
-      if (err) {
-        reject(err);
-      } else {
-        resolve({ deleted: this.changes || 0 });
-      }
+    db.serialize(() => {
+      db.run('DELETE FROM scheduled_emails WHERE email_log_id = ?', [numericId], () => {});
+      db.run('DELETE FROM email_log WHERE id = ?', [numericId], function (err) {
+        if (err) {
+          reject(err);
+        } else {
+          resolve({ deleted: this.changes || 0 });
+        }
+      });
     });
+  });
+};
+
+module.exports.updateEmailLogStatus = ({ id, status, sent_at = null }) => {
+  return new Promise((resolve, reject) => {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      reject(new Error('Invalid email log id'));
+      return;
+    }
+    const sentAt = toSqliteDateTime(sent_at);
+    db.run(
+      `UPDATE email_log SET status = ?, sent_at = CASE WHEN ? IS NOT NULL THEN ? ELSE sent_at END WHERE id = ?`,
+      [status || 'sent', sentAt, sentAt, numericId],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ updated: this.changes || 0 });
+      }
+    );
+  });
+};
+
+module.exports.queueScheduledEmail = ({
+  email_log_id = null,
+  business_id = null,
+  jobsheet_id = null,
+  to,
+  cc,
+  bcc,
+  subject,
+  body,
+  attachments = [],
+  is_html = true,
+  send_at
+}) => {
+  return new Promise((resolve, reject) => {
+    const toAddr = (to || '').toString().trim();
+    if (!toAddr) { reject(new Error('to is required')); return; }
+    const sendAt = toSqliteDateTime(send_at);
+    if (!sendAt) { reject(new Error('send_at is invalid')); return; }
+    const ccAddr = Array.isArray(cc) ? cc.join(', ') : (cc || '');
+    const bccAddr = Array.isArray(bcc) ? bcc.join(', ') : (bcc || '');
+    const atts = JSON.stringify(Array.isArray(attachments) ? attachments : (attachments ? [attachments] : []));
+    db.run(
+      `INSERT INTO scheduled_emails (email_log_id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, is_html, send_at, status, attempt_count, last_error, sent_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, datetime('now'), datetime('now'))`,
+      [email_log_id, business_id, jobsheet_id, toAddr, ccAddr, bccAddr, subject || '', body || '', atts, is_html ? 1 : 0, sendAt],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+};
+
+module.exports.listDueScheduledEmails = ({ limit = 10 } = {}) => {
+  return new Promise((resolve, reject) => {
+    const cap = Number(limit) || 10;
+    db.all(
+      `SELECT * FROM scheduled_emails
+       WHERE status = 'pending' AND send_at <= datetime('now')
+       ORDER BY send_at ASC
+       LIMIT ?`,
+      [cap],
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      }
+    );
+  });
+};
+
+module.exports.markScheduledEmailSent = ({ id, sent_at = null }) => {
+  return new Promise((resolve, reject) => {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      reject(new Error('Invalid scheduled email id'));
+      return;
+    }
+    const sentAt = toSqliteDateTime(sent_at || new Date());
+    db.run(
+      `UPDATE scheduled_emails
+       SET status = 'sent', sent_at = ?, last_error = NULL, updated_at = datetime('now')
+       WHERE id = ?`,
+      [sentAt, numericId],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ updated: this.changes || 0 });
+      }
+    );
+  });
+};
+
+module.exports.markScheduledEmailFailed = ({ id, error, retryInMinutes = 5 }) => {
+  return new Promise((resolve, reject) => {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      reject(new Error('Invalid scheduled email id'));
+      return;
+    }
+    const delay = Math.max(1, Number(retryInMinutes) || 5);
+    const errorText = (error || '').toString().slice(0, 500);
+    db.run(
+      `UPDATE scheduled_emails
+       SET attempt_count = attempt_count + 1,
+           last_error = ?,
+           send_at = datetime('now', ?),
+           updated_at = datetime('now')
+       WHERE id = ?`,
+      [errorText, `+${delay} minutes`, numericId],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ updated: this.changes || 0 });
+      }
+    );
+  });
+};
+
+module.exports.listScheduledEmails = ({ status = null, limit = 100 } = {}) => {
+  return new Promise((resolve, reject) => {
+    const where = [];
+    const params = [];
+    if (status) { where.push('status = ?'); params.push(status); }
+    params.push(Number(limit) || 100);
+    db.all(
+      `SELECT * FROM scheduled_emails
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY send_at ASC
+       LIMIT ?`,
+      params,
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      }
+    );
   });
 };

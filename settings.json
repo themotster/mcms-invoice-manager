@@ -7,33 +7,33 @@
     "2": {
       "enquiry_ack": {
         "subject": "Thanks for your enquiry – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_first_name }},\n\nThanks for getting in touch about your {{ event_type }} on {{ event_date }}.\n\nI'll check our availability in the first instance and come back to you shortly with details and pricing.\n\nThanks so much,\nMotti",
+        "body": "<p style=\"margin:0 0 12px 0;\">Hi {{ client_first_name }},</p><p style=\"margin:0 0 12px 0;\">Thanks for getting in touch about AhMen performing at your event on {{ event_date }}.</p><p style=\"margin:0 0 12px 0;\">I'll check our availability in the first instance and come back to you shortly with details and pricing.</p><p style=\"margin:0 0 12px 0;\">Thanks so much,<br>Motti</p>",
         "label": "Enquiry acknowledgment"
       },
       "quote": {
         "subject": "Quote – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_name|there }},\n\nPlease find your quote attached for {{ event_type }} on {{ event_date }}.\n\nIf you have any questions or changes, just reply to this email.\n\nThanks,\nMotti",
+        "body": "<p style=\"margin:0 0 12px 0;\">Hi {{ client_first_name }},<br></p><p style=\"margin:0 0 12px 0;\">Please find the attached quote for AhMen to perform at your event on {{ event_date }}.</p><p style=\"margin:0 0 12px 0;\">If you have any questions or you'd like to discuss any changes, please feel free to reply to this email.</p><p style=\"margin:0 0 12px 0;\">Thanks so much,<br>Motti</p>",
         "label": "Quote"
       },
       "booking_pack": {
         "subject": "Booking pack – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_name|there }},\n\nAttached are your booking schedule and T&Cs, plus the deposit invoice.\n\nPlease review and let me know if anything needs updating.\n\nThanks,\nMotti",
+        "body": "<p style=\"margin:0 0 12px 0;\">Hi {{ client_first_name }},<br></p><p style=\"margin:0 0 12px 0;\">Please find the attached PDF documents as follows:</p><p style=\"margin:0 0 12px 0;\">   1) Booking schedule </p><p style=\"margin:0 0 12px 0;\">   2) T&amp;Cs</p><p style=\"margin:0 0 12px 0;\">   3) Deposit invoice (payable upon signing).</p><p style=\"margin:0 0 12px 0;\"><span style=\"font-size: 0.875rem; background-color: rgba(255,255,255,var(--tw-bg-opacity)); font-family: inherit;\">Your booking will be confirmed once we have received the signed booking schedule and the deposit payment.</span></p><p style=\"margin:0 0 12px 0;\"><span style=\"font-size: 0.875rem; background-color: rgba(255,255,255,var(--tw-bg-opacity)); font-family: inherit;\">Thanks so much,</span><br></p><p style=\"margin:0 0 12px 0;\">Motti</p>",
         "label": "Booking pack"
       },
       "invoice_balance": {
-        "label": "Balance invoice",
         "subject": "Balance invoice – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_name|there }},\n\nPlease find your balance invoice attached. The due date is {{ balance_due_date }}.\n\nThanks,\n"
+        "body": "<p style=\"margin:0 0 12px 0;\">Hi {{ client_first_name }},</p><p style=\"margin:0 0 12px 0;\"><span style=\"font-size: 0.875rem; background-color: rgba(255,255,255,var(--tw-bg-opacity)); font-family: inherit;\">Please find your balance invoice attached. The due date is </span>{{ balance_due_date }}<span style=\"font-size: 0.875rem; background-color: rgba(255,255,255,var(--tw-bg-opacity)); font-family: inherit;\">.</span><br></p><p style=\"margin:0 0 12px 0;\">Thanks so much,</p><p style=\"margin:0 0 12px 0;\">Motti</p>",
+        "label": "Balance invoice"
       },
       "payment_reminder": {
-        "label": "Payment reminder",
         "subject": "Payment reminder – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_name|there }},\n\nA friendly reminder about the outstanding balance for {{ event_type }} on {{ event_date }}. The due date is {{ balance_due_date }}.\n\nIf you've already sent payment, please ignore this.\n\nThanks,\n"
+        "body": "<p style=\"margin:0 0 12px 0;\">Hi {{ client_first_name }},<br></p><p style=\"margin:0 0 12px 0;\">A friendly reminder about the outstanding balance for AhMen's performance on {{ event_date }}. The due date is {{ balance_due_date }}.</p><p style=\"margin:0 0 12px 0;\">If you've already sent payment, please ignore this.</p><p style=\"margin:0 0 12px 0;\">Thanks so much,</p><p style=\"margin:0 0 12px 0;\">Motti</p>",
+        "label": "Payment reminder"
       },
       "thank_you": {
-        "label": "Thank you",
         "subject": "Thank you – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_name|there }},\n\nThank you again for having us at your {{ event_type }} on {{ event_date }} — it was a pleasure.\n\nAll the best,\n"
+        "body": "<p style=\"margin:0 0 12px 0;\">Hi {{ client_first_name }},<br></p><p style=\"margin:0 0 12px 0;\">Thank you again for having us at your event on {{ event_date }} — it was a pleasure.</p><p style=\"margin:0 0 12px 0;\">All the best,</p><p style=\"margin:0 0 12px 0;\">Motti</p>",
+        "label": "Thank you"
       }
     }
   },

@@ -165,6 +165,17 @@ const appendSignatureHtml = (bodyHtml, signatureHtml) => {
   return `${trimmedBody}<br><br>${signatureHtml}`;
 };
 
+const formatDateTimeLocal = (date) => {
+  if (!(date instanceof Date) || Number.isNaN(date.valueOf())) return '';
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+};
+
+const computeDefaultScheduleDateTime = () => {
+  const future = new Date(Date.now() + 15 * 60 * 1000);
+  return formatDateTimeLocal(future);
+};
+
 export default function MailComposer({
   open,
   onClose,
@@ -189,7 +200,9 @@ export default function MailComposer({
   const [signature, setSignature] = useState('');
   const [includeSignature, setIncludeSignature] = useState(true);
   const [savingPreset, setSavingPreset] = useState(false);
-  const [sigDraft, setSigDraft] = useState('');
+  const [signatureModalOpen, setSignatureModalOpen] = useState(false);
+  const [signatureDraft, setSignatureDraft] = useState('');
+  const [signatureSaving, setSignatureSaving] = useState(false);
   const [dragging, setDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const [pos, setPos] = useState({ x: 0, y: 0 });
@@ -201,6 +214,10 @@ export default function MailComposer({
   const [tokenChoice, setTokenChoice] = useState('client_name');
   const [jobFiles, setJobFiles] = useState([]);
   const [jobFilesLoading, setJobFilesLoading] = useState(false);
+  const lastAppliedTemplateRef = useRef('');
+  const [sendWhen, setSendWhen] = useState('now');
+  const [scheduleDateTime, setScheduleDateTime] = useState(() => computeDefaultScheduleDateTime());
+  const [pendingBodyHtml, setPendingBodyHtml] = useState(null);
 
   // Create a dedicated portal container and keep it last in <body>
   useEffect(() => {
@@ -286,6 +303,9 @@ export default function MailComposer({
     setTemplateBody(normalizeTemplateBody(initialBody));
     setAttachments(Array.isArray(initialAttachments) ? initialAttachments : []);
     setSelectedTemplate('');
+    lastAppliedTemplateRef.current = '';
+    setSendWhen('now');
+    setScheduleDateTime(computeDefaultScheduleDateTime());
   }, [open, initialTo, initialCc, initialBcc, initialSubject, initialBody, initialAttachments]);
 
   // always HTML; no toggle needed
@@ -309,7 +329,7 @@ export default function MailComposer({
         setTemplates(p || {});
         const sig = (s && s.signature) || '';
         setSignature(sig);
-        setSigDraft(sig);
+        setSignatureDraft(sig);
       } catch (_) {}
       // Load template context from jobsheet if available
       try {
@@ -326,20 +346,62 @@ export default function MailComposer({
         const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
         if (mounted) setJobFiles(Array.isArray(files) ? files : []);
       } catch (_) { if (mounted) setJobFiles([]); } finally { if (mounted) setJobFilesLoading(false); }
+      const templateKeys = Object.keys(p || {});
+      if (mounted && templateKeys.length) {
+        let key = selectedTemplate;
+        if (!key || !p[key]) {
+          key = templateKeys.includes('enquiry_ack') ? 'enquiry_ack' : templateKeys[0];
+        }
+        const tpl = p[key];
+        if (tpl) {
+          lastAppliedTemplateRef.current = key;
+          if (key !== selectedTemplate) setSelectedTemplate(key);
+          setTemplateSubject(tpl.subject || '');
+          setTemplateBody(normalizeTemplateBody(tpl.body));
+        }
+      }
     })();
     return () => { mounted = false; };
-  }, [open]);
+  }, [open, businessId, jobsheetId]);
 
   // no automatic attachments
 
   useEffect(() => {
     if (!open) return;
-    const tpl = templates[selectedTemplate];
-    if (tpl) {
-      if (tpl.subject != null) setTemplateSubject(tpl.subject || '');
-      if (tpl.body != null) setTemplateBody(normalizeTemplateBody(tpl.body));
+    const keys = Object.keys(templates || {});
+    if (!keys.length) return;
+    const currentKey = selectedTemplate && templates[selectedTemplate] ? selectedTemplate : '';
+    if (!currentKey) {
+      const fallback = keys.includes('enquiry_ack') ? 'enquiry_ack' : keys[0];
+      if (fallback) {
+        const tpl = templates[fallback];
+        if (tpl) {
+          lastAppliedTemplateRef.current = fallback;
+          setSelectedTemplate(fallback);
+          setTemplateSubject(tpl.subject || '');
+          setTemplateBody(normalizeTemplateBody(tpl.body));
+        }
+      }
+      return;
+    }
+    if (lastAppliedTemplateRef.current !== currentKey) {
+      const tpl = templates[currentKey];
+      if (tpl) {
+        lastAppliedTemplateRef.current = currentKey;
+        setTemplateSubject(tpl.subject || '');
+        setTemplateBody(normalizeTemplateBody(tpl.body));
+      }
     }
   }, [open, templates, selectedTemplate]);
+
+  const handleTemplateSelect = useCallback((key, sourceTemplates = templates) => {
+    const tpl = sourceTemplates?.[key];
+    if (!tpl) return;
+    lastAppliedTemplateRef.current = key;
+    setSelectedTemplate(key);
+    setTemplateSubject(tpl.subject || '');
+    setTemplateBody(normalizeTemplateBody(tpl.body));
+  }, [templates]);
 
   const tokenMap = useMemo(() => buildTokenMap(templateCtx), [templateCtx]);
 
@@ -360,10 +422,39 @@ export default function MailComposer({
     const el = bodyEditorRef.current;
     if (!el) return;
     const html = displayBodyHtml || '<p><br></p>';
+    if (document.activeElement === el) {
+      setPendingBodyHtml(html);
+      return;
+    }
     if (el.innerHTML !== html) {
       el.innerHTML = html;
     }
   }, [open, displayBodyHtml]);
+
+  useEffect(() => {
+    if (!pendingBodyHtml) return;
+    const el = bodyEditorRef.current;
+    if (!el) return;
+    if (document.activeElement === el) return;
+    if (el.innerHTML !== pendingBodyHtml) {
+      el.innerHTML = pendingBodyHtml;
+    }
+    setPendingBodyHtml(null);
+  }, [pendingBodyHtml]);
+
+  useEffect(() => {
+    const el = bodyEditorRef.current;
+    if (!el) return () => {};
+    const onBlur = () => {
+      if (!pendingBodyHtml) return;
+      if (el.innerHTML !== pendingBodyHtml) {
+        el.innerHTML = pendingBodyHtml;
+      }
+      setPendingBodyHtml(null);
+    };
+    el.addEventListener('blur', onBlur);
+    return () => el.removeEventListener('blur', onBlur);
+  }, [pendingBodyHtml]);
 
   const handleBodyInput = useCallback(() => {
     const el = bodyEditorRef.current;
@@ -424,32 +515,139 @@ export default function MailComposer({
   const renderedBodyFinal = useMemo(() => applyTemplate(bodyWithSignatureTokens), [bodyWithSignatureTokens, applyTemplate]);
   const renderedSubject = useMemo(() => applyTemplate(templateSubject), [templateSubject, applyTemplate]);
 
+  const openSignatureModal = useCallback(() => {
+    bringPortalToFront();
+    setSignatureDraft(signature || '');
+    setSignatureModalOpen(true);
+  }, [signature]);
+
+  const closeSignatureModal = useCallback(() => {
+    setSignatureModalOpen(false);
+  }, []);
+
+  const handleSaveSignature = useCallback(async () => {
+    try {
+      setSignatureSaving(true);
+      await window.api?.saveMailSignature?.({ businessId, signature: signatureDraft });
+      setSignature(signatureDraft);
+      pushToast('Signature updated', 'success');
+      setSignatureModalOpen(false);
+    } catch (err) {
+      pushToast(err?.message || 'Unable to save signature', 'error');
+    } finally {
+      setSignatureSaving(false);
+    }
+  }, [businessId, signatureDraft]);
+
+  const handleSend = async () => {
+    if (!to.trim()) { window.alert('Enter recipient'); return; }
+    const finalSubject = renderedSubject;
+    const finalBody = renderedBodyFinal;
+    let scheduledAt = null;
+    if (sendWhen === 'later') {
+      if (!scheduleDateTime) { window.alert('Select a schedule date and time'); return; }
+      scheduledAt = new Date(scheduleDateTime);
+      if (Number.isNaN(scheduledAt.valueOf())) { window.alert('Schedule time is invalid'); return; }
+      if (scheduledAt.getTime() < Date.now() + 30 * 1000) {
+        window.alert('Scheduled time must be at least 30 seconds in the future');
+        return;
+      }
+    }
+
+    try {
+      setBusy(true);
+      if (sendWhen === 'later') {
+        await window.api?.scheduleMailViaGraph?.({
+          to,
+          cc,
+          bcc,
+          subject: finalSubject,
+          body: finalBody,
+          attachments,
+          is_html: true,
+          business_id: businessId,
+          jobsheet_id: jobsheetId,
+          send_at: scheduledAt.toISOString()
+        });
+      } else {
+        await window.api?.sendMailViaGraph?.({
+          to,
+          cc,
+          bcc,
+          subject: finalSubject,
+          body: finalBody,
+          attachments,
+          is_html: true,
+          business_id: businessId,
+          jobsheet_id: jobsheetId
+        });
+      }
+      try {
+        window.api?.notifyJobsheetChange?.({
+          type: 'email-log-updated',
+          businessId,
+          jobsheetId
+        });
+      } catch (_) {}
+      onClose?.();
+      onSent?.({ mode: sendWhen });
+    } catch (err) {
+      window.alert(err?.message || (sendWhen === 'later' ? 'Unable to schedule email' : 'Unable to send email'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!open) return null;
 
-  const content = (
-    <div className="fixed inset-0 bg-slate-900/50 p-4" style={{ zIndex: 9999999999 }}>
+  const composerContent = (
+    <div
+      className="fixed inset-0 bg-slate-900/50 p-4"
+      style={{
+        zIndex: signatureModalOpen ? 9999999998 : 9999999999,
+        pointerEvents: signatureModalOpen ? 'none' : 'auto'
+      }}
+    >
       <div
         className="w-full max-w-3xl rounded-lg bg-white shadow-2xl ring-2 ring-indigo-500/40"
-        style={{ position: 'fixed', left: Math.max(8, pos.x), top: Math.max(8, pos.y), zIndex: 10000000000 }}
+        style={{
+          position: 'fixed',
+          left: Math.max(8, pos.x),
+          top: Math.max(8, pos.y),
+          zIndex: signatureModalOpen ? 9999999998 : 10000000000,
+          pointerEvents: signatureModalOpen ? 'none' : 'auto'
+        }}
       >
         <div
           ref={headerRef}
           className="flex items-center justify-between border-b border-indigo-600/20 px-4 py-3 cursor-move select-none bg-indigo-600 text-white rounded-t-lg"
           onMouseDown={(e) => {
             bringPortalToFront();
+            const targetNode = e.target;
+            const targetEl = targetNode instanceof Element
+              ? targetNode
+              : (targetNode && targetNode.parentElement ? targetNode.parentElement : null);
+            if (targetEl && typeof targetEl.closest === 'function' && targetEl.closest('button')) {
+              return;
+            }
             e.preventDefault();
             dragStartRef.current = { x: e.clientX - pos.x, y: e.clientY - pos.y };
             setDragging(true);
           }}
         >
           <h3 className="text-base font-semibold">Compose email</h3>
-          <button className="text-white/80 hover:text-white" onClick={onClose} aria-label="Close">✕</button>
+          <button
+            className="text-white/80 hover:text-white"
+            onClick={onClose}
+            onMouseDown={event => event.stopPropagation()}
+            aria-label="Close"
+          >✕</button>
         </div>
         <div className="p-4 space-y-3 text-sm">
           <div className="grid grid-cols-6 gap-2 items-center">
             <label className="col-span-1 text-slate-600">Template</label>
             <div className="col-span-5 flex items-center gap-2">
-              <select value={selectedTemplate} onChange={e => setSelectedTemplate(e.target.value)} className="rounded border border-slate-300 px-2 py-1">
+              <select value={selectedTemplate} onChange={e => handleTemplateSelect(e.target.value)} className="rounded border border-slate-300 px-2 py-1">
                 {Object.keys(templates || {}).length === 0 ? (
                   <option value="" disabled>(no templates)</option>
                 ) : (
@@ -477,7 +675,7 @@ export default function MailComposer({
                     next[key] = { subject: templateSubject, body: templateBody, label };
                     await window.api?.saveMailTemplates?.({ businessId, templates: next });
                     setTemplates(next);
-                    setSelectedTemplate(key);
+                    handleTemplateSelect(key, next);
                     pushToast('Template saved', 'success');
                   } catch (err) {
                     pushToast(err?.message || 'Unable to save template', 'error');
@@ -506,6 +704,10 @@ export default function MailComposer({
                     }
                     await window.api?.saveMailTemplates?.({ businessId, templates: next });
                     setTemplates(next);
+                    const pref = selectedTemplate && next[selectedTemplate]
+                      ? selectedTemplate
+                      : (Object.keys(next).includes('enquiry_ack') ? 'enquiry_ack' : Object.keys(next)[0]);
+                    if (pref) handleTemplateSelect(pref, next);
                     pushToast('Defaults seeded', 'success');
                   } catch (err) {
                     pushToast(err?.message || 'Unable to seed defaults', 'error');
@@ -523,7 +725,7 @@ export default function MailComposer({
                   const next = { ...(templates || {}) };
                   if (next[key]) { pushToast('Template already exists', 'warning'); return; }
                   next[key] = { label: name, subject: templateSubject, body: templateBody };
-                  try { await window.api?.saveMailTemplates?.({ businessId, templates: next }); setTemplates(next); setSelectedTemplate(key); pushToast('Template created', 'success'); } catch (err) { pushToast(err?.message || 'Unable to create template', 'error'); }
+                  try { await window.api?.saveMailTemplates?.({ businessId, templates: next }); setTemplates(next); handleTemplateSelect(key, next); pushToast('Template created', 'success'); } catch (err) { pushToast(err?.message || 'Unable to create template', 'error'); }
                 }}
               >New template…</button>
               {selectedTemplate && templates[selectedTemplate] ? (
@@ -537,8 +739,8 @@ export default function MailComposer({
                     try {
                       await window.api?.saveMailTemplates?.({ businessId, templates: next });
                       setTemplates(next);
-                      const first = Object.keys(next)[0] || '';
-                      setSelectedTemplate(first);
+                      const first = Object.keys(next).includes('enquiry_ack') ? 'enquiry_ack' : (Object.keys(next)[0] || '');
+                      if (first) handleTemplateSelect(first, next);
                       pushToast('Template deleted', 'success');
                     } catch (err) { pushToast(err?.message || 'Unable to delete template', 'error'); }
                   }}
@@ -638,29 +840,16 @@ export default function MailComposer({
               onFocus={() => setLastFocus('body')}
             />
             <div className="mt-2 text-xs text-slate-500">Tokens show live data. Delete a chip to remove a token.</div>
-            <div className="mt-2 flex items-center justify-between">
-              <label className="inline-flex items-center gap-2 text-xs text-slate-600">
+            <div className="mt-2 flex items-center gap-2 text-xs">
+              <label className="inline-flex items-center gap-2 text-slate-600">
                 <input type="checkbox" checked={includeSignature} onChange={e => setIncludeSignature(e.target.checked)} />
                 Include signature
               </label>
-            </div>
-            <div className="mt-3">
-              <label className="block text-slate-600 mb-1">Signature</label>
-              <textarea rows={4} className="w-full rounded border border-slate-300 px-2 py-1" value={sigDraft} onChange={e => setSigDraft(e.target.value)} placeholder="You can use HTML markup here (e.g. &lt;br&gt;, &lt;img&gt;)" />
-              <div className="mt-2 flex gap-2">
-                <button
-                  type="button"
-                  className="rounded border border-slate-300 px-2 py-1 text-xs"
-                  onClick={async () => {
-                    try { await window.api?.saveMailSignature?.({ businessId, signature: sigDraft }); setSignature(sigDraft); pushToast('Signature saved', 'success'); } catch (err) { pushToast(err?.message || 'Unable to save signature', 'error'); }
-                  }}
-                >Save signature</button>
-                <button
-                  type="button"
-                  className="rounded border border-slate-300 px-2 py-1 text-xs"
-                  onClick={() => setSigDraft(signature)}
-                >Revert</button>
-              </div>
+              <button
+                type="button"
+                className="rounded border border-slate-300 px-2 py-1"
+                onClick={openSignatureModal}
+              >Edit signature…</button>
             </div>
           </div>
           <div className="space-y-2">
@@ -684,38 +873,118 @@ export default function MailComposer({
               ))}
             </div>
           </div>
+          <div className="space-y-2">
+            <div className="text-slate-600">Send timing</div>
+            <div className="flex items-center gap-4 text-sm text-slate-600">
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="mail-send-when"
+                  value="now"
+                  checked={sendWhen === 'now'}
+                  onChange={() => setSendWhen('now')}
+                  disabled={busy}
+                />
+                Send now
+              </label>
+              <label className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="mail-send-when"
+                  value="later"
+                  checked={sendWhen === 'later'}
+                  onChange={() => {
+                    setSendWhen('later');
+                    const current = scheduleDateTime ? new Date(scheduleDateTime) : null;
+                    if (!scheduleDateTime || Number.isNaN(current?.valueOf()) || current.getTime() < Date.now()) {
+                      setScheduleDateTime(computeDefaultScheduleDateTime());
+                    }
+                  }}
+                  disabled={busy}
+                />
+                Schedule send
+              </label>
+            </div>
+            {sendWhen === 'later' ? (
+              <div className="flex flex-col gap-1">
+                <input
+                  type="datetime-local"
+                  className="w-full rounded border border-slate-300 px-2 py-1 text-sm"
+                  value={scheduleDateTime}
+                  onChange={e => setScheduleDateTime(e.target.value)}
+                  min={formatDateTimeLocal(new Date(Date.now() + 60 * 1000))}
+                  disabled={busy}
+                />
+                <span className="text-xs text-slate-500">Times use your local time zone.</span>
+              </div>
+            ) : null}
+          </div>
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
           <button className="rounded border border-slate-300 px-3 py-1.5 text-sm" onClick={onClose}>Cancel</button>
           <button
             className="rounded bg-green-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-green-500 disabled:opacity-60"
             disabled={busy}
-            onClick={async () => {
-              try {
-                if (!to.trim()) { window.alert('Enter recipient'); return; }
-                setBusy(true);
-                const finalSubject = renderedSubject;
-                const finalBody = renderedBodyFinal;
-                await window.api?.sendMailViaGraph?.({
-                  to, cc, bcc, subject: finalSubject, body: finalBody, attachments,
-                  is_html: true,
-                  business_id: businessId, jobsheet_id: jobsheetId
-                });
-                onClose?.();
-                onSent?.();
-              } catch (err) {
-                window.alert(err?.message || 'Unable to send email');
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >Send</button>
+            onClick={handleSend}
+          >{sendWhen === 'later' ? 'Schedule' : 'Send'}</button>
         </div>
       </div>
       <ToastOverlay notices={toasts} />
     </div>
   );
 
-  if (typeof document === 'undefined') return content;
-  return createPortal(content, portalElRef.current || document.body);
+  const signatureContent = signatureModalOpen ? (
+    <div className="fixed inset-0 bg-slate-900/60 px-4 py-6 flex items-center justify-center" style={{ zIndex: 20000000000 }}>
+      <div className="w-full max-w-2xl rounded-lg bg-white shadow-2xl">
+        <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+          <h3 className="text-base font-semibold text-slate-800">Edit signature</h3>
+          <button
+            className="text-slate-400 hover:text-slate-600"
+            onClick={closeSignatureModal}
+            onMouseDown={event => event.stopPropagation()}
+            aria-label="Close"
+          >✕</button>
+        </div>
+        <div className="p-4 space-y-3 text-sm">
+          <textarea
+            rows={10}
+            className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs"
+            value={signatureDraft}
+            onChange={e => setSignatureDraft(e.target.value)}
+            placeholder="Paste or edit your HTML signature here"
+          />
+          <p className="text-xs text-slate-500">
+            HTML is supported. Use hosted image URLs (e.g. Dropbox links) inside &lt;img&gt; tags to display logos.
+          </p>
+        </div>
+        <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+          <button className="rounded border border-slate-300 px-3 py-1.5 text-sm" onClick={closeSignatureModal}>Cancel</button>
+          <button
+            className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+            onClick={handleSaveSignature}
+            disabled={signatureSaving}
+          >{signatureSaving ? 'Saving…' : 'Save'}</button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  if (typeof document === 'undefined') {
+    return (
+      <>
+        {composerContent}
+        {signatureContent}
+      </>
+    );
+  }
+
+  const target = portalElRef.current || document.body;
+  const composerPortal = createPortal(composerContent, target);
+  const signaturePortal = signatureModalOpen ? createPortal(signatureContent, document.body) : null;
+  return (
+    <>
+      {composerPortal}
+      {signaturePortal}
+    </>
+  );
 }

@@ -28,6 +28,15 @@ const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
 const TEMPLATE_BINDING_KEY = 'ahmen_excel';
 const PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
 
+const PROCESS_TYPE = typeof process !== 'undefined' ? process.type : undefined;
+const IS_MAIN_PROCESS = PROCESS_TYPE === 'browser' || PROCESS_TYPE === undefined;
+const SCHEDULED_EMAIL_POLL_INTERVAL_MS = 60 * 1000;
+const SCHEDULED_EMAIL_BATCH_SIZE = 10;
+
+let scheduledMailWorkerStarted = false;
+let scheduledMailWorkerExecuting = false;
+let ElectronBrowserWindow = null;
+
 function normalizeTokenKey(value) {
   if (!value) return '';
   return String(value)
@@ -76,6 +85,125 @@ function resolvePath(targetPath) {
   const normalized = targetPath.replace(/^~\//, `${process.env.HOME || ''}/`);
   const resolved = path.resolve(normalized);
   return resolved;
+}
+
+function normalizeRecipientList(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value.flatMap(item => normalizeRecipientList(item));
+  }
+  return String(value)
+    .split(/[,;]+/)
+    .map(part => part.trim())
+    .filter(Boolean);
+}
+
+function parseStoredRecipients(value) {
+  if (!value) return [];
+  return String(value)
+    .split(/[,;]+/)
+    .map(part => part.trim())
+    .filter(Boolean);
+}
+
+function parseStoredAttachments(value) {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.filter(Boolean).map(String);
+    return [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function broadcastJobsheetChange(payload) {
+  if (!IS_MAIN_PROCESS) return;
+  try {
+    if (!ElectronBrowserWindow) {
+      ({ BrowserWindow: ElectronBrowserWindow } = require('electron'));
+    }
+    const message = payload || {};
+    (ElectronBrowserWindow.getAllWindows() || []).forEach(win => {
+      if (!win || win.isDestroyed()) return;
+      try {
+        win.webContents.send('jobsheet-change', message);
+      } catch (err) {
+        console.warn('broadcastJobsheetChange failed for a window', err);
+      }
+    });
+  } catch (err) {
+    console.warn('Unable to broadcast jobsheet change', err);
+  }
+}
+
+function ensureScheduledMailWorker() {
+  if (!IS_MAIN_PROCESS) return;
+  if (scheduledMailWorkerStarted) return;
+  scheduledMailWorkerStarted = true;
+
+  const tick = async () => {
+    if (scheduledMailWorkerExecuting) return;
+    scheduledMailWorkerExecuting = true;
+    try {
+      const due = await db.listDueScheduledEmails({ limit: SCHEDULED_EMAIL_BATCH_SIZE });
+      for (const item of due) {
+        // eslint-disable-next-line no-await-in-loop
+        await processScheduledEmail(item);
+      }
+    } catch (err) {
+      console.error('Scheduled email worker error', err);
+    } finally {
+      scheduledMailWorkerExecuting = false;
+    }
+  };
+
+  tick();
+  setInterval(tick, SCHEDULED_EMAIL_POLL_INTERVAL_MS);
+}
+
+async function processScheduledEmail(entry) {
+  const attachments = parseStoredAttachments(entry.attachments);
+  const ccList = parseStoredRecipients(entry.cc_address);
+  const bccList = parseStoredRecipients(entry.bcc_address);
+  const payload = {
+    to: entry.to_address,
+    cc: ccList,
+    bcc: bccList,
+    subject: entry.subject,
+    body: entry.body,
+    attachments,
+    is_html: entry.is_html === 1 || entry.is_html === true,
+    business_id: entry.business_id,
+    jobsheet_id: entry.jobsheet_id,
+    skipLog: true
+  };
+
+  try {
+    await sendMailViaGraph(payload);
+    await db.markScheduledEmailSent({ id: entry.id, sent_at: new Date() });
+    if (entry.email_log_id) {
+      await db.updateEmailLogStatus({ id: entry.email_log_id, status: 'sent', sent_at: new Date() });
+    }
+    broadcastJobsheetChange({
+      type: 'email-log-updated',
+      businessId: entry.business_id != null ? Number(entry.business_id) : null,
+      jobsheetId: entry.jobsheet_id != null ? Number(entry.jobsheet_id) : null
+    });
+  } catch (err) {
+    console.error('Scheduled email send failed', err);
+    const attempts = Number(entry.attempt_count) || 0;
+    const delayMinutes = Math.min(60, Math.max(5, (attempts + 1) * 5));
+    await db.markScheduledEmailFailed({ id: entry.id, error: err.message, retryInMinutes: delayMinutes });
+    if (entry.email_log_id) {
+      await db.updateEmailLogStatus({ id: entry.email_log_id, status: 'scheduled_error' });
+    }
+    broadcastJobsheetChange({
+      type: 'email-log-updated',
+      businessId: entry.business_id != null ? Number(entry.business_id) : null,
+      jobsheetId: entry.jobsheet_id != null ? Number(entry.jobsheet_id) : null
+    });
+  }
 }
 
 const SPLIT_WORKBOOKS_DIR = process.env.SPLIT_WORKBOOKS_DIR || '/Users/motticohen/Dropbox/My Invoicing App/AhMen/TEMPLATES';
@@ -2498,8 +2626,9 @@ async function sendMailViaGraph(options = {}) {
   const subject = (options.subject || '').toString();
   const body = (options.body || '').toString();
   const isHtml = options.is_html === true;
-  const cc = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
-  const bcc = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
+  const skipLog = options.skipLog === true;
+  const cc = normalizeRecipientList(options.cc);
+  const bcc = normalizeRecipientList(options.bcc);
   const attachments = Array.isArray(options.attachments) ? options.attachments.filter(Boolean) : [];
 
   const token = await acquireGraphToken();
@@ -2512,8 +2641,8 @@ async function sendMailViaGraph(options = {}) {
     } catch (_) {}
   }
   const toList = to.split(/[,;]+/).map(s => s.trim()).filter(Boolean).map(address => ({ emailAddress: { address } }));
-  const ccList = cc.flatMap(val => String(val).split(/[,;]+/)).map(s => s.trim()).filter(Boolean).map(address => ({ emailAddress: { address } }));
-  const bccList = bcc.flatMap(val => String(val).split(/[,;]+/)).map(s => s.trim()).filter(Boolean).map(address => ({ emailAddress: { address } }));
+  const ccList = cc.map(address => ({ emailAddress: { address } }));
+  const bccList = bcc.map(address => ({ emailAddress: { address } }));
 
   const payload = {
     message: {
@@ -2535,11 +2664,97 @@ async function sendMailViaGraph(options = {}) {
     const t = await res.text();
     throw new Error(`Graph send failed: ${res.status} ${t}`);
   }
-  try {
-    await db.logEmail({ business_id: options.business_id ?? null, jobsheet_id: options.jobsheet_id ?? null, to, cc, bcc, subject, body, attachments, provider: 'graph', status: 'sent', message_id: null });
-  } catch (_) {}
+  if (!skipLog) {
+    try {
+      await db.logEmail({
+        business_id: options.business_id ?? null,
+        jobsheet_id: options.jobsheet_id ?? null,
+        to,
+        cc,
+        bcc,
+        subject,
+        body,
+        attachments,
+        provider: 'graph',
+        status: 'sent',
+        message_id: null
+      });
+      broadcastJobsheetChange({
+        type: 'email-log-updated',
+        businessId: options.business_id != null ? Number(options.business_id) : null,
+        jobsheetId: options.jobsheet_id != null ? Number(options.jobsheet_id) : null
+      });
+    } catch (_) {}
+  }
   return { ok: true };
 }
+
+async function scheduleMailViaGraph(options = {}) {
+  const to = (options.to || '').toString().trim();
+  if (!to) throw new Error('Recipient (to) is required');
+
+  const subject = (options.subject || '').toString();
+  const body = (options.body || '').toString();
+  const isHtml = options.is_html !== false; // default to HTML since composer sends HTML
+  const cc = normalizeRecipientList(options.cc);
+  const bcc = normalizeRecipientList(options.bcc);
+  const attachments = Array.isArray(options.attachments) ? options.attachments.filter(Boolean) : [];
+
+  const sendAtInput = options.send_at ?? options.schedule_at ?? options.sendAt;
+  if (!sendAtInput) throw new Error('send_at is required for scheduling');
+
+  const sendAtDate = sendAtInput instanceof Date ? sendAtInput : new Date(sendAtInput);
+  if (Number.isNaN(sendAtDate.valueOf())) throw new Error('Invalid send_at value');
+
+  const now = Date.now();
+  if (sendAtDate.getTime() < now + 30 * 1000) {
+    throw new Error('Scheduled send time must be at least 30 seconds in the future');
+  }
+
+  const businessId = options.business_id ?? options.businessId ?? null;
+  const jobsheetId = options.jobsheet_id ?? options.jobsheetId ?? null;
+
+  const emailLogId = await db.logEmail({
+    business_id: businessId,
+    jobsheet_id: jobsheetId,
+    to,
+    cc,
+    bcc,
+    subject,
+    body,
+    attachments,
+    provider: 'graph',
+    status: 'scheduled',
+    message_id: null,
+    sent_at: sendAtDate
+  });
+
+  const scheduledId = await db.queueScheduledEmail({
+    email_log_id: emailLogId,
+    business_id: businessId,
+    jobsheet_id: jobsheetId,
+    to,
+    cc,
+    bcc,
+    subject,
+    body,
+    attachments,
+    is_html: isHtml,
+    send_at: sendAtDate
+  });
+
+  broadcastJobsheetChange({
+    type: 'email-log-updated',
+    businessId: businessId != null ? Number(businessId) : null,
+    jobsheetId: jobsheetId != null ? Number(jobsheetId) : null
+  });
+
+  ensureScheduledMailWorker();
+
+  return { ok: true, scheduled_email_id: scheduledId, email_log_id: emailLogId };
+}
+
+ensureScheduledMailWorker();
 module.exports = {
   normalizeTemplate,
   createDocument,
@@ -2586,6 +2801,7 @@ module.exports = {
   // Booking pack helpers
   getBookingPackPdfs,
   sendMailViaGraph,
+  scheduleMailViaGraph,
   // List files in a jobsheet's folder (non-recursive)
   listJobFolderFiles: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);

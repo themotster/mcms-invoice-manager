@@ -509,6 +509,35 @@ const GROUP_ICON_MAP = {
   documents: '🗂️'
 };
 
+// Preserve inline mail composer state across transient unmounts (e.g. template refresh)
+const COMPOSER_STORAGE_PREFIX = 'invoiceMaster:composerState:';
+
+const loadComposerState = (key) => {
+  if (!key || typeof window === 'undefined' || !window.sessionStorage) return null;
+  try {
+    const raw = window.sessionStorage.getItem(`${COMPOSER_STORAGE_PREFIX}${key}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+const persistComposerState = (key, value) => {
+  if (!key || typeof window === 'undefined' || !window.sessionStorage) return;
+  try {
+    window.sessionStorage.setItem(`${COMPOSER_STORAGE_PREFIX}${key}`, JSON.stringify(value));
+  } catch (_) {}
+};
+
+const clearComposerState = (key) => {
+  if (!key || typeof window === 'undefined' || !window.sessionStorage) return;
+  try {
+    window.sessionStorage.removeItem(`${COMPOSER_STORAGE_PREFIX}${key}`);
+  } catch (_) {}
+};
+
 function startCaseKey(key) {
   if (!key) return '';
   return key
@@ -3828,6 +3857,23 @@ function DocumentsInlinePanel({
   jobsheetSnapshot
 }) {
   const INVOICE_GATE_BYPASS_KEY = 'invoiceMaster:bypassInvoiceGate';
+  const emailStatusStyles = {
+    sent: { label: 'Sent', className: 'bg-green-100 text-green-700 border-green-200' },
+    scheduled: { label: 'Scheduled', className: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
+    scheduled_error: { label: 'Retrying', className: 'bg-amber-100 text-amber-700 border-amber-200' },
+    error: { label: 'Failed', className: 'bg-red-100 text-red-700 border-red-200' }
+  };
+
+  const renderEmailStatusPill = (status) => {
+    const key = String(status || '').toLowerCase();
+    const style = emailStatusStyles[key];
+    if (!style) return null;
+    return (
+      <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-semibold ${style.className}`}>
+        {style.label}
+      </span>
+    );
+  };
   const list = Array.isArray(documents) ? documents : [];
   const excelDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
   const pdfDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
@@ -3883,18 +3929,79 @@ function DocumentsInlinePanel({
   const workbookPathSet = useMemo(() => new Set((excelItems || []).map(i => (i.doc?.file_path || '').toString()).filter(Boolean)), [excelItems]);
   const pdfPanePathSet = useMemo(() => new Set((pdfItems || []).map(i => (i.pdfDoc?.file_path || '').toString()).filter(Boolean)), [pdfItems]);
 
+  const composerStoreKey = jobsheetId != null ? `jobsheet:${jobsheetId}` : 'jobsheet:global';
+  const storedComposerState = loadComposerState(composerStoreKey);
+
   const [menuOpenId, setMenuOpenId] = useState('');
   const menuRef = useRef(null);
   const [overrideNumbers, setOverrideNumbers] = useState({});
   const [defaultNext, setDefaultNext] = useState(null);
   const [localToasts, setLocalToasts] = useState([]);
-  const [composerOpen, setComposerOpen] = useState(false);
-  const [composerTo, setComposerTo] = useState('');
-  const [composerCc, setComposerCc] = useState('');
-  const [composerBcc, setComposerBcc] = useState('');
-  const [composerSubject, setComposerSubject] = useState('');
-  const [composerBody, setComposerBody] = useState('');
-  const [composerAttachments, setComposerAttachments] = useState([]);
+  const [composerOpen, setComposerOpen] = useState(() => storedComposerState?.open ?? false);
+  const [composerTo, setComposerTo] = useState(() => storedComposerState?.to ?? '');
+  const [composerCc, setComposerCc] = useState(() => storedComposerState?.cc ?? '');
+  const [composerBcc, setComposerBcc] = useState(() => storedComposerState?.bcc ?? '');
+  const [composerSubject, setComposerSubject] = useState(() => storedComposerState?.subject ?? '');
+  const [composerBody, setComposerBody] = useState(() => storedComposerState?.body ?? '');
+  const [composerAttachments, setComposerAttachments] = useState(() => {
+    const saved = storedComposerState?.attachments;
+    return Array.isArray(saved) ? [...saved] : [];
+  });
+
+  const prevComposerKeyRef = useRef(composerStoreKey);
+  useEffect(() => {
+    if (prevComposerKeyRef.current === composerStoreKey) return;
+    prevComposerKeyRef.current = composerStoreKey;
+    const restored = loadComposerState(composerStoreKey);
+    if (restored) {
+      setComposerOpen(Boolean(restored.open));
+      setComposerTo(restored.to ?? '');
+      setComposerCc(restored.cc ?? '');
+      setComposerBcc(restored.bcc ?? '');
+      setComposerSubject(restored.subject ?? '');
+      setComposerBody(restored.body ?? '');
+      setComposerAttachments(Array.isArray(restored.attachments) ? [...restored.attachments] : []);
+    } else {
+      setComposerOpen(false);
+      setComposerTo('');
+      setComposerCc('');
+      setComposerBcc('');
+      setComposerSubject('');
+      setComposerBody('');
+      setComposerAttachments([]);
+    }
+  }, [composerStoreKey]);
+
+  useEffect(() => {
+    if (!composerStoreKey) return;
+    if (composerOpen) {
+      persistComposerState(composerStoreKey, {
+        open: true,
+        to: composerTo,
+        cc: composerCc,
+        bcc: composerBcc,
+        subject: composerSubject,
+        body: composerBody,
+        attachments: Array.isArray(composerAttachments) ? [...composerAttachments] : []
+      });
+    } else {
+      clearComposerState(composerStoreKey);
+    }
+  }, [composerStoreKey, composerOpen, composerTo, composerCc, composerBcc, composerSubject, composerBody, composerAttachments]);
+
+  useEffect(() => () => {
+    if (!composerStoreKey || !composerOpen) return;
+    persistComposerState(composerStoreKey, {
+      open: true,
+      to: composerTo,
+      cc: composerCc,
+      bcc: composerBcc,
+      subject: composerSubject,
+      body: composerBody,
+      attachments: Array.isArray(composerAttachments) ? [...composerAttachments] : []
+    });
+  }, [composerStoreKey, composerOpen, composerTo, composerCc, composerBcc, composerSubject, composerBody, composerAttachments]);
+
   
   const [emailLog, setEmailLog] = useState([]);
   const [emailLogLoading, setEmailLogLoading] = useState(false);
@@ -3953,6 +4060,22 @@ function DocumentsInlinePanel({
   }, [jobsheetId]);
 
   useEffect(() => { loadEmailLog(); }, [loadEmailLog]);
+
+  useEffect(() => {
+    if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
+    const unsubscribe = window.api.onJobsheetChange(payload => {
+      if (!payload) return;
+      if (payload.businessId != null && businessId != null && Number(payload.businessId) !== Number(businessId)) return;
+      if (jobsheetId != null) {
+        const payloadJobsheetId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
+        if (payloadJobsheetId != null && Number(jobsheetId) !== payloadJobsheetId) return;
+      }
+      if (payload.type === 'email-log-updated') {
+        loadEmailLog();
+      }
+    });
+    return () => unsubscribe?.();
+  }, [businessId, jobsheetId, loadEmailLog]);
 
   // removed booking pack composer
 
@@ -4074,9 +4197,10 @@ function DocumentsInlinePanel({
         initialSubject={composerSubject}
         initialBody={composerBody}
         initialAttachments={composerAttachments}
-        onSent={() => {
+        onSent={(result) => {
           setComposerOpen(false);
-          pushToast('Email sent', 'success');
+          const mode = result?.mode === 'later' ? 'scheduled' : 'sent';
+          pushToast(mode === 'scheduled' ? 'Email scheduled' : 'Email sent', 'success');
           loadEmailLog();
         }}
       />
@@ -4255,14 +4379,24 @@ function DocumentsInlinePanel({
                   let attList = [];
                   try { attList = JSON.parse(entry.attachments || '[]'); } catch (_) { attList = []; }
                   const attLabel = attList.length ? `${attList.length} attachment${attList.length === 1 ? '' : 's'}` : 'No attachments';
+                  const status = String(entry.status || 'sent').toLowerCase();
+                  const statusPill = renderEmailStatusPill(status);
                   const when = formatTimestampDisplay(entry.sent_at);
+                  const baseInfo = (() => {
+                    if (status === 'scheduled') return `Scheduled for ${when || '(pending time)'}`;
+                    if (status === 'scheduled_error') return `Retrying soon · planned for ${when || '(pending time)'}`;
+                    if (status === 'error') return `Failed at ${when || '(unknown time)'}`;
+                    return when || '(unknown time)';
+                  })();
+                  const detail = `${baseInfo} · to ${entry.to_address || '(unknown)'}${attLabel ? ` · ${attLabel}` : ''}`;
                   return (
                     <div key={entry.id} className="flex items-center justify-between rounded px-2 py-2">
-                      <div className="min-w-0">
+                      <div className="min-w-0 pr-2">
                         <div className="flex items-center gap-2 text-sm font-medium truncate text-slate-700">
                           <span className="truncate" title={entry.subject || '(no subject)'}>{entry.subject || '(no subject)'}</span>
+                          {statusPill}
                         </div>
-                        <div className="text-xs text-slate-500 truncate">{when} · to {entry.to_address} · {attLabel}</div>
+                        <div className="text-xs text-slate-500 truncate" title={detail}>{detail}</div>
                       </div>
                       <button
                         type="button"
