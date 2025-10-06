@@ -277,6 +277,9 @@ ipcMain.handle('choose-file', async (event, args = {}) => {
     defaultPath: args.defaultPath || undefined,
     properties: ['openFile']
   };
+  if (args.multiple) {
+    dialogOptions.properties.push('multiSelections');
+  }
 
   if (Array.isArray(args.filters) && args.filters.length) {
     dialogOptions.filters = args.filters;
@@ -289,8 +292,10 @@ ipcMain.handle('choose-file', async (event, args = {}) => {
   if (result.canceled || !result.filePaths || !result.filePaths.length) {
     return null;
   }
-  return result.filePaths[0] || null;
+  return args.multiple ? result.filePaths : (result.filePaths[0] || null);
 });
+
+// New: choose multiple files (returns an array)
 
 ipcMain.handle('open-path', async (_event, targetPath) => {
   if (!targetPath || typeof targetPath !== 'string') return { ok: false, message: 'Missing path' };

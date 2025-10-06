@@ -5,6 +5,24 @@ let chokidar = null;
 try { chokidar = require('chokidar'); } catch (_err) { chokidar = null; }
 const ExcelJS = require('exceljs');
 const db = require('./db');
+const msal = require('@azure/msal-node');
+const SETTINGS_PATH = path.join(__dirname, 'settings.json');
+function readSettings() {
+  try {
+    const raw = fs.readFileSync(SETTINGS_PATH, 'utf-8');
+    return JSON.parse(raw);
+  } catch (err) {
+    return {};
+  }
+}
+function writeSettings(next) {
+  try {
+    fs.writeFileSync(SETTINGS_PATH, JSON.stringify(next, null, 2), 'utf-8');
+    return true;
+  } catch (_) { return false; }
+}
+const settings = readSettings();
+const os = require('os');
 
 const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
 const TEMPLATE_BINDING_KEY = 'ahmen_excel';
@@ -2098,6 +2116,430 @@ async function preflightPdfExport(options = {}) {
     message
   };
 }
+
+// Compose an email in Apple Mail with attachments. Leaves draft open for user to send.
+async function composeMailDraft(options = {}) {
+  const to = (options.to || '').toString();
+  const subject = (options.subject || '').toString();
+  const body = (options.body || '').toString();
+  const fromEmail = (options.fromEmail || '').toString();
+  // Signature handling intentionally omitted — rely on Mail's default per-account signature
+  const attachments = Array.isArray(options.attachments) ? options.attachments.filter(Boolean) : [];
+
+  // Compose using UI "New Message" to preserve default signature
+  const argsUi = [
+    '-e', 'on run argv',
+    '-e', 'set theTo to item 1 of argv',
+    '-e', 'set theSubject to item 2 of argv',
+    '-e', 'set theBody to item 3 of argv',
+    '-e', 'set theCount to item 4 of argv as integer',
+    '-e', 'set theAttachments to {}',
+    '-e', 'try',
+    '-e', '  repeat with i from 1 to theCount',
+    '-e', '    set p to item (4 + i) of argv',
+    '-e', '    set end of theAttachments to p',
+    '-e', '  end repeat',
+    '-e', 'end try',
+    '-e', 'tell application "Mail" to activate',
+    '-e', 'tell application "System Events" to tell process "Mail" to click menu item "New Message" of menu "File" of menu bar 1',
+    '-e', 'delay 0.3',
+    '-e', 'tell application "Mail"',
+    '-e', '  set msg to front message',
+    '-e', '  if (theTo is not "") then tell msg to make new to recipient with properties {address:theTo}',
+    '-e', '  if (theSubject is not "") then set subject of msg to theSubject',
+    // Do not touch content or sender — preserve default signature
+    '-e', '  try',
+    '-e', '    repeat with p in theAttachments',
+    '-e', '      set f to (POSIX file (contents of p)) as alias',
+    '-e', '      tell msg to make new attachment with properties {file name:f} at after the last paragraph',
+    '-e', '    end repeat',
+    '-e', '  end try',
+    '-e', '  activate',
+    '-e', 'end tell',
+    '-e', 'end run'
+  ];
+
+  // Fallback compose without UI (signature may be None)
+  const args = [
+    '-e', 'on run argv',
+    '-e', 'set theTo to item 1 of argv',
+    '-e', 'set theSubject to item 2 of argv',
+    '-e', 'set theBody to item 3 of argv',
+    '-e', 'set theFrom to item 4 of argv',
+    '-e', 'set theCount to item 5 of argv as integer',
+    '-e', 'set theAttachments to {}',
+    '-e', 'try',
+    '-e', '  repeat with i from 1 to theCount',
+    '-e', '    set p to item (5 + i) of argv',
+    '-e', '    set end of theAttachments to p',
+    '-e', '  end repeat',
+    '-e', 'end try',
+    '-e', 'tell application "Mail"',
+    '-e', '  activate',
+    '-e', '  set msg to make new outgoing message with properties {visible:true, subject:theSubject, content:theBody & return & return}',
+    '-e', '  if (theTo is not "") then tell msg to make new to recipient with properties {address:theTo}',
+    '-e', '  if (theFrom is not "") then tell msg to set sender to theFrom',
+    '-e', '  try',
+    '-e', '    repeat with p in theAttachments',
+    '-e', '      set f to (POSIX file (contents of p)) as alias',
+    '-e', '      tell msg to make new attachment with properties {file name:f} at after the last paragraph',
+    '-e', '    end repeat',
+    '-e', '  end try',
+    '-e', '  activate',
+    '-e', 'end tell',
+    '-e', 'end run'
+  ];
+
+  const payload = [to, subject, body, String(attachments.length)].concat(attachments);
+  // Try UI method first
+  try {
+    await new Promise((resolve, reject) => {
+      execFile('osascript', argsUi.concat(payload), { timeout: 30000 }, (error, stdout, stderr) => {
+        if (error) {
+          const msg = (stderr || stdout || error.message || '').toString();
+          return reject(new Error(msg.trim() || 'UI compose failed'));
+        }
+        resolve();
+      });
+    });
+  } catch (_err) {
+    // Do not fallback to programmatic compose, as it can clear the signature
+    throw _err;
+  }
+  return { ok: true };
+}
+
+// Alternative compose that relies on mailto: (preserves default signature) and then attaches files
+async function composeMailDraft_mailto(options = {}) {
+  const to = (options.to || '').toString();
+  const subject = (options.subject || '').toString();
+  const body = (options.body || '').toString();
+  const attachments = Array.isArray(options.attachments) ? options.attachments.filter(Boolean) : [];
+
+  const params = [];
+  if (subject) params.push(`subject=${encodeURIComponent(subject)}`);
+  if (body) params.push(`body=${encodeURIComponent(body)}`);
+  const mailtoUrl = `mailto:${encodeURIComponent(to)}${params.length ? `?${params.join('&')}` : ''}`;
+
+  await new Promise((resolve, reject) => {
+    execFile('open', [mailtoUrl], { timeout: 15000 }, (error, stdout, stderr) => {
+      if (error) {
+        const msg = (stderr || stdout || error.message || '').toString();
+        reject(new Error(msg.trim() || 'Unable to open Mail compose'));
+        return;
+      }
+      resolve();
+    });
+  });
+
+  let usedClipboard = false;
+  if (attachments.length) {
+    const osaAttach = [
+      '-e', 'on run argv',
+      '-e', 'set theSubject to item 1 of argv',
+      '-e', 'set theCount to item 2 of argv as integer',
+      '-e', 'set theAttachments to {}',
+      '-e', 'repeat with i from 1 to theCount',
+      '-e', '  set end of theAttachments to item (2 + i) of argv',
+      '-e', 'end repeat',
+      '-e', 'tell application "Mail"',
+      '-e', '  set newMsg to missing value',
+      '-e', '  repeat 50 times',
+      '-e', '    try',
+      '-e', '      set msgs to every outgoing message',
+      '-e', '      if (count of msgs) > 0 then',
+      '-e', '        if (theSubject is not "") then',
+      '-e', '          set matches to {}',
+      '-e', '          repeat with m in msgs',
+      '-e', '            try',
+      '-e', '              if (subject of m as string) contains theSubject then set end of matches to m',
+      '-e', '            end try',
+      '-e', '          end repeat',
+      '-e', '          if (count of matches) > 0 then set newMsg to item 1 of matches',
+      '-e', '        end if',
+      '-e', '        if newMsg is missing value then set newMsg to item 1 of msgs',
+      '-e', '      end if',
+      '-e', '    end try',
+      '-e', '    if newMsg is not missing value then exit repeat',
+      '-e', '    delay 0.2',
+      '-e', '  end repeat',
+      '-e', '  if newMsg is missing value then error "No outgoing message found"',
+      '-e', '  try',
+      '-e', '    repeat with p in theAttachments',
+      '-e', '      set f to (POSIX file (contents of p)) as alias',
+      '-e', '      tell newMsg to make new attachment with properties {file name:f} at after the last paragraph',
+      '-e', '    end repeat',
+      '-e', '  end try',
+      '-e', '  activate',
+      '-e', 'end tell',
+      '-e', 'end run'
+    ];
+    const payload = [subject, String(attachments.length)].concat(attachments);
+    try {
+      await new Promise((resolve, reject) => {
+        execFile('osascript', osaAttach.concat(payload), { timeout: 30000 }, (error, stdout, stderr) => {
+          if (error) {
+            const msg = (stderr || stdout || error.message || '').toString();
+            return reject(new Error(msg.trim() || 'Unable to attach files'));
+          }
+          resolve();
+        });
+      });
+    } catch (_attachErr) {
+      // Fallback: copy files to clipboard so user can paste into the draft manually (Cmd+V)
+      try {
+        const osaClipboard = [
+          '-e', 'on run argv',
+          '-e', 'set theCount to item 1 of argv as integer',
+          '-e', 'set fileList to {}',
+          '-e', 'repeat with i from 1 to theCount',
+          '-e', '  set p to item (1 + i) of argv',
+          '-e', '  set end of fileList to ((POSIX file p) as alias)',
+          '-e', 'end repeat',
+          '-e', 'set the clipboard to fileList',
+          '-e', 'end run'
+        ];
+        const clipPayload = [String(attachments.length)].concat(attachments);
+        await new Promise((resolve) => {
+          execFile('osascript', osaClipboard.concat(clipPayload), { timeout: 10000 }, () => resolve());
+        });
+      } catch (_) {
+        // ignore clipboard errors
+      }
+      usedClipboard = true; // files copied; user can paste into Mail
+      // Continue without throwing to keep the compose workflow usable
+    }
+  }
+
+  return { ok: true, used_clipboard: usedClipboard };
+}
+
+// Locate already-exported PDFs needed for the Booking Pack within the job folder
+async function getBookingPackPdfs(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+  const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+  const snapshot = options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object' ? { ...options.jobsheetSnapshot } : {};
+
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+
+  // Resolve job folder
+  const business = await db.getBusinessById(businessId);
+  if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+  const payload = { business_id: businessId, jobsheet_id: jobsheetId, jobsheet_snapshot: snapshot };
+  const context = buildContext(payload, business);
+  const folderPath = buildOutputDirectory(business, context, payload, 'Documents');
+
+  // Build quick index of PDFs in the folder
+  let entries = [];
+  try { entries = await fs.promises.readdir(folderPath, { withFileTypes: true }); } catch (_) { entries = []; }
+  const pdfs = [];
+  for (const e of entries) {
+    if (!e || !e.name || e.isDirectory()) continue;
+    if (!e.name.toLowerCase().endsWith('.pdf')) continue;
+    pdfs.push({ name: e.name, path: path.join(folderPath, e.name) });
+  }
+
+  const findFirst = (regexes) => {
+    for (const r of regexes) {
+      const hit = pdfs.find(p => r.test(p.name));
+      if (hit) return hit.path;
+    }
+    return '';
+  };
+
+  // Heuristics
+  const schedulePdf = findFirst([/schedule/i, /booking\s*schedule/i]);
+  const termsPdf = findFirst([/t\s*&\s*c/i, /tandc/i, /tnc/i, /terms/i, /terms\s*&\s*conditions/i, /conditions/i]);
+  // Prefer deposit-specific filenames first, then generic invoice pattern (excluding balance)
+  let depositPdf = findFirst([
+    /deposit/i,
+    /\bdep\b/i
+  ]);
+  if (!depositPdf) {
+    // fallback to generic invoice file if it doesn't look like a balance
+    const generic = findFirst([/\(\s*INV[-\s]?\d+\s*\)\.pdf$/i]);
+    if (generic && !/balance/i.test(path.basename(generic))) depositPdf = generic;
+  }
+
+  // As a stronger signal, consult DB for an invoice PDF for this jobsheet (if available)
+  try {
+    const docs = await db.getDocuments({ businessId });
+    const byJob = Array.isArray(docs) ? docs.filter(d => (d?.jobsheet_id != null ? Number(d.jobsheet_id) : null) === jobsheetId) : [];
+    const inv = byJob.find(d => (d?.doc_type || '').toLowerCase() === 'invoice' && (d?.invoice_variant || '').toLowerCase() === 'deposit' && d?.file_path && d.file_path.toLowerCase().endsWith('.pdf'));
+    if (inv && inv.file_path) depositPdf = inv.file_path;
+  } catch (_) {}
+
+  return {
+    ok: true,
+    folder_path: folderPath,
+    schedule_pdf: schedulePdf || '',
+    terms_pdf: termsPdf || '',
+    deposit_pdf: depositPdf || ''
+  };
+}
+
+// --- Graph helpers for in-app sending ---
+const GRAPH_SCOPES = ['https://graph.microsoft.com/Mail.Send', 'offline_access', 'openid', 'profile', 'User.Read'];
+function getGraphAuthority() {
+  const tenant = settings.graph_tenant_id;
+  return `https://login.microsoftonline.com/${tenant}`;
+}
+function getClientId() {
+  return settings.graph_client_id;
+}
+function getCachePath() {
+  try { return path.join(os.homedir(), '.invoice_master_msal_cache.json'); } catch (_) { return path.join(__dirname, '.msal_cache.json'); }
+}
+
+function createPublicClient() {
+  const pca = new msal.PublicClientApplication({ auth: { clientId: getClientId(), authority: getGraphAuthority() } });
+  try {
+    const raw = fs.readFileSync(getCachePath(), 'utf-8');
+    pca.getTokenCache().deserialize(raw);
+  } catch (_) {}
+  return pca;
+}
+function persistCache(pca) {
+  try {
+    const raw = pca.getTokenCache().serialize();
+    fs.writeFileSync(getCachePath(), raw, 'utf-8');
+  } catch (_) {}
+}
+async function acquireGraphToken() {
+  const pca = createPublicClient();
+  const cache = pca.getTokenCache();
+  const accounts = await cache.getAllAccounts();
+  if (accounts && accounts.length) {
+    try {
+      const resp = await pca.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: accounts[0] });
+      persistCache(pca);
+      return resp.accessToken;
+    } catch (_) {}
+  }
+  const resp = await pca.acquireTokenByDeviceCode({
+    scopes: GRAPH_SCOPES,
+    deviceCodeCallback: (info) => {
+      try {
+        const uri = info.verificationUri || 'https://microsoft.com/devicelogin';
+        // Open the verification URL in default browser
+        execFile('open', [uri], () => {});
+        // Copy the user code to the clipboard for easy pasting
+        const osaClipboard = [
+          '-e', `set the clipboard to \"${info.userCode}\"`
+        ];
+        execFile('osascript', osaClipboard, () => {});
+        // Show a simple dialog with the code
+        const message = `A Microsoft sign-in is required.\n\n1) A browser window has opened.\n2) When prompted, paste this code: ${info.userCode}`;
+        execFile('osascript', ['-e', `display dialog ${JSON.stringify(message)} buttons {"OK"} giving up after 15`], () => {});
+      } catch (_e) {
+        // Fall back to console log
+        console.log(info.message);
+      }
+    }
+  });
+  persistCache(pca);
+  return resp.accessToken;
+}
+async function graphSendMailRaw({ to, subject, body, attachments }) {
+  const token = await acquireGraphToken();
+  const atts = [];
+  for (const p of (attachments || [])) {
+    try {
+      const name = path.basename(p);
+      const data = fs.readFileSync(p);
+      atts.push({ '@odata.type': '#microsoft.graph.fileAttachment', name, contentBytes: data.toString('base64') });
+    } catch (_) {}
+  }
+  const payload = {
+    message: {
+      subject,
+      body: { contentType: 'Text', content: body || '' },
+      toRecipients: [{ emailAddress: { address: to } }],
+      attachments: atts
+    },
+    saveToSentItems: true
+  };
+  const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Graph send failed: ${res.status} ${t}`);
+  }
+}
+async function sendBookingPackViaGraph(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+  const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+  const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+  const snapshot = options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object' ? { ...options.jobsheetSnapshot } : {};
+
+  const assets = await getBookingPackPdfs({ businessId, jobsheetId, jobsheetSnapshot: snapshot });
+  const files = [assets.schedule_pdf, assets.terms_pdf, assets.deposit_pdf].filter(Boolean);
+  if (!files.length) throw new Error('No booking pack PDFs found in the job folder.');
+  const to = (snapshot.client_email || '').trim();
+  if (!to) throw new Error('Client email missing on jobsheet');
+  const subject = `Booking pack – ${(snapshot.client_name || 'Client')} – ${formatDisplayDate(snapshot.event_date)}`;
+  const firstName = (snapshot.client_name || '').trim().split(/\s+/)[0] || 'there';
+  const body = `Hi ${firstName},\n\nAttached are your booking schedule, T&Cs, and deposit invoice. The deposit is payable on contract signing.\n\nThanks,\nMotti`;
+  await graphSendMailRaw({ to, subject, body, attachments: files });
+  try {
+    await db.logEmail({ business_id: businessId, jobsheet_id: jobsheetId, to, cc: '', bcc: '', subject, body, attachments: files, provider: 'graph', status: 'sent', message_id: null });
+  } catch (_) {}
+  return { ok: true };
+}
+
+async function sendMailViaGraph(options = {}) {
+  const to = (options.to || '').toString().trim();
+  if (!to) throw new Error('Recipient (to) is required');
+  const subject = (options.subject || '').toString();
+  const body = (options.body || '').toString();
+  const isHtml = options.is_html === true;
+  const cc = Array.isArray(options.cc) ? options.cc : (options.cc ? [options.cc] : []);
+  const bcc = Array.isArray(options.bcc) ? options.bcc : (options.bcc ? [options.bcc] : []);
+  const attachments = Array.isArray(options.attachments) ? options.attachments.filter(Boolean) : [];
+
+  const token = await acquireGraphToken();
+  const atts = [];
+  for (const p of attachments) {
+    try {
+      const name = path.basename(p);
+      const data = fs.readFileSync(p);
+      atts.push({ '@odata.type': '#microsoft.graph.fileAttachment', name, contentBytes: data.toString('base64') });
+    } catch (_) {}
+  }
+  const toList = to.split(/[,;]+/).map(s => s.trim()).filter(Boolean).map(address => ({ emailAddress: { address } }));
+  const ccList = cc.flatMap(val => String(val).split(/[,;]+/)).map(s => s.trim()).filter(Boolean).map(address => ({ emailAddress: { address } }));
+  const bccList = bcc.flatMap(val => String(val).split(/[,;]+/)).map(s => s.trim()).filter(Boolean).map(address => ({ emailAddress: { address } }));
+
+  const payload = {
+    message: {
+      subject,
+      body: { contentType: isHtml ? 'HTML' : 'Text', content: body || '' },
+      toRecipients: toList,
+      ccRecipients: ccList,
+      bccRecipients: bccList,
+      attachments: atts
+    },
+    saveToSentItems: true
+  };
+  const res = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`Graph send failed: ${res.status} ${t}`);
+  }
+  try {
+    await db.logEmail({ business_id: options.business_id ?? null, jobsheet_id: options.jobsheet_id ?? null, to, cc, bcc, subject, body, attachments, provider: 'graph', status: 'sent', message_id: null });
+  } catch (_) {}
+  return { ok: true };
+}
 module.exports = {
   normalizeTemplate,
   createDocument,
@@ -2110,6 +2552,180 @@ module.exports = {
   listJobsheetDocuments,
   preflightPdfExport
   ,
+  // Ensure a jobsheet's folder exists and return its path
+  ensureJobsheetFolder: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    if (!Number.isInteger(businessId)) {
+      throw new Error('businessId is required');
+    }
+    const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+    const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) {
+      throw new Error('Documents folder not configured for this business.');
+    }
+
+    let snapshot = (options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object') ? { ...options.jobsheetSnapshot } : {};
+    if ((!snapshot || Object.keys(snapshot).length === 0) && Number.isInteger(jobsheetId)) {
+      try { snapshot = await db.getAhmenJobsheet(jobsheetId) || {}; } catch (_) { snapshot = {}; }
+    }
+    if (!snapshot.client_name && Number.isInteger(jobsheetId)) {
+      snapshot.client_name = `Job ${jobsheetId}`;
+    }
+    if (!snapshot.event_date) {
+      snapshot.event_date = new Date().toISOString().slice(0, 10);
+    }
+
+    const payload = { business_id: businessId, jobsheet_id: jobsheetId, jobsheet_snapshot: snapshot };
+    const context = buildContext(payload, business);
+    const folderPath = buildOutputDirectory(business, context, payload, 'Documents');
+    await ensureDirectoryExists(folderPath);
+    return { ok: true, folder_path: folderPath };
+  },
+  // Booking pack helpers
+  getBookingPackPdfs,
+  sendMailViaGraph,
+  // List files in a jobsheet's folder (non-recursive)
+  listJobFolderFiles: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+    const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+    if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+    const res = await module.exports.ensureJobsheetFolder({ businessId, jobsheetId });
+    const folderPath = res?.folder_path || '';
+    if (!folderPath) return [];
+    let entries = [];
+    try { entries = await fs.promises.readdir(folderPath, { withFileTypes: true }); } catch (_) { entries = []; }
+    const files = [];
+    for (const e of entries) {
+      try {
+        if (!e || !e.name || e.isDirectory()) continue;
+        const p = path.join(folderPath, e.name);
+        const st = await fs.promises.stat(p);
+        files.push({ name: e.name, path: p, size: st.size, mtime: st.mtimeMs });
+      } catch (_) {}
+    }
+    files.sort((a, b) => b.mtime - a.mtime);
+    const filterPattern = options.extensionPattern ? new RegExp(options.extensionPattern, 'i') : null;
+    if (filterPattern) {
+      return files.filter(f => filterPattern.test(f.name || ''));
+    }
+    return files;
+  },
+  // Mail presets and signature (per business with global fallback)
+  getMailPresets: async (options = {}) => {
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (Number.isInteger(businessId)) {
+      const map = s.mail_presets_by_business || {};
+      return map[businessId] || {};
+    }
+    return s.mail_presets || {};
+  },
+  saveMailPresets: async (options = {}) => {
+    const presets = options.presets || {};
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (Number.isInteger(businessId)) {
+      const map = s.mail_presets_by_business || {};
+      map[businessId] = presets || {};
+      s.mail_presets_by_business = map;
+    } else {
+      s.mail_presets = presets || {};
+    }
+    writeSettings(s);
+    return { ok: true };
+  },
+  getMailSignature: async (options = {}) => {
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (Number.isInteger(businessId)) {
+      const map = s.mail_signatures_by_business || {};
+      const signature = map[businessId] || s.mail_signature || '';
+      return { signature };
+    }
+    return { signature: s.mail_signature || '' };
+  },
+  saveMailSignature: async (options = {}) => {
+    const signature = String(options.signature || '');
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (Number.isInteger(businessId)) {
+      const map = s.mail_signatures_by_business || {};
+      map[businessId] = signature;
+      s.mail_signatures_by_business = map;
+    } else {
+      s.mail_signature = signature;
+    }
+    writeSettings(s);
+    return { ok: true };
+  },
+  getDefaultMailTemplates: async (options = {}) => {
+    const bName = String(options.businessName || '').trim();
+    const labelFrom = (k, fallback) => fallback;
+    const T = {
+      enquiry_ack: {
+        label: labelFrom('enquiry_ack', 'Enquiry acknowledgment'),
+        subject: 'Thanks for your enquiry – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>Thanks for getting in touch about your {{ event_type }} on {{ event_date }}.<br><br>I\'ll come back to you shortly with details and pricing.<br><br>Thanks,<br>'
+      },
+      quote: {
+        label: labelFrom('quote', 'Quote'),
+        subject: 'Quote – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>Please find your quote attached for {{ event_type }} on {{ event_date }}.<br><br>If you have any questions or changes, just reply to this email.<br><br>Thanks,<br>'
+      },
+      booking_pack: {
+        label: labelFrom('booking_pack', 'Booking pack'),
+        subject: 'Booking pack – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>Attached are your booking schedule and T&Cs, plus the deposit invoice.<br><br>Please review and let me know if anything needs updating.<br><br>Thanks,<br>'
+      },
+      invoice_deposit: {
+        label: labelFrom('invoice_deposit', 'Deposit invoice'),
+        subject: 'Deposit invoice – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>Please find your deposit invoice attached.<br><br>Thanks,<br>'
+      },
+      invoice_balance: {
+        label: labelFrom('invoice_balance', 'Balance invoice'),
+        subject: 'Balance invoice – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>Please find your balance invoice attached. The due date is {{ balance_due_date }}.<br><br>Thanks,<br>'
+      },
+      payment_reminder: {
+        label: labelFrom('payment_reminder', 'Payment reminder'),
+        subject: 'Payment reminder – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>A friendly reminder about the outstanding balance for {{ event_type }} on {{ event_date }}. The due date is {{ balance_due_date }}.<br><br>If you\'ve already sent payment, please ignore this.<br><br>Thanks,<br>'
+      },
+      thank_you: {
+        label: labelFrom('thank_you', 'Thank you'),
+        subject: 'Thank you – {{ client_name }} – {{ event_date }}',
+        body: 'Hi {{ client_first_name|there }},<br><br>Thank you again for having us at your {{ event_type }} on {{ event_date }} — it was a pleasure.<br><br>All the best,<br>'
+      }
+    };
+    return T;
+  },
+  // Mail templates (subject/body only), per business
+  getMailTemplates: async (options = {}) => {
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    const map = s.mail_templates_by_business || {};
+    if (Number.isInteger(businessId)) return map[businessId] || {};
+    return s.mail_templates || {};
+  },
+  saveMailTemplates: async (options = {}) => {
+    const templates = options.templates || {};
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (Number.isInteger(businessId)) {
+      const map = s.mail_templates_by_business || {};
+      map[businessId] = templates || {};
+      s.mail_templates_by_business = map;
+    } else {
+      s.mail_templates = templates || {};
+    }
+    writeSettings(s);
+    return { ok: true };
+  },
+  // (legacy "other files" helpers removed)
   extractJobsheetDataFromFolder,
   indexInvoicesFromFilenames: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);

@@ -23,11 +23,10 @@ Use `npm start` for the production-style launch (it still performs a fresh produ
   - Import existing job files to auto-create jobsheets (partial: invoice filename importer exists; extend to create jobsheets when missing).
 
 - Backlog
-  - Update documentation for the hybrid document workflow and common flows.
   - Calendar of upcoming deadlines/reminders with background macOS notifications.
   - Outbound email to send generated documents to clients (templated, with attachments).
   - WhatsApp workflow for AhMen enquiries, gig sheets, and personnel follow-ups.
-  - Drag & drop external documents into a jobsheet’s folder so the job folder becomes a complete container of all related files (future enhancement).
+  
 
 ## One-off Migration: Import jobsheets from folders
 

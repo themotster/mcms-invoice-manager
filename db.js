@@ -330,6 +330,25 @@ function initializeDatabase() {
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
+    // Email log for in-app sending
+    db.run(`CREATE TABLE IF NOT EXISTS email_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      business_id INTEGER,
+      jobsheet_id INTEGER,
+      to_address TEXT NOT NULL,
+      cc_address TEXT,
+      bcc_address TEXT,
+      subject TEXT,
+      body TEXT,
+      attachments TEXT,
+      provider TEXT DEFAULT 'graph',
+      status TEXT DEFAULT 'sent',
+      message_id TEXT,
+      sent_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (business_id) REFERENCES business_settings(id),
+      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id)
+    )`);
+
   db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
     definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
     business_id INTEGER NOT NULL,
@@ -3796,5 +3815,57 @@ module.exports = {
   listDocumentTree,
   deleteDocumentFolder,
   deleteDocumentByPath,
-  emptyDocumentsTrash
+emptyDocumentsTrash
+};
+
+// Email log helpers (exported after main object)
+module.exports.logEmail = ({ business_id = null, jobsheet_id = null, to, cc, bcc, subject, body, attachments = [], provider = 'graph', status = 'sent', message_id = null }) => {
+  return new Promise((resolve, reject) => {
+    const toAddr = (to || '').toString();
+    if (!toAddr) { reject(new Error('to is required')); return; }
+    const ccAddr = Array.isArray(cc) ? cc.join(', ') : (cc || '');
+    const bccAddr = Array.isArray(bcc) ? bcc.join(', ') : (bcc || '');
+    const atts = JSON.stringify(Array.isArray(attachments) ? attachments : (attachments ? [attachments] : []));
+    db.run(
+      `INSERT INTO email_log (business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+      [business_id, jobsheet_id, toAddr, ccAddr, bccAddr, subject || '', body || '', atts, provider, status, message_id || null],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.lastID);
+      }
+    );
+  });
+};
+
+module.exports.listEmailLog = ({ business_id = null, jobsheet_id = null, limit = 100 } = {}) => {
+  return new Promise((resolve, reject) => {
+    const where = [];
+    const params = [];
+    if (business_id != null) { where.push('business_id = ?'); params.push(business_id); }
+    if (jobsheet_id != null) { where.push('jobsheet_id = ?'); params.push(jobsheet_id); }
+    const sql = `SELECT * FROM email_log ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY sent_at DESC, id DESC LIMIT ?`;
+    params.push(Number(limit) || 100);
+    db.all(sql, params, (err, rows) => {
+      if (err) reject(err);
+      else resolve(rows || []);
+    });
+  });
+};
+
+module.exports.deleteEmailLog = (id) => {
+  return new Promise((resolve, reject) => {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) {
+      reject(new Error('Invalid email log id'));
+      return;
+    }
+    db.run('DELETE FROM email_log WHERE id = ?', [numericId], function (err) {
+      if (err) {
+        reject(err);
+      } else {
+        resolve({ deleted: this.changes || 0 });
+      }
+    });
+  });
 };
