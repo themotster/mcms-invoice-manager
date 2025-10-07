@@ -2754,6 +2754,126 @@ async function scheduleMailViaGraph(options = {}) {
   return { ok: true, scheduled_email_id: scheduledId, email_log_id: emailLogId };
 }
 
+async function resolveTemplateDefaultAttachments(options = {}) {
+  const templateKeyRaw = options.templateKey ?? options.template_key;
+  const templateKey = templateKeyRaw ? String(templateKeyRaw).trim().toLowerCase() : '';
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+  const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+
+  if (!templateKey) return { attachments: [] };
+  if (!Number.isInteger(businessId)) return { attachments: [] };
+
+  const attachments = [];
+
+  let jobFolderFiles = [];
+  try {
+    jobFolderFiles = await module.exports.listJobFolderFiles({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
+  } catch (_) {
+    jobFolderFiles = [];
+  }
+
+  const findInFolder = (patterns) => {
+    for (const pattern of patterns) {
+      const match = jobFolderFiles.find(file => pattern.test(file?.name || ''));
+      if (match?.path) return match.path;
+    }
+    return '';
+  };
+
+  const resolveFromDocuments = async (predicate) => {
+    try {
+      const response = await listJobsheetDocuments({ businessId, jobsheetId });
+      const docs = Array.isArray(response?.documents) ? response.documents : [];
+      const filtered = jobsheetId != null
+        ? docs.filter(doc => (doc?.jobsheet_id != null ? Number(doc.jobsheet_id) : null) === jobsheetId)
+        : docs;
+      const match = filtered.find(predicate);
+      if (match?.file_path) return match.file_path;
+      return '';
+    } catch (_err) {
+      return '';
+    }
+  };
+
+  switch (templateKey) {
+    case 'booking_pack': {
+      try {
+        const bundle = await getBookingPackPdfs({ businessId, jobsheetId });
+        attachments.push(bundle?.schedule_pdf || '', bundle?.terms_pdf || '', bundle?.deposit_pdf || '');
+      } catch (_) {}
+      if (!attachments.filter(Boolean).length) {
+        const schedule = findInFolder([
+          /schedule/i,
+          /booking\s*schedule/i,
+          /itinerary/i
+        ]);
+        const terms = findInFolder([
+          /t\s*&\s*c/i,
+          /terms/i,
+          /conditions/i,
+          /tandc/i,
+          /tnc/i
+        ]);
+        const deposit = findInFolder([
+          /deposit/i,
+          /\bdep\b/i,
+          /invoice[-_\s]*deposit/i
+        ]);
+        attachments.push(schedule || '', terms || '', deposit || '');
+      }
+      break;
+    }
+    case 'invoice_balance': {
+      let pathMatch = findInFolder([
+        /balance/i,
+        /invoice[_\s-]*balance/i,
+        /bal[-_\s]*inv/i
+      ]);
+      if (!pathMatch) {
+        pathMatch = await resolveFromDocuments(doc => {
+          const defKey = String(doc?.definition_key || '').toLowerCase();
+          const docType = String(doc?.doc_type || '').toLowerCase();
+          const variant = String(doc?.invoice_variant || '').toLowerCase();
+          if (defKey === 'invoice_balance') return true;
+          return docType === 'invoice' && variant === 'balance';
+        });
+      }
+      if (pathMatch) attachments.push(pathMatch);
+      break;
+    }
+    case 'quote': {
+      let pathMatch = findInFolder([
+        /quote/i,
+        /quotation/i
+      ]);
+      if (!pathMatch) {
+        pathMatch = await resolveFromDocuments(doc => {
+          const defKey = String(doc?.definition_key || '').toLowerCase();
+          const docType = String(doc?.doc_type || '').toLowerCase();
+          if (defKey === 'quote') return true;
+          return docType === 'quote';
+        });
+      }
+      if (pathMatch) attachments.push(pathMatch);
+      break;
+    }
+    default:
+      break;
+  }
+
+  const unique = [];
+  const seen = new Set();
+  attachments.filter(Boolean).forEach(p => {
+    const normalized = path.resolve(p);
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    unique.push(p);
+  });
+
+  return { attachments: unique };
+}
+
 ensureScheduledMailWorker();
 module.exports = {
   normalizeTemplate,
@@ -2802,6 +2922,7 @@ module.exports = {
   getBookingPackPdfs,
   sendMailViaGraph,
   scheduleMailViaGraph,
+  resolveTemplateDefaultAttachments,
   // List files in a jobsheet's folder (non-recursive)
   listJobFolderFiles: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
@@ -2927,6 +3048,14 @@ module.exports = {
     if (Number.isInteger(businessId)) return map[businessId] || {};
     return s.mail_templates || {};
   },
+  getMailTemplateTombstones: async (options = {}) => {
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    const map = s.mail_template_tombstones_by_business || {};
+    if (Number.isInteger(businessId)) return Array.isArray(map[businessId]) ? map[businessId] : [];
+    const arr = s.mail_template_tombstones;
+    return Array.isArray(arr) ? arr : [];
+  },
   saveMailTemplates: async (options = {}) => {
     const templates = options.templates || {};
     const s = readSettings();
@@ -2937,6 +3066,36 @@ module.exports = {
       s.mail_templates_by_business = map;
     } else {
       s.mail_templates = templates || {};
+    }
+    writeSettings(s);
+    return { ok: true };
+  },
+  deleteMailTemplate: async (options = {}) => {
+    const keyRaw = options.key != null ? String(options.key) : '';
+    const key = keyRaw.toLowerCase().trim();
+    if (!key) return { ok: false, message: 'Key required' };
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (Number.isInteger(businessId)) {
+      const map = s.mail_templates_by_business || {};
+      const forBiz = map[businessId] || {};
+      if (forBiz[key]) {
+        delete forBiz[key];
+        map[businessId] = forBiz;
+        s.mail_templates_by_business = map;
+      }
+      const tombMap = s.mail_template_tombstones_by_business || {};
+      const list = Array.isArray(tombMap[businessId]) ? tombMap[businessId] : [];
+      if (!list.includes(key)) list.push(key);
+      tombMap[businessId] = list;
+      s.mail_template_tombstones_by_business = tombMap;
+    } else {
+      const map = s.mail_templates || {};
+      if (map[key]) delete map[key];
+      s.mail_templates = map;
+      const tombList = Array.isArray(s.mail_template_tombstones) ? s.mail_template_tombstones : [];
+      if (!tombList.includes(key)) tombList.push(key);
+      s.mail_template_tombstones = tombList;
     }
     writeSettings(s);
     return { ok: true };

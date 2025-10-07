@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import TemplatesManager from './components/TemplatesManager';
 import ToastOverlay from './components/ToastOverlay';
@@ -70,12 +70,47 @@ const DOCUMENT_TYPE_OPTIONS = Object.entries(DOC_TYPE_META).map(([value, meta]) 
   label: meta.label
 }));
 
+const BOOKING_PACK_DEFINITION_KEYS = new Set(['booking_schedule', 't_cs', 'invoice_deposit']);
+
 const DOCUMENT_GROUP_OPTIONS = [
   { value: 'none', label: 'All Documents' },
   { value: 'doc_type', label: 'Document Type' },
   { value: 'client', label: 'Client' },
   { value: 'event_date', label: 'Event Date' }
 ];
+
+const DOCUMENT_CARD_TONES = {
+  workbook: {
+    outerBorder: 'border-teal-200',
+    outerBg: 'rgba(209,250,229,0.85)',
+    innerBorder: 'border-teal-200'
+  },
+  quote: {
+    outerBorder: 'border-sky-200',
+    outerBg: 'rgba(224,242,254,0.85)',
+    innerBorder: 'border-sky-200'
+  },
+  contract: {
+    outerBorder: 'border-violet-200',
+    outerBg: 'rgba(237,233,254,0.85)',
+    innerBorder: 'border-violet-200'
+  },
+  invoice: {
+    outerBorder: 'border-amber-200',
+    outerBg: 'rgba(254,243,199,0.85)',
+    innerBorder: 'border-amber-200'
+  },
+  client_data: {
+    outerBorder: 'border-lime-200',
+    outerBg: 'rgba(236,252,203,0.85)',
+    innerBorder: 'border-lime-200'
+  },
+  default: {
+    outerBorder: 'border-slate-200',
+    outerBg: 'rgba(248,250,252,0.9)',
+    innerBorder: 'border-slate-200'
+  }
+};
 
 const DOCUMENT_COLUMNS = [
   { key: 'document', label: 'Document', align: 'left', always: true },
@@ -88,6 +123,7 @@ const DOCUMENT_COLUMNS = [
 
 const DOCUMENT_FEATURES_ENABLED = true;
 const DOCUMENT_GENERATION_ENABLED = true;
+const HARD_LOCKED_DEFINITION_KEYS = new Set(['workbook']);
 
 function getDocumentIcon(docType) {
   switch ((docType || '').toLowerCase()) {
@@ -537,6 +573,84 @@ const clearComposerState = (key) => {
     window.sessionStorage.removeItem(`${COMPOSER_STORAGE_PREFIX}${key}`);
   } catch (_) {}
 };
+
+const MAIL_TOKEN_REGEX = /{{\s*([a-zA-Z0-9_.-]+)(?:\|([^}]+))?\s*}}/g;
+
+function buildMailTokenMap(snapshot = {}) {
+  const js = snapshot || {};
+  const fmtDate = (value) => {
+    if (!value) return '';
+    const str = String(value);
+    const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (isoMatch) {
+      try {
+        const d = new Date(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3]));
+        return d.toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' });
+      } catch (_) {
+        return str;
+      }
+    }
+    return str;
+  };
+
+  const firstName = (() => {
+    const raw = String(js.client_name || '').trim();
+    if (!raw) return '';
+    const parts = raw.split(/\s+/);
+    return parts[0] || '';
+  })();
+
+  return {
+    client_name: js.client_name || '',
+    client_first_name: firstName,
+    client_email: js.client_email || '',
+    event_type: js.event_type || '',
+    event_date: fmtDate(js.event_date || ''),
+    balance_due_date: fmtDate(js.balance_due_date || ''),
+    balance_reminder_date: fmtDate(js.balance_reminder_date || ''),
+    today: fmtDate(new Date().toISOString().slice(0, 10))
+  };
+}
+
+function renderMailTemplate(template, tokenMap = {}) {
+  if (!template) return '';
+  return String(template).replace(MAIL_TOKEN_REGEX, (_match, key, fallback) => {
+    const normalizedKey = String(key || '').trim().toLowerCase();
+    const value = tokenMap[normalizedKey];
+    if (value != null && value !== '') return String(value);
+    return fallback != null ? String(fallback) : '';
+  });
+}
+
+async function resolveTemplateSubjectBody(api, businessId, jobsheetSnapshot, key) {
+  try {
+    const [templates, defaults] = await Promise.all([
+      api?.getMailTemplates?.({ businessId }),
+      api?.getDefaultMailTemplates?.({ businessId })
+    ]);
+    const def = (defaults && defaults[key]) || {};
+    const custom = (templates && templates[key]) || {};
+    const tpl = { ...def, ...custom };
+    if (!tpl || (tpl.subject == null && tpl.body == null)) return { subject: '', body: '' };
+    const tokenMap = buildMailTokenMap(jobsheetSnapshot || {});
+    return {
+      subject: renderMailTemplate(tpl.subject || '', tokenMap),
+      body: renderMailTemplate(tpl.body || '', tokenMap)
+    };
+  } catch (_err) {
+    return { subject: '', body: '' };
+  }
+}
+
+function appendSignatureHtml(bodyHtml, signatureHtml) {
+  const trimmedBody = (bodyHtml || '').trim();
+  if (!signatureHtml) return trimmedBody;
+  if (!trimmedBody) return signatureHtml;
+  if (/(<br\s*\/?>|<\/p>)$/i.test(trimmedBody)) {
+    return `${trimmedBody}${signatureHtml}`;
+  }
+  return `${trimmedBody}<br><br>${signatureHtml}`;
+}
 
 function startCaseKey(key) {
   if (!key) return '';
@@ -3857,6 +3971,8 @@ function DocumentsInlinePanel({
   jobsheetSnapshot
 }) {
   const INVOICE_GATE_BYPASS_KEY = 'invoiceMaster:bypassInvoiceGate';
+  const numericBusinessId = businessId != null ? Number(businessId) : null;
+  const numericJobsheetId = jobsheetId != null ? Number(jobsheetId) : null;
   const emailStatusStyles = {
     sent: { label: 'Sent', className: 'bg-green-100 text-green-700 border-green-200' },
     scheduled: { label: 'Scheduled', className: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
@@ -3926,8 +4042,6 @@ function DocumentsInlinePanel({
     const pdfDoc = wbDoc ? pdfByBase.get(wbBase) : null;
     return { def, wbDoc, pdfDoc, label };
   });
-  const workbookPathSet = useMemo(() => new Set((excelItems || []).map(i => (i.doc?.file_path || '').toString()).filter(Boolean)), [excelItems]);
-  const pdfPanePathSet = useMemo(() => new Set((pdfItems || []).map(i => (i.pdfDoc?.file_path || '').toString()).filter(Boolean)), [pdfItems]);
 
   const composerStoreKey = jobsheetId != null ? `jobsheet:${jobsheetId}` : 'jobsheet:global';
   const storedComposerState = loadComposerState(composerStoreKey);
@@ -3938,6 +4052,7 @@ function DocumentsInlinePanel({
   const [defaultNext, setDefaultNext] = useState(null);
   const [localToasts, setLocalToasts] = useState([]);
   const [composerOpen, setComposerOpen] = useState(() => storedComposerState?.open ?? false);
+  const [composerMountKey, setComposerMountKey] = useState(0);
   const [composerTo, setComposerTo] = useState(() => storedComposerState?.to ?? '');
   const [composerCc, setComposerCc] = useState(() => storedComposerState?.cc ?? '');
   const [composerBcc, setComposerBcc] = useState(() => storedComposerState?.bcc ?? '');
@@ -3947,6 +4062,14 @@ function DocumentsInlinePanel({
     const saved = storedComposerState?.attachments;
     return Array.isArray(saved) ? [...saved] : [];
   });
+  const [composerTemplateKey, setComposerTemplateKey] = useState('');
+  const pendingLockRef = useRef({ workbook: new Set(), pdf: new Set() });
+  const [, forcePendingLockTick] = useState(0);
+  const [composerSendMode, setComposerSendMode] = useState(() => storedComposerState?.sendMode || 'now');
+  const [composerScheduleAt, setComposerScheduleAt] = useState(() => storedComposerState?.scheduleAt || '');
+  const [composerIncludeSignature, setComposerIncludeSignature] = useState(() => (
+    storedComposerState?.includeSignature !== undefined ? Boolean(storedComposerState.includeSignature) : true
+  ));
 
   const prevComposerKeyRef = useRef(composerStoreKey);
   useEffect(() => {
@@ -3961,6 +4084,10 @@ function DocumentsInlinePanel({
       setComposerSubject(restored.subject ?? '');
       setComposerBody(restored.body ?? '');
       setComposerAttachments(Array.isArray(restored.attachments) ? [...restored.attachments] : []);
+      setComposerTemplateKey(restored.templateKey ?? '');
+      setComposerSendMode(restored.sendMode || 'now');
+      setComposerScheduleAt(restored.scheduleAt || '');
+      setComposerIncludeSignature(restored.includeSignature !== undefined ? Boolean(restored.includeSignature) : true);
     } else {
       setComposerOpen(false);
       setComposerTo('');
@@ -3969,6 +4096,10 @@ function DocumentsInlinePanel({
       setComposerSubject('');
       setComposerBody('');
       setComposerAttachments([]);
+      setComposerTemplateKey('');
+      setComposerSendMode('now');
+      setComposerScheduleAt('');
+      setComposerIncludeSignature(true);
     }
   }, [composerStoreKey]);
 
@@ -3982,12 +4113,16 @@ function DocumentsInlinePanel({
         bcc: composerBcc,
         subject: composerSubject,
         body: composerBody,
-        attachments: Array.isArray(composerAttachments) ? [...composerAttachments] : []
+        attachments: Array.isArray(composerAttachments) ? [...composerAttachments] : [],
+        templateKey: composerTemplateKey,
+        sendMode: composerSendMode,
+        scheduleAt: composerScheduleAt,
+        includeSignature: composerIncludeSignature
       });
     } else {
       clearComposerState(composerStoreKey);
     }
-  }, [composerStoreKey, composerOpen, composerTo, composerCc, composerBcc, composerSubject, composerBody, composerAttachments]);
+  }, [composerStoreKey, composerOpen, composerTo, composerCc, composerBcc, composerSubject, composerBody, composerAttachments, composerTemplateKey, composerSendMode, composerScheduleAt, composerIncludeSignature]);
 
   useEffect(() => () => {
     if (!composerStoreKey || !composerOpen) return;
@@ -3998,9 +4133,13 @@ function DocumentsInlinePanel({
       bcc: composerBcc,
       subject: composerSubject,
       body: composerBody,
-      attachments: Array.isArray(composerAttachments) ? [...composerAttachments] : []
+      attachments: Array.isArray(composerAttachments) ? [...composerAttachments] : [],
+      templateKey: composerTemplateKey,
+      sendMode: composerSendMode,
+      scheduleAt: composerScheduleAt,
+      includeSignature: composerIncludeSignature
     });
-  }, [composerStoreKey, composerOpen, composerTo, composerCc, composerBcc, composerSubject, composerBody, composerAttachments]);
+  }, [composerStoreKey, composerOpen, composerTo, composerCc, composerBcc, composerSubject, composerBody, composerAttachments, composerTemplateKey, composerSendMode, composerScheduleAt, composerIncludeSignature]);
 
   
   const [emailLog, setEmailLog] = useState([]);
@@ -4079,15 +4218,41 @@ function DocumentsInlinePanel({
 
   // removed booking pack composer
 
+  const openComposer = useCallback((options = {}) => {
+    const attachments = Array.isArray(options.attachments) ? options.attachments.filter(Boolean) : [];
+    setComposerTo(options.to != null ? options.to : (jobsheetSnapshot?.client_email || ''));
+    setComposerCc(options.cc ?? '');
+    setComposerBcc(options.bcc ?? '');
+    setComposerSubject(options.subject ?? '');
+    setComposerBody(options.body ?? '');
+    setComposerAttachments(attachments);
+    setComposerTemplateKey(options.templateKey ?? '');
+    setComposerSendMode(options.sendMode || 'now');
+    setComposerScheduleAt(options.scheduleAt || '');
+    setComposerIncludeSignature(options.includeSignature !== undefined ? Boolean(options.includeSignature) : true);
+    // Force a fresh mount so template selection and content always reflect the latest intent
+    setComposerMountKey(key => key + 1);
+    setComposerOpen(true);
+  }, [jobsheetSnapshot]);
+
+  const queueAutoLock = useCallback((docKey, stage) => {
+    if (!docKey) return;
+    const targetSet = pendingLockRef.current?.[stage];
+    if (!targetSet) return;
+    targetSet.add(docKey);
+    forcePendingLockTick(tick => tick + 1);
+  }, [forcePendingLockTick]);
+
   const openComposerForPdf = (pdfPath, variant) => {
     const v = String(variant || '').toLowerCase();
-    setComposerTo(jobsheetSnapshot?.client_email || '');
-    setComposerCc('');
-    setComposerBcc('');
-    setComposerSubject(v ? `Invoice (${v}) – ${jobsheetSnapshot?.client_name || 'Client'} – ${formatDateDisplay(jobsheetSnapshot?.event_date)}` : `Invoice – ${jobsheetSnapshot?.client_name || 'Client'} – ${formatDateDisplay(jobsheetSnapshot?.event_date)}`);
-    setComposerBody('');
-    setComposerAttachments(pdfPath ? [pdfPath] : []);
-    setComposerOpen(true);
+    const subject = v
+      ? `Invoice (${v}) – ${jobsheetSnapshot?.client_name || 'Client'} – ${formatDateDisplay(jobsheetSnapshot?.event_date)}`
+      : `Invoice – ${jobsheetSnapshot?.client_name || 'Client'} – ${formatDateDisplay(jobsheetSnapshot?.event_date)}`;
+    openComposer({
+      attachments: pdfPath ? [pdfPath] : [],
+      subject,
+      templateKey: ''
+    });
   };
   const pushToast = (text, tone = 'info') => {
     const notice = { id: `toast-${Date.now()}-${Math.random().toString(36).slice(2)}`, text, tone };
@@ -4110,9 +4275,586 @@ function DocumentsInlinePanel({
     }
   };
 
-  const handleGenerate = (key) => onGenerate?.(key);
+  const handleEditScheduledEmail = async (entry) => {
+    if (!entry) return;
+    try {
+      let attachments = [];
+      const rawAttachments = entry.attachments;
+      if (typeof rawAttachments === 'string') {
+        try {
+          const parsed = JSON.parse(rawAttachments);
+          if (Array.isArray(parsed)) attachments = parsed.filter(Boolean);
+        } catch (_) {
+          attachments = rawAttachments ? [rawAttachments] : [];
+        }
+      } else if (Array.isArray(rawAttachments)) {
+        attachments = rawAttachments.filter(Boolean);
+      }
+      openComposer({
+        to: entry.to_address || '',
+        cc: entry.cc_address || '',
+        bcc: entry.bcc_address || '',
+        subject: entry.subject || '',
+        body: entry.body || '',
+        attachments,
+        templateKey: entry.template_key || '',
+        sendMode: 'later',
+        scheduleAt: entry.sent_at || '',
+        includeSignature: composerIncludeSignature
+      });
+    } catch (err) {
+      pushToast(err?.message || 'Unable to load scheduled email', 'error');
+    }
+  };
+
+  const pdfItemByKey = useMemo(() => {
+    const map = new Map();
+    (pdfItems || []).forEach(item => {
+      const key = item?.def?.key;
+      if (key) map.set(key, item);
+    });
+    return map;
+  }, [pdfItems]);
+
+  const emailStatusByAttachment = useMemo(() => {
+    const map = new Map();
+    (emailLog || []).forEach(entry => {
+      let attachments = [];
+      try {
+        attachments = JSON.parse(entry.attachments || '[]');
+      } catch (_) {
+        attachments = [];
+      }
+      const status = String(entry.status || 'sent').toLowerCase();
+      attachments
+        .map(att => (att != null ? String(att) : ''))
+        .filter(Boolean)
+        .forEach(path => {
+          if (!map.has(path)) {
+            map.set(path, { status, entry });
+          }
+        });
+    });
+    return map;
+  }, [emailLog]);
+
   const statusKey = normalizeStatus(jobsheetStatus) || 'enquiry';
   const invoiceGateOpen = bypassInvoiceGate || statusKey === 'contracting' || statusKey === 'confirmed' || statusKey === 'completed';
+
+  const documentRows = useMemo(() => {
+    const baseRows = excelItems.map(({ def, doc, label }) => {
+      const key = def?.key || label;
+      const pdfItem = def ? pdfItemByKey.get(def.key) || null : null;
+      const pdfDoc = pdfItem?.pdfDoc || null;
+      const pdfPath = pdfDoc?.file_path ? String(pdfDoc.file_path) : null;
+      const emailInfo = pdfPath ? emailStatusByAttachment.get(pdfPath) || null : null;
+      const invoiceVariant = def?.invoice_variant || '';
+      const variantLabel = invoiceVariant
+        ? invoiceVariant
+            .replace(/_/g, ' ')
+            .replace(/\b\w/g, (char) => char.toUpperCase())
+        : '';
+      const isInvoiceDef = def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance');
+      let mailTemplateKey = '';
+      if (def?.key === 'quote') {
+        mailTemplateKey = 'quote';
+      } else if (def?.key === 'invoice_balance') {
+        mailTemplateKey = 'invoice_balance';
+      }
+      const suppressEmail = key === 'client_data' || BOOKING_PACK_DEFINITION_KEYS.has(def?.key);
+      return {
+        key,
+        def,
+        label,
+        invoiceVariant,
+        variantLabel,
+        isInvoiceDef,
+        gateOk: isInvoiceDef ? invoiceGateOpen : true,
+        workbookDoc: doc || null,
+        pdfDoc,
+        pdfItem,
+        emailInfo,
+        workbookGenerated: Boolean(doc?.file_path),
+        pdfExported: Boolean(pdfDoc?.file_path),
+        pdfPath,
+        mailTemplateKey,
+        suppressEmail,
+        mailScheduledAt: (emailInfo?.status && String(emailInfo.status).toLowerCase() === 'scheduled' && emailInfo.entry?.sent_at) ? emailInfo.entry.sent_at : null
+      };
+    });
+
+    const bookingPackDocs = [];
+    const orderedDocs = [];
+
+    baseRows.forEach(row => {
+      if (BOOKING_PACK_DEFINITION_KEYS.has(row.def?.key)) {
+        bookingPackDocs.push(row);
+      } else {
+        orderedDocs.push(row);
+      }
+    });
+
+    const result = orderedDocs.map(doc => ({ type: 'doc', doc }));
+    if (bookingPackDocs.length) {
+      // Ensure consistent order inside the booking pack: Booking schedule → T&Cs → Deposit invoice
+      const packOrder = new Map([
+        ['booking_schedule', 0],
+        ['t_cs', 1],
+        ['invoice_deposit', 2]
+      ]);
+      bookingPackDocs.sort((a, b) => {
+        const ak = a?.def?.key || '';
+        const bk = b?.def?.key || '';
+        const ai = packOrder.has(ak) ? packOrder.get(ak) : 999;
+        const bi = packOrder.has(bk) ? packOrder.get(bk) : 999;
+        if (ai !== bi) return ai - bi;
+        return (a.label || '').localeCompare(b.label || '', 'en', { sensitivity: 'base' });
+      });
+      const groupEntry = {
+        type: 'group',
+        key: 'booking_pack',
+        label: 'Booking pack',
+        templateKey: 'booking_pack',
+        docs: bookingPackDocs,
+        attachments: bookingPackDocs.map(doc => doc.pdfPath).filter(Boolean)
+      };
+      const quoteIndex = result.findIndex(item => item.type === 'doc' && item.doc?.def?.key === 'quote');
+      if (quoteIndex >= 0) {
+        result.splice(quoteIndex + 1, 0, groupEntry);
+      } else {
+        result.push(groupEntry);
+      }
+    }
+
+    return result;
+  }, [excelItems, pdfItemByKey, emailStatusByAttachment, invoiceGateOpen]);
+
+  useEffect(() => {
+    const pending = pendingLockRef.current;
+    if (!pending) return;
+    let consumed = false;
+    documentRows.forEach(item => {
+      const row = item && item.type === 'doc' ? item.doc : null;
+      if (!row) return;
+      const key = row.def?.key;
+      if (!key) return;
+      if (pending.workbook?.has(key) && row.workbookGenerated && row.workbookDoc && !row.workbookDoc.is_locked) {
+        pending.workbook.delete(key);
+        consumed = true;
+        try {
+          onToggleLock?.(row.workbookDoc);
+        } catch (err) {
+          console.warn('Auto-lock workbook failed', err);
+        }
+      }
+      if (pending.pdf?.has(key) && row.pdfExported && row.pdfDoc && !row.pdfDoc.is_locked) {
+        pending.pdf.delete(key);
+        consumed = true;
+        try {
+          onToggleLock?.(row.pdfDoc);
+        } catch (err) {
+          console.warn('Auto-lock PDF failed', err);
+        }
+      }
+    });
+    if (consumed) {
+      forcePendingLockTick(tick => tick + 1);
+    }
+  }, [documentRows, onToggleLock, forcePendingLockTick]);
+
+  const renderActionPill = ({ label, onClick, disabled, tone = 'slate', key: keyProp }) => {
+    const base = 'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1';
+    const toneClass = tone === 'indigo'
+      ? 'border-indigo-200 text-indigo-600 hover:bg-indigo-50'
+      : tone === 'danger'
+        ? 'border-red-200 text-red-600 hover:bg-red-50'
+        : 'border-slate-300 text-slate-600 hover:bg-slate-100';
+    return (
+      <button
+        key={keyProp}
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        className={`${base} ${toneClass} disabled:cursor-not-allowed disabled:opacity-50`}
+      >
+        {label}
+      </button>
+    );
+  };
+
+  const readyIcon = (label) => (
+    <span
+      className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-green-200 bg-green-50 text-lg text-green-600"
+      title={label}
+      aria-label={label}
+    >
+      ✓
+    </span>
+  );
+
+  const scheduleBalanceEmail = useCallback(async (pdfPath) => {
+    try {
+      if (!jobsheetSnapshot || !numericBusinessId || !numericJobsheetId) return;
+      const clientEmail = (jobsheetSnapshot.client_email || '').trim();
+      if (!clientEmail) return;
+
+      const reminderDate = jobsheetSnapshot.balance_reminder_date || jobsheetSnapshot.balance_due_date;
+      if (!reminderDate) return;
+      const sendAt = new Date(`${reminderDate}T09:00:00`);
+      if (Number.isNaN(sendAt.valueOf())) return;
+      if (sendAt.getTime() < Date.now() + 60 * 1000) {
+        // Too close or past; skip auto scheduling
+        return;
+      }
+      openComposer({
+        to: clientEmail,
+        cc: '',
+        bcc: '',
+        attachments: pdfPath ? [pdfPath] : [],
+        templateKey: 'invoice_balance',
+        sendMode: 'later',
+        scheduleAt: sendAt.toISOString(),
+        includeSignature: composerIncludeSignature
+      });
+    } catch (err) {
+      console.warn('Auto schedule balance email failed', err);
+      pushToast(err?.message || 'Unable to prepare balance invoice email', 'error');
+    }
+  }, [numericBusinessId, numericJobsheetId, jobsheetSnapshot, openComposer, composerIncludeSignature]);
+
+  const renderDocumentRow = (row, { nested = false } = {}) => {
+    if (!row) return null;
+    const docKey = row.def?.key;
+    const workbookDoc = row.workbookDoc;
+    const pdfDoc = row.pdfDoc;
+    const pdfItem = row.pdfItem;
+    const workbookReady = row.workbookGenerated;
+    const pdfReady = row.pdfExported;
+    const workbookLocked = Boolean(workbookDoc?.is_locked);
+    const pdfLocked = Boolean(pdfDoc?.is_locked);
+    const emailInfo = row.emailInfo;
+    const emailStatusKey = String(emailInfo?.status || '').toLowerCase();
+    const mailReady = emailStatusKey ? !['error', 'scheduled_error'].includes(emailStatusKey) : false;
+    const mailHasTemplate = Boolean(row.mailTemplateKey);
+    const emailEntry = emailInfo?.entry;
+    const emailWhen = emailEntry?.sent_at ? formatTimestampDisplay(emailEntry.sent_at) : '';
+    const emailBadge = emailInfo ? renderEmailStatusPill(emailStatusKey) : null;
+    const emailFallbackLabel = row.pdfExported ? 'No emails' : 'PDF not ready';
+    const scheduleDateDisplay = row.mailScheduledAt ? formatTimestampDisplay(row.mailScheduledAt) : '';
+    const pdfVariantRequiresNumber = row.def && (row.def.invoice_variant === 'deposit' || row.def.invoice_variant === 'balance');
+
+    const generateDisabled = !jobsheetId || !row.def || !row.def.template_path || definitionsLoading || workbookLocked || !row.gateOk;
+    const exportDisabled = !pdfItem || pdfLocked || !row.gateOk || !workbookReady || definitionsLoading;
+    const mailDisabled = !mailHasTemplate || !pdfReady;
+
+    const handleWorkbookPrimaryClick = () => {
+      if (workbookReady) {
+        if (workbookDoc?.file_path) onOpenFile?.(workbookDoc.file_path);
+        return;
+      }
+      if (generateDisabled || !row.def) return;
+      if (docKey) queueAutoLock(docKey, 'workbook');
+      handleGenerate(row.def.key);
+    };
+
+    const handlePdfPrimaryClick = () => {
+      if (pdfReady) {
+        if (pdfDoc?.file_path) onOpenFile?.(pdfDoc.file_path);
+        return;
+      }
+      if (exportDisabled || !pdfItem) return;
+      if (docKey) queueAutoLock(docKey, 'pdf');
+      handleExportForDef(pdfItem);
+    };
+
+    const handleMailPrimaryClick = async () => {
+      if (mailReady || mailDisabled) return;
+      const key = row.mailTemplateKey || '';
+      openComposer({ templateKey: key, attachments: row.pdfPath && pdfReady ? [row.pdfPath] : [] });
+    };
+
+  const lockToggle = (doc, locked, label, key) => (
+    <button
+      key={key}
+      type="button"
+      className={`flex h-9 w-9 items-center justify-center rounded border border-slate-300 text-base ${!doc?.document_id ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-100'}`}
+      onClick={() => doc && onToggleLock?.(doc)}
+      disabled={!doc?.document_id}
+      title={locked ? `Unlock ${label}` : `Lock ${label}`}
+    >
+      <span aria-hidden>{locked ? '🔒' : '🔓'}</span>
+      <span className="sr-only">{locked ? `Unlock ${label}` : `Lock ${label}`}</span>
+    </button>
+  );
+
+    const workbookRow = (
+      <div key="row-workbook" className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
+        <span className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">XLSX</span>
+        {workbookReady ? readyIcon('Workbook ready') : renderActionPill({
+          key: `${row.key}-generate`,
+          label: 'Generate',
+          onClick: handleWorkbookPrimaryClick,
+          disabled: generateDisabled,
+          tone: 'indigo'
+        })}
+        {workbookReady ? lockToggle(workbookDoc, workbookLocked, 'Workbook', `${row.key}-workbook-lock`) : null}
+        <IconButton
+          label="Open workbook"
+          onClick={() => onOpenFile?.(workbookDoc?.file_path)}
+          disabled={!workbookDoc?.file_path}
+          size="md"
+          className="border-slate-200 text-slate-600 hover:bg-slate-50"
+        >
+          <OpenIcon className="h-4 w-4" />
+        </IconButton>
+        <IconButton
+          label="Reveal workbook"
+          onClick={() => onRevealFile?.(workbookDoc?.file_path)}
+          disabled={!workbookDoc?.file_path}
+          size="md"
+          className="border-slate-200 text-slate-600 hover:bg-slate-50"
+        >
+          <RevealIcon className="h-4 w-4" />
+        </IconButton>
+        {onDelete ? (
+          <IconButton
+            label="Delete workbook"
+            onClick={() => onDelete?.(workbookDoc)}
+            disabled={workbookLocked || workbookDoc?.document_id == null}
+            size="md"
+            className="border-red-200 text-red-600 hover:bg-red-50"
+          >
+            <DeleteIcon className="h-4 w-4" />
+          </IconButton>
+        ) : null}
+      </div>
+    );
+
+    const pdfChildren = [
+      <span key="label" className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">PDF</span>,
+      pdfReady ? (
+        <span key="tick" className="inline-flex">{readyIcon('PDF ready')}</span>
+      ) : renderActionPill({
+        key: 'pdf-export',
+        label: 'Export',
+        onClick: handlePdfPrimaryClick,
+        disabled: exportDisabled,
+        tone: 'indigo'
+      }),
+      pdfReady ? lockToggle(pdfDoc, pdfLocked, 'PDF', `${row.key}-pdf-lock`) : null,
+      <IconButton
+        key="open"
+        label="Open PDF"
+        onClick={() => onOpenFile?.(pdfDoc?.file_path)}
+        disabled={!pdfDoc?.file_path}
+        size="md"
+        className="border-slate-200 text-slate-600 hover:bg-slate-50"
+      >
+        <OpenIcon className="h-4 w-4" />
+      </IconButton>,
+      <IconButton
+        key="reveal"
+        label="Reveal PDF"
+        onClick={() => onRevealFile?.(pdfDoc?.file_path)}
+        disabled={!pdfDoc?.file_path}
+        size="md"
+        className="border-slate-200 text-slate-600 hover:bg-slate-50"
+      >
+        <RevealIcon className="h-4 w-4" />
+      </IconButton>,
+      onDelete ? (
+        <IconButton
+          key="delete"
+          label="Delete PDF"
+          onClick={() => onDelete?.(pdfDoc)}
+          disabled={pdfLocked || pdfDoc?.document_id == null}
+          size="md"
+          className="border-red-200 text-red-600 hover:bg-red-50"
+        >
+          <DeleteIcon className="h-4 w-4" />
+        </IconButton>
+      ) : null
+    ].filter(Boolean);
+
+    if (!pdfReady && pdfVariantRequiresNumber) {
+      pdfChildren.push(
+        <label key="invoice-number" className="ml-2 flex items-center gap-1 text-[11px] text-slate-500">
+          <span>Invoice #</span>
+          <input
+            type="number"
+            min={1}
+            value={overrideNumbers[row.def.key] ?? ''}
+            onChange={(e) => setOverrideNumbers(prev => ({ ...prev, [row.def.key]: e.target.value }))}
+            placeholder={defaultNext != null ? String(defaultNext) : 'INV #'}
+            className="w-24 rounded border border-slate-300 px-2 py-1"
+          />
+        </label>
+      );
+    }
+
+    const pdfRow = (
+      <div key="row-pdf" className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
+        {pdfChildren}
+      </div>
+    );
+
+    const isBalanceInvoice = row.def && (row.def.invoice_variant || '').toLowerCase() === 'balance';
+    const emailControls = [];
+    const emailRow = row.suppressEmail ? null : (() => {
+      if (mailReady) {
+        const statusLabel = emailStatusKey === 'scheduled' ? 'Email scheduled' : 'Email sent';
+        emailControls.push(<span key="tick" className="inline-flex">{readyIcon(statusLabel)}</span>);
+      }
+      if (isBalanceInvoice) {
+        const scheduleLabel = emailStatusKey === 'scheduled' ? 'Reschedule' : 'Schedule';
+        emailControls.push(renderActionPill({
+          key: 'balance-schedule',
+          label: scheduleLabel,
+          onClick: () => scheduleBalanceEmail(pdfDoc?.file_path || ''),
+          disabled: !pdfReady || !pdfDoc?.file_path,
+          tone: 'indigo'
+        }));
+        if (scheduleDateDisplay) {
+          emailControls.push(<span key="scheduled-for" className="text-xs text-slate-500">Scheduled for {scheduleDateDisplay}</span>);
+        }
+      } else if (!mailReady) {
+        emailControls.push(renderActionPill({
+          key: 'email-send',
+          label: 'Send',
+          onClick: handleMailPrimaryClick,
+          disabled: mailDisabled,
+          tone: 'indigo'
+        }));
+        emailControls.push(<span key="fallback" className="text-xs text-slate-500">{emailFallbackLabel}</span>);
+      }
+      if (emailBadge) {
+        emailControls.push(<span key="badge" className="flex items-center">{emailBadge}</span>);
+      }
+      if (emailWhen) {
+        emailControls.push(<span key="when" className="text-xs text-slate-500">{emailWhen}</span>);
+      }
+      return (
+        <div key="row-email" className="flex flex-wrap items-center gap-2">
+          <span className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">Email</span>
+          {emailControls}
+        </div>
+      );
+    })();
+
+    let toneKey = row.def?.doc_type ? String(row.def.doc_type).toLowerCase() : 'default';
+    if (row.def?.key === 'client_data') toneKey = 'client_data';
+    const tone = DOCUMENT_CARD_TONES[toneKey] || DOCUMENT_CARD_TONES.default;
+
+    return (
+      <div
+        key={row.key}
+        className={`rounded-xl border ${tone.outerBorder} p-3 shadow-sm`}
+        style={{ background: `linear-gradient(180deg, rgba(255,255,255,0.9) 0%, ${tone.outerBg} 100%)`, boxShadow: '0 10px 30px rgba(15, 23, 42, 0.08)' }}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+          <div className="text-[15px] font-bold tracking-tight text-indigo-800" title={row.label}>{row.label}</div>
+        </div>
+        <div className="mt-3 space-y-3 text-xs text-slate-600">
+          <div className={`rounded border ${tone.innerBorder} bg-white p-2 shadow-sm`}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
+              {workbookRow}
+              <div className="hidden sm:block" aria-hidden>
+                <div className="h-9 w-px bg-slate-200" />
+              </div>
+              {pdfRow}
+            </div>
+          </div>
+          {emailRow ? (
+            <div className={`rounded border ${tone.innerBorder} bg-white p-2 shadow-sm`}>
+              {emailRow}
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+
+  const renderBookingPackGroup = (group) => {
+    if (!group) return null;
+    const docs = Array.isArray(group.docs) ? group.docs : [];
+    const attachments = Array.isArray(group.attachments) ? group.attachments.filter(Boolean) : [];
+    const allPdfReady = docs.every(doc => doc.pdfExported);
+    const composeDisabled = !allPdfReady || !attachments.length;
+
+    let aggregatedInfo = null;
+    attachments.forEach(path => {
+      const info = emailStatusByAttachment.get(path) || null;
+      if (!info) return;
+      if (!aggregatedInfo) {
+        aggregatedInfo = info;
+        return;
+      }
+      const currentDate = aggregatedInfo.entry?.sent_at ? new Date(aggregatedInfo.entry.sent_at).valueOf() : 0;
+      const nextDate = info.entry?.sent_at ? new Date(info.entry.sent_at).valueOf() : 0;
+      if (nextDate > currentDate) {
+        aggregatedInfo = info;
+      }
+    });
+
+    const statusKey = aggregatedInfo?.status ? String(aggregatedInfo.status).toLowerCase() : '';
+    const mailReady = statusKey ? !['error', 'scheduled_error'].includes(statusKey) : false;
+    const mailBadge = statusKey ? renderEmailStatusPill(statusKey) : null;
+    const mailWhen = aggregatedInfo?.entry?.sent_at ? formatTimestampDisplay(aggregatedInfo.entry.sent_at) : '';
+    const fallbackLabel = allPdfReady ? 'No emails' : 'PDFs not ready';
+    const scheduledFor = statusKey === 'scheduled' && aggregatedInfo?.entry?.sent_at
+      ? formatTimestampDisplay(aggregatedInfo.entry.sent_at)
+      : '';
+
+    const emailControls = [];
+    if (mailReady) {
+      emailControls.push(<span key="tick" className="inline-flex">{readyIcon('Booking pack email sent')}</span>);
+    } else {
+      emailControls.push(renderActionPill({
+        key: 'booking-pack-send',
+        label: 'Send',
+        onClick: () => openComposer({ templateKey: group.templateKey, attachments, includeSignature: composerIncludeSignature }),
+        disabled: composeDisabled,
+        tone: 'indigo'
+      }));
+    }
+    if (!mailReady) {
+      emailControls.push(<span key="fallback" className="text-xs text-slate-500">{fallbackLabel}</span>);
+    }
+    if (scheduledFor) {
+      emailControls.push(<span key="scheduled-for" className="text-xs text-slate-500">Scheduled for {scheduledFor}</span>);
+    }
+    if (mailBadge) {
+      emailControls.push(<span key="badge" className="flex items-center">{mailBadge}</span>);
+    }
+    if (mailWhen) {
+      emailControls.push(<span key="when" className="text-xs text-slate-500">{mailWhen}</span>);
+    }
+
+    return (
+      <div
+        key={group.key || 'booking-pack'}
+        className="rounded-xl border border-indigo-200 p-3 shadow-sm"
+        style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.92) 0%, rgba(224,231,255,0.85) 100%)', boxShadow: '0 10px 30px rgba(15, 23, 42, 0.08)' }}
+      >
+        <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+          <span className="text-[15px] font-bold tracking-tight text-indigo-800">{group.label}</span>
+        </div>
+        <div className="mt-3 space-y-3 text-xs text-slate-600">
+          <div className="rounded border border-indigo-200 bg-white p-2 shadow-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">Email</span>
+              {emailControls}
+            </div>
+          </div>
+          <div className="space-y-3">
+            {docs.map(doc => renderDocumentRow(doc, { nested: true }))}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const handleGenerate = (key) => onGenerate?.(key);
   const canGenerateAll = Boolean(
     jobsheetId && excelItems.some(i => {
       const isInvoiceDef = i.def && (i.def.invoice_variant === 'deposit' || i.def.invoice_variant === 'balance');
@@ -4143,6 +4885,7 @@ function DocumentsInlinePanel({
     if (res && res.ok === false && /exists/i.test(res.message || '')) {
       window.alert(res.message || 'Invoice number conflict. Choose another number.');
     }
+
   };
 
   const handleExportAll = async () => {
@@ -4187,6 +4930,7 @@ function DocumentsInlinePanel({
       {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div> : null}
       <ToastOverlay notices={localToasts} />
       <MailComposer
+        key={composerMountKey}
         open={composerOpen}
         onClose={() => setComposerOpen(false)}
         businessId={businessId}
@@ -4197,6 +4941,14 @@ function DocumentsInlinePanel({
         initialSubject={composerSubject}
         initialBody={composerBody}
         initialAttachments={composerAttachments}
+        initialTemplateKey={composerTemplateKey}
+        onTemplateChange={setComposerTemplateKey}
+        initialSendMode={composerSendMode}
+        initialScheduleAt={composerScheduleAt}
+        onSendModeChange={setComposerSendMode}
+        onScheduleChange={setComposerScheduleAt}
+        initialIncludeSignature={composerIncludeSignature}
+        onIncludeSignatureChange={setComposerIncludeSignature}
         onSent={(result) => {
           setComposerOpen(false);
           const mode = result?.mode === 'later' ? 'scheduled' : 'sent';
@@ -4205,170 +4957,53 @@ function DocumentsInlinePanel({
         }}
       />
       <div className="space-y-4">
-        {/* Excel Pane */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-slate-700">Excel</div>
-            <div className="flex items-center gap-2 text-xs">
-              <button type="button" onClick={onRefresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-              <button
-                type="button"
-                onClick={() => excelItems.forEach(i => (!i.doc?.file_path && !i.doc?.is_locked && i.def?.template_path) && handleGenerate(i.def.key))}
-                disabled={!canGenerateAll}
-                className="inline-flex items-center rounded border border-indigo-200 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-60"
-              >
-                Generate all
-              </button>
+        <div className="rounded border border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-3 py-2">
+            <div className="text-sm font-semibold text-slate-700">Documents</div>
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              {renderActionPill({ key: 'documents-refresh', label: 'Refresh', onClick: onRefresh })}
+              {renderActionPill({
+                key: 'documents-generate-missing',
+                label: 'Generate missing',
+                onClick: () => excelItems.forEach(i => (!i.doc?.file_path && !i.doc?.is_locked && i.def?.template_path) && handleGenerate(i.def.key)),
+                disabled: !canGenerateAll,
+                tone: 'indigo'
+              })}
+              {renderActionPill({ key: 'documents-export-all', label: 'Export all PDFs', onClick: handleExportAll, tone: 'indigo' })}
+              {renderActionPill({
+                key: 'documents-new-email',
+                label: 'New email',
+                onClick: () => {
+                  openComposer({
+                    templateKey: '',
+                    attachments: []
+                  });
+                }
+              })}
             </div>
           </div>
-          <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
-            {excelItems.map(({ def, doc, label }) => {
-              const generated = Boolean(doc && doc.file_path);
-              const locked = Boolean(doc?.is_locked);
-              const isInvoiceDef = def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance');
-              const gateOk = isInvoiceDef ? invoiceGateOpen : true;
-              const disabled = !jobsheetId || !def || !def.template_path || definitionsLoading || locked || Boolean(doc?.file_path) || !gateOk;
-              return (
-                <div key={def ? def.key : `missing:${label}`} className="flex items-center justify-between rounded px-2 py-2">
-                  <div className="min-w-0">
-                    <div className={`flex items-center gap-2 text-sm font-medium truncate ${generated ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
-                      <span aria-hidden>{generated ? '✅' : '❌'}</span>
-                      <span className="truncate" title={label}>{label}</span>
-                    </div>
+          <div className="space-y-3">
+            {documentRows.length ? documentRows.map(item => {
+                  if (item.type === 'group') {
+                    return renderBookingPackGroup(item);
+                  }
+                  if (item.type === 'doc') {
+                    return renderDocumentRow(item.doc);
+                  }
+                  return null;
+                }) : (
+                  <div className="rounded border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
+                    No document definitions configured for this business.
                   </div>
-                  <div className="flex items-center gap-2">
-                    <IconButton
-                      label={locked ? 'Unlock workbook' : 'Lock workbook'}
-                      onClick={() => doc && onToggleLock?.(doc)}
-                      disabled={!generated || !doc?.document_id}
-                      className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
-                    >
-                      <span className="text-base" aria-hidden>{locked ? '🔒' : '🔓'}</span>
-                    </IconButton>
-                    <button type="button" onClick={() => def && handleGenerate(def.key)} disabled={disabled} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">Generate</button>
-                    <div className="flex items-center gap-1.5">
-                      <IconButton
-                        label="Open"
-                        onClick={() => onOpenFile?.(doc?.file_path)}
-                        disabled={!generated}
-                      >
-                        <OpenIcon className="h-3.5 w-3.5" />
-                      </IconButton>
-                      <IconButton
-                        label="Reveal in Finder"
-                        onClick={() => onRevealFile?.(doc?.file_path)}
-                        disabled={!generated}
-                      >
-                        <RevealIcon className="h-3.5 w-3.5" />
-                      </IconButton>
-                      {onDelete ? (
-                        <IconButton
-                          label="Delete"
-                          onClick={() => onDelete?.(doc)}
-                          disabled={!generated || doc?.document_id == null || doc?.is_locked}
-                          className="border-red-200 text-red-600 hover:bg-red-50"
-                        >
-                          <DeleteIcon className="h-3.5 w-3.5" />
-                        </IconButton>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
+                )}
           </div>
         </div>
 
-        {/* PDFs Pane */}
+        {/* Email history */}
         <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-slate-700">PDFs</div>
-            <div className="flex items-center gap-2 text-xs">
-              <button type="button" onClick={onRefresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-              <button type="button" onClick={handleExportAll} className="inline-flex items-center rounded border border-indigo-200 px-2.5 py-1 text-xs font-semibold text-indigo-600 hover:bg-indigo-50">Export all</button>
-            </div>
-          </div>
-          <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
-            {pdfItems.map((item) => {
-              const { def, wbDoc, pdfDoc, label } = item;
-              const exported = Boolean(pdfDoc && pdfDoc.file_path);
-              return (
-                <div key={def ? def.key : `pdf:${label}`} className="flex items-center justify-between rounded px-2 py-2">
-                  <div className="min-w-0">
-                    <div className={`flex items-center gap-2 text-sm font-medium truncate ${exported ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
-                      <span aria-hidden>{exported ? '✅' : '❌'}</span>
-                      <span className="truncate">{label}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <IconButton
-                      label={pdfDoc?.is_locked ? 'Unlock PDF' : 'Lock PDF'}
-                      onClick={() => pdfDoc && onToggleLock?.(pdfDoc)}
-                      disabled={!exported || !pdfDoc?.document_id}
-                      className={pdfDoc?.is_locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
-                    >
-                      <span className="text-base" aria-hidden>{pdfDoc?.is_locked ? '🔒' : '🔓'}</span>
-                    </IconButton>
-                    {(def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance') && !exported) ? (
-                      <input
-                        type="number"
-                        min={1}
-                        placeholder={defaultNext != null ? String(defaultNext) : 'INV #'}
-                        value={overrideNumbers[def.key] ?? ''}
-                        onChange={(e) => setOverrideNumbers(prev => ({ ...prev, [def.key]: e.target.value }))}
-                        className="w-24 rounded border border-slate-300 px-2 py-1 text-xs"
-                        title="Invoice number (optional override)"
-                      />
-                    ) : null}
-                    <button type="button" onClick={() => handleExportForDef(item)} disabled={exported || Boolean(pdfDoc?.is_locked)} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">Export</button>
-                    <div className="flex items-center gap-1.5">
-                      <IconButton
-                        label="Email PDF"
-                        onClick={() => exported && openComposerForPdf(pdfDoc?.file_path, def?.invoice_variant)}
-                        disabled={!exported}
-                      >
-                        <span className="text-base" aria-hidden>✉️</span>
-                      </IconButton>
-                      <IconButton
-                        label="Open"
-                        onClick={() => onOpenFile?.(pdfDoc?.file_path)}
-                        disabled={!exported}
-                      >
-                        <OpenIcon className="h-3.5 w-3.5" />
-                      </IconButton>
-                      <IconButton
-                        label="Reveal in Finder"
-                        onClick={() => onRevealFile?.(pdfDoc?.file_path)}
-                        disabled={!exported}
-                      >
-                        <RevealIcon className="h-3.5 w-3.5" />
-                      </IconButton>
-                      {onDelete ? (
-                        <IconButton
-                          label="Delete"
-                          onClick={() => onDelete?.(pdfDoc)}
-                          disabled={!exported || pdfDoc?.document_id == null || pdfDoc?.is_locked}
-                          className="border-red-200 text-red-600 hover:bg-red-50"
-                        >
-                          <DeleteIcon className="h-3.5 w-3.5" />
-                        </IconButton>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Emails Pane */}
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-slate-700">Emails</div>
-            <div className="flex items-center gap-2 text-xs">
-              <button type="button" onClick={() => { setComposerTo(jobsheetSnapshot?.client_email || ''); setComposerCc(''); setComposerBcc(''); setComposerSubject(''); setComposerBody(''); setComposerAttachments([]); setComposerOpen(true); }} className="inline-flex items-center rounded border border-indigo-300 px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">Compose</button>
-              <button type="button" onClick={loadEmailLog} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-            </div>
+            <div className="text-sm font-semibold text-slate-700">Email history</div>
+            {renderActionPill({ key: 'email-log-refresh', label: 'Refresh', onClick: loadEmailLog })}
           </div>
           <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
                 {emailLogLoading ? (
@@ -4389,6 +5024,7 @@ function DocumentsInlinePanel({
                     return when || '(unknown time)';
                   })();
                   const detail = `${baseInfo} · to ${entry.to_address || '(unknown)'}${attLabel ? ` · ${attLabel}` : ''}`;
+                  const isScheduled = status === 'scheduled';
                   return (
                     <div key={entry.id} className="flex items-center justify-between rounded px-2 py-2">
                       <div className="min-w-0 pr-2">
@@ -4398,11 +5034,20 @@ function DocumentsInlinePanel({
                         </div>
                         <div className="text-xs text-slate-500 truncate" title={detail}>{detail}</div>
                       </div>
-                      <button
-                        type="button"
-                        className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
-                        onClick={() => handleDeleteEmail(entry.id)}
-                      >Delete</button>
+                      <div className="flex items-center gap-2">
+                        {isScheduled ? (
+                          <button
+                            type="button"
+                            className="rounded border border-indigo-300 px-2 py-0.5 text-xs text-indigo-600 hover:bg-indigo-50"
+                            onClick={() => handleEditScheduledEmail(entry)}
+                          >Edit</button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="rounded border border-red-300 px-2 py-0.5 text-xs text-red-600 hover:bg-red-50"
+                          onClick={() => handleDeleteEmail(entry.id)}
+                        >Delete</button>
+                      </div>
                     </div>
                   );
                 }))}

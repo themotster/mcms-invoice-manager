@@ -626,7 +626,11 @@ function initializeDatabase() {
     seedMergeFieldValueSources();
     migrateBusinessSettingsDropTemplateColumns(() => {
       migrateDocumentDefinitionsTable(() => {
+        // Ensure deposit invoice can be reseeded if a tombstone was left behind
+        reinstateDepositInvoiceDefinition();
         seedDocumentDefinitions();
+        // Backfill deposit template path from balance if missing
+        backfillDepositTemplatePathFromBalance();
         // Log quick summary of template_path coverage per business
         try {
           db.all(
@@ -757,6 +761,54 @@ function seedMergeFieldValueSources() {
       }
     );
   });
+}
+
+// Clear any tombstone that may hide the default deposit invoice definition
+function reinstateDepositInvoiceDefinition() {
+  try {
+    db.all('SELECT id FROM business_settings', [], (err, businesses) => {
+      if (err) return;
+      const list = Array.isArray(businesses) ? businesses : [];
+      list.forEach(biz => {
+        const businessId = biz?.id;
+        if (!Number.isInteger(businessId)) return;
+        db.run(
+          'DELETE FROM document_definition_tombstones WHERE business_id = ? AND key = ?;',
+          [businessId, 'invoice_deposit'],
+          () => {}
+        );
+      });
+    });
+  } catch (_err) { /* no-op */ }
+}
+
+// If the deposit definition has no workbook path but balance does, copy it across
+function backfillDepositTemplatePathFromBalance() {
+  try {
+    db.all('SELECT id FROM business_settings', [], (err, businesses) => {
+      if (err) return;
+      const list = Array.isArray(businesses) ? businesses : [];
+      list.forEach(biz => {
+        const businessId = biz?.id;
+        if (!Number.isInteger(businessId)) return;
+        const sql = `UPDATE document_definitions AS dep
+          SET template_path = (
+            SELECT bal.template_path FROM document_definitions AS bal
+            WHERE bal.business_id = dep.business_id AND bal.key = 'invoice_balance'
+              AND bal.template_path IS NOT NULL AND bal.template_path <> ''
+          ),
+          updated_at = datetime('now')
+          WHERE dep.business_id = ? AND dep.key = 'invoice_deposit'
+            AND (dep.template_path IS NULL OR dep.template_path = '')
+            AND EXISTS (
+              SELECT 1 FROM document_definitions AS bal
+              WHERE bal.business_id = dep.business_id AND bal.key = 'invoice_balance'
+                AND bal.template_path IS NOT NULL AND bal.template_path <> ''
+            )`;
+        db.run(sql, [businessId], () => {});
+      });
+    });
+  } catch (_err) { /* no-op */ }
 }
 
 // Business-level template defaults removed: definitions own template_path
@@ -4038,12 +4090,17 @@ module.exports.markScheduledEmailFailed = ({ id, error, retryInMinutes = 5 }) =>
   });
 };
 
-module.exports.listScheduledEmails = ({ status = null, limit = 100 } = {}) => {
+module.exports.listScheduledEmails = ({ status = null, limit = 100, jobsheet_id = null, business_id = null, to = null, subject = null } = {}) => {
   return new Promise((resolve, reject) => {
     const where = [];
     const params = [];
     if (status) { where.push('status = ?'); params.push(status); }
-    params.push(Number(limit) || 100);
+    if (Number.isInteger(jobsheet_id)) { where.push('jobsheet_id = ?'); params.push(Number(jobsheet_id)); }
+    if (Number.isInteger(business_id)) { where.push('business_id = ?'); params.push(Number(business_id)); }
+    if (to) { where.push('to_address = ?'); params.push(String(to)); }
+    if (subject) { where.push('subject = ?'); params.push(String(subject)); }
+    const limitVal = Number(limit) || 100;
+    params.push(limitVal);
     db.all(
       `SELECT * FROM scheduled_emails
        ${where.length ? 'WHERE ' + where.join(' AND ') : ''}

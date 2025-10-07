@@ -20,6 +20,7 @@ const TOKEN_OPTIONS = [
   { key: 'venue_name', label: 'Venue name' },
   { key: 'venue_town', label: 'Venue town' },
   { key: 'venue_postcode', label: 'Venue postcode' },
+  { key: 'balance_amount', label: 'Balance amount' },
   { key: 'balance_due_date', label: 'Balance due' },
   { key: 'today', label: 'Today' }
 ];
@@ -68,6 +69,16 @@ const buildTokenMap = (ctx) => {
     }
     return s;
   };
+  const fmtCurrency = (val) => {
+    if (val == null || val === '') return '';
+    const num = Number(val);
+    if (!Number.isFinite(num)) return '';
+    try {
+      return new Intl.NumberFormat(undefined, { style: 'currency', currency: 'GBP' }).format(num);
+    } catch (_err) {
+      return String(num);
+    }
+  };
 
   const firstName = (() => {
     const raw = String(js.client_name || '').trim();
@@ -87,6 +98,7 @@ const buildTokenMap = (ctx) => {
     venue_name: js.venue_name || '',
     venue_town: js.venue_town || '',
     venue_postcode: js.venue_postcode || '',
+    balance_amount: fmtCurrency(js.balance_amount),
     balance_due_date: fmtDate(js.balance_due_date || ''),
     today: fmtDate(new Date().toISOString().slice(0, 10))
   };
@@ -165,6 +177,18 @@ const appendSignatureHtml = (bodyHtml, signatureHtml) => {
   return `${trimmedBody}<br><br>${signatureHtml}`;
 };
 
+const hasMeaningfulContent = (html) => {
+  if (!html) return false;
+  const normalized = normalizeTemplateBody(html);
+  const stripped = normalized
+    .replace(/<br\s*\/?>/gi, '')
+    .replace(/<p>\s*<\/p>/gi, '')
+    .replace(/<p[^>]*>|<\/p>/gi, '')
+    .replace(/&nbsp;/gi, '')
+    .trim();
+  return Boolean(stripped);
+};
+
 const formatDateTimeLocal = (date) => {
   if (!(date instanceof Date) || Number.isNaN(date.valueOf())) return '';
   const pad = (value) => String(value).padStart(2, '0');
@@ -187,6 +211,14 @@ export default function MailComposer({
   initialSubject = '',
   initialBody = '',
   initialAttachments = [],
+  initialTemplateKey = '',
+  onTemplateChange,
+  initialSendMode = 'now',
+  initialScheduleAt = '',
+  onSendModeChange,
+  onScheduleChange,
+  initialIncludeSignature = true,
+  onIncludeSignatureChange,
   onSent
 }) {
   const [to, setTo] = useState(initialTo);
@@ -196,9 +228,11 @@ export default function MailComposer({
   const [templateBody, setTemplateBody] = useState(() => normalizeTemplateBody(initialBody));
   const [attachments, setAttachments] = useState(initialAttachments || []);
   const [templates, setTemplates] = useState({});
-  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [selectedTemplate, setSelectedTemplate] = useState(initialTemplateKey || '');
   const [signature, setSignature] = useState('');
-  const [includeSignature, setIncludeSignature] = useState(true);
+  const [includeSignature, setIncludeSignature] = useState(initialIncludeSignature !== false);
+  const [subjectDirty, setSubjectDirty] = useState(Boolean((initialSubject || '').trim()));
+  const [bodyDirty, setBodyDirty] = useState(hasMeaningfulContent(initialBody));
   const [savingPreset, setSavingPreset] = useState(false);
   const [signatureModalOpen, setSignatureModalOpen] = useState(false);
   const [signatureDraft, setSignatureDraft] = useState('');
@@ -214,10 +248,22 @@ export default function MailComposer({
   const [tokenChoice, setTokenChoice] = useState('client_name');
   const [jobFiles, setJobFiles] = useState([]);
   const [jobFilesLoading, setJobFilesLoading] = useState(false);
-  const lastAppliedTemplateRef = useRef('');
-  const [sendWhen, setSendWhen] = useState('now');
-  const [scheduleDateTime, setScheduleDateTime] = useState(() => computeDefaultScheduleDateTime());
+  const previousTemplateRef = useRef('');
+  const [sendWhen, setSendWhen] = useState(() => (initialSendMode === 'later' ? 'later' : 'now'));
+  const [scheduleDateTime, setScheduleDateTime] = useState(() => {
+    if (initialSendMode === 'later' && initialScheduleAt) {
+      const parsed = new Date(initialScheduleAt);
+      if (!Number.isNaN(parsed.valueOf())) return formatDateTimeLocal(parsed);
+    }
+    return computeDefaultScheduleDateTime();
+  });
   const [pendingBodyHtml, setPendingBodyHtml] = useState(null);
+  const forceBodyReplaceRef = useRef(false);
+  const firstApplyRef = useRef(true);
+  const lastNotifiedSendModeRef = useRef(initialSendMode === 'later' ? 'later' : 'now');
+  const lastNotifiedScheduleRef = useRef(initialScheduleAt || '');
+  const lastNotifiedSignatureRef = useRef(initialIncludeSignature !== false);
+  const selectedTemplateRef = useRef(initialTemplateKey || '');
 
   // Create a dedicated portal container and keep it last in <body>
   useEffect(() => {
@@ -239,7 +285,7 @@ export default function MailComposer({
 
   useEffect(() => {
     if (open) bringPortalToFront();
-  }, [open, businessId, jobsheetId]);
+  }, [open, businessId, jobsheetId, initialTemplateKey]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -295,18 +341,51 @@ export default function MailComposer({
   const [templateCtx, setTemplateCtx] = useState({});
 
   useEffect(() => {
+    selectedTemplateRef.current = selectedTemplate;
+  }, [selectedTemplate]);
+
+  useEffect(() => {
     if (!open) return;
     setTo(initialTo);
     setCc(initialCc);
     setBcc(initialBcc);
     setTemplateSubject(initialSubject || '');
     setTemplateBody(normalizeTemplateBody(initialBody));
-    setAttachments(Array.isArray(initialAttachments) ? initialAttachments : []);
-    setSelectedTemplate('');
-    lastAppliedTemplateRef.current = '';
-    setSendWhen('now');
-    setScheduleDateTime(computeDefaultScheduleDateTime());
-  }, [open, initialTo, initialCc, initialBcc, initialSubject, initialBody, initialAttachments]);
+    setAttachments(Array.isArray(initialAttachments) ? [...initialAttachments] : []);
+    setSelectedTemplate(initialTemplateKey || '');
+    const normalizedMode = initialSendMode === 'later' ? 'later' : 'now';
+    setSendWhen(prev => (prev === normalizedMode ? prev : normalizedMode));
+    if (normalizedMode === 'later') {
+      if (initialScheduleAt) {
+        const parsed = new Date(initialScheduleAt);
+        if (!Number.isNaN(parsed.valueOf())) {
+          const next = formatDateTimeLocal(parsed);
+          setScheduleDateTime(next);
+          lastNotifiedScheduleRef.current = parsed.toISOString();
+        } else {
+          const fallback = computeDefaultScheduleDateTime();
+          setScheduleDateTime(fallback);
+          lastNotifiedScheduleRef.current = '';
+        }
+      } else {
+        const fallback = computeDefaultScheduleDateTime();
+        setScheduleDateTime(fallback);
+        lastNotifiedScheduleRef.current = '';
+      }
+    } else {
+      lastNotifiedScheduleRef.current = '';
+    }
+    const normalizedInclude = initialIncludeSignature !== false;
+    setIncludeSignature(prev => (prev === normalizedInclude ? prev : normalizedInclude));
+    lastNotifiedSendModeRef.current = normalizedMode;
+    lastNotifiedSignatureRef.current = normalizedInclude;
+    selectedTemplateRef.current = initialTemplateKey || '';
+    setSubjectDirty(Boolean((initialSubject || '').trim()));
+    setBodyDirty(hasMeaningfulContent(initialBody));
+    // When parent provides a new initial body (e.g., switching template programmatically),
+    // force the contentEditable to refresh even if focused.
+    forceBodyReplaceRef.current = true;
+  }, [open, initialTo, initialCc, initialBcc, initialSubject, initialBody, initialAttachments, initialTemplateKey, initialSendMode, initialScheduleAt, initialIncludeSignature]);
 
   // always HTML; no toggle needed
 
@@ -320,14 +399,35 @@ export default function MailComposer({
     if (!open) return;
     let mounted = true;
     (async () => {
+      let fetchedTemplates = {};
       try {
-        const [p, s] = await Promise.all([
+        const [tplResult, defaultResult, signatureResult, tombstones] = await Promise.all([
           window.api?.getMailTemplates?.({ businessId }),
-          window.api?.getMailSignature?.({ businessId })
+          window.api?.getDefaultMailTemplates?.({ businessId }),
+          window.api?.getMailSignature?.({ businessId }),
+          window.api?.getMailTemplateTombstones?.({ businessId })
         ]);
         if (!mounted) return;
-        setTemplates(p || {});
-        const sig = (s && s.signature) || '';
+        const tomb = Array.isArray(tombstones) ? new Set(tombstones.map(k => String(k || '').toLowerCase())) : new Set();
+        const defs = defaultResult || {};
+        const custom = tplResult || {};
+        const keys = new Set([...Object.keys(defs), ...Object.keys(custom)]);
+        const nonEmpty = (v) => v != null && String(v).trim() !== '';
+        const mergedMap = {};
+        keys.forEach(k => {
+          const kl = String(k).toLowerCase();
+          if (tomb.has(kl)) return; // respect deletions
+          const d = defs[k] || {};
+          const c = custom[k] || {};
+          mergedMap[k] = {
+            label: nonEmpty(c.label) ? c.label : (d.label || k),
+            subject: nonEmpty(c.subject) ? c.subject : (d.subject || ''),
+            body: nonEmpty(c.body) ? c.body : (d.body || '')
+          };
+        });
+        fetchedTemplates = mergedMap;
+        setTemplates(fetchedTemplates);
+        const sig = (signatureResult && signatureResult.signature) || '';
         setSignature(sig);
         setSignatureDraft(sig);
       } catch (_) {}
@@ -346,61 +446,116 @@ export default function MailComposer({
         const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
         if (mounted) setJobFiles(Array.isArray(files) ? files : []);
       } catch (_) { if (mounted) setJobFiles([]); } finally { if (mounted) setJobFilesLoading(false); }
-      const templateKeys = Object.keys(p || {});
-      if (mounted && templateKeys.length) {
-        let key = selectedTemplate;
-        if (!key || !p[key]) {
-          key = templateKeys.includes('enquiry_ack') ? 'enquiry_ack' : templateKeys[0];
+      if (!mounted) return;
+      const keys = Object.keys(fetchedTemplates || {});
+      if (!keys.length) return;
+      let nextKey = '';
+      if (initialTemplateKey && fetchedTemplates[initialTemplateKey]) {
+        nextKey = initialTemplateKey;
+      } else if (selectedTemplateRef.current && fetchedTemplates[selectedTemplateRef.current]) {
+        nextKey = selectedTemplateRef.current;
+      } else {
+        nextKey = keys.includes('enquiry_ack') ? 'enquiry_ack' : keys[0];
+      }
+      if (nextKey) {
+        const tpl = fetchedTemplates[nextKey] || {};
+        if (!initialSubject || !String(initialSubject).trim()) {
+          const nextSubject = tpl.subject || '';
+          setTemplateSubject(prev => (prev === nextSubject ? prev : nextSubject));
         }
-        const tpl = p[key];
-        if (tpl) {
-          lastAppliedTemplateRef.current = key;
-          if (key !== selectedTemplate) setSelectedTemplate(key);
-          setTemplateSubject(tpl.subject || '');
-          setTemplateBody(normalizeTemplateBody(tpl.body));
+        if (!hasMeaningfulContent(initialBody)) {
+          const nextBody = normalizeTemplateBody(tpl.body);
+          setTemplateBody(prev => (prev === nextBody ? prev : nextBody));
+          forceBodyReplaceRef.current = true;
+        }
+        if (nextKey !== selectedTemplateRef.current) {
+          selectedTemplateRef.current = nextKey;
+          setSelectedTemplate(nextKey);
         }
       }
     })();
     return () => { mounted = false; };
-  }, [open, businessId, jobsheetId]);
-
-  // no automatic attachments
+  }, [open, businessId, jobsheetId, initialTemplateKey]);
 
   useEffect(() => {
     if (!open) return;
-    const keys = Object.keys(templates || {});
-    if (!keys.length) return;
-    const currentKey = selectedTemplate && templates[selectedTemplate] ? selectedTemplate : '';
-    if (!currentKey) {
-      const fallback = keys.includes('enquiry_ack') ? 'enquiry_ack' : keys[0];
-      if (fallback) {
-        const tpl = templates[fallback];
-        if (tpl) {
-          lastAppliedTemplateRef.current = fallback;
-          setSelectedTemplate(fallback);
-          setTemplateSubject(tpl.subject || '');
-          setTemplateBody(normalizeTemplateBody(tpl.body));
-        }
+    const tpl = templates[selectedTemplate];
+    if (!tpl) return;
+    // On first apply for this mount, aggressively apply template values if caller didn't provide content
+    if (firstApplyRef.current) {
+      let changed = false;
+      if (!initialSubject || !String(initialSubject).trim()) {
+        const nextSubject = tpl.subject || '';
+        setTemplateSubject(prev => (prev === nextSubject ? prev : nextSubject));
+        changed = true;
+      }
+      if (!hasMeaningfulContent(initialBody)) {
+        const nextBody = normalizeTemplateBody(tpl.body);
+        setTemplateBody(prev => (prev === nextBody ? prev : nextBody));
+        forceBodyReplaceRef.current = true;
+        changed = true;
+      }
+      if (changed) {
+        firstApplyRef.current = false;
+        return;
+      }
+      firstApplyRef.current = false;
+    }
+    if (!subjectDirty) {
+      const nextSubject = tpl.subject || '';
+      setTemplateSubject(prev => (prev === nextSubject ? prev : nextSubject));
+    }
+    if (!bodyDirty) {
+      const nextBody = normalizeTemplateBody(tpl.body);
+      setTemplateBody(prev => (prev === nextBody ? prev : nextBody));
+    }
+  }, [open, templates, selectedTemplate, subjectDirty, bodyDirty, initialSubject, initialBody]);
+
+  useEffect(() => {
+    if (typeof onTemplateChange !== 'function') return;
+    onTemplateChange(selectedTemplate || '');
+  }, [selectedTemplate, onTemplateChange]);
+
+  useEffect(() => {
+    if (typeof onSendModeChange === 'function' && sendWhen !== lastNotifiedSendModeRef.current) {
+      lastNotifiedSendModeRef.current = sendWhen;
+      onSendModeChange(sendWhen);
+    }
+  }, [sendWhen, onSendModeChange]);
+
+  useEffect(() => {
+    if (typeof onScheduleChange !== 'function') return;
+    if (!scheduleDateTime) {
+      onScheduleChange('');
+      return;
+    }
+    const parsed = new Date(scheduleDateTime);
+    if (Number.isNaN(parsed.valueOf())) {
+      if (lastNotifiedScheduleRef.current !== '') {
+        lastNotifiedScheduleRef.current = '';
+        onScheduleChange('');
       }
       return;
     }
-    if (lastAppliedTemplateRef.current !== currentKey) {
-      const tpl = templates[currentKey];
-      if (tpl) {
-        lastAppliedTemplateRef.current = currentKey;
-        setTemplateSubject(tpl.subject || '');
-        setTemplateBody(normalizeTemplateBody(tpl.body));
-      }
+    const iso = parsed.toISOString();
+    if (lastNotifiedScheduleRef.current !== iso) {
+      lastNotifiedScheduleRef.current = iso;
+      onScheduleChange(iso);
     }
-  }, [open, templates, selectedTemplate]);
+  }, [scheduleDateTime, onScheduleChange]);
+
+  useEffect(() => {
+    if (typeof onIncludeSignatureChange === 'function' && includeSignature !== lastNotifiedSignatureRef.current) {
+      lastNotifiedSignatureRef.current = includeSignature;
+      onIncludeSignatureChange(includeSignature);
+    }
+  }, [includeSignature, onIncludeSignatureChange]);
 
   const handleTemplateSelect = useCallback((key, sourceTemplates = templates) => {
-    const tpl = sourceTemplates?.[key];
-    if (!tpl) return;
-    lastAppliedTemplateRef.current = key;
+    if (!key || !sourceTemplates?.[key]) return;
+    setSubjectDirty(false);
+    setBodyDirty(false);
     setSelectedTemplate(key);
-    setTemplateSubject(tpl.subject || '');
-    setTemplateBody(normalizeTemplateBody(tpl.body));
   }, [templates]);
 
   const tokenMap = useMemo(() => buildTokenMap(templateCtx), [templateCtx]);
@@ -422,12 +577,17 @@ export default function MailComposer({
     const el = bodyEditorRef.current;
     if (!el) return;
     const html = displayBodyHtml || '<p><br></p>';
-    if (document.activeElement === el) {
+    const force = forceBodyReplaceRef.current === true;
+    if (document.activeElement === el && !force) {
       setPendingBodyHtml(html);
       return;
     }
     if (el.innerHTML !== html) {
       el.innerHTML = html;
+    }
+    if (force) {
+      forceBodyReplaceRef.current = false;
+      setPendingBodyHtml(null);
     }
   }, [open, displayBodyHtml]);
 
@@ -456,12 +616,51 @@ export default function MailComposer({
     return () => el.removeEventListener('blur', onBlur);
   }, [pendingBodyHtml]);
 
+  useEffect(() => {
+    if (!open) {
+      previousTemplateRef.current = '';
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (!selectedTemplate) return;
+    if (!businessId) return;
+    const normalizedKey = String(selectedTemplate).toLowerCase();
+    if (previousTemplateRef.current === normalizedKey) return;
+    previousTemplateRef.current = normalizedKey;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await window.api?.resolveTemplateDefaultAttachments?.({
+          businessId,
+          jobsheetId,
+          templateKey: normalizedKey
+        });
+        if (cancelled) return;
+        const defaults = Array.isArray(res?.attachments) ? res.attachments.filter(Boolean) : [];
+        if (defaults.length === 0) {
+          setAttachments([]);
+        } else {
+          setAttachments(defaults.map(p => String(p)));
+        }
+      } catch (_) {}
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, selectedTemplate, businessId, jobsheetId]);
+
   const handleBodyInput = useCallback(() => {
     const el = bodyEditorRef.current;
     if (!el) return;
     const html = el.innerHTML;
     const templateHtml = normalizeTemplateBody(extractTemplateFromDisplay(html));
     setTemplateBody(templateHtml);
+    setBodyDirty(true);
   }, []);
 
   const resolveTokenValue = useCallback((key, fallback) => {
@@ -480,6 +679,7 @@ export default function MailComposer({
       const current = String(templateSubject || '');
       const next = current.slice(0, start) + tokenString + current.slice(end);
       setTemplateSubject(next);
+      setSubjectDirty(true);
       requestAnimationFrame(() => {
         try {
           input.focus();
@@ -488,7 +688,10 @@ export default function MailComposer({
         } catch (_) {}
       });
     } else {
-      setTemplateSubject(prev => `${prev || ''}${tokenString}`);
+      setTemplateSubject(prev => {
+        setSubjectDirty(true);
+        return `${prev || ''}${tokenString}`;
+      });
     }
   }, [templateSubject]);
 
@@ -690,6 +893,7 @@ export default function MailComposer({
                 onClick={async () => {
                   try {
                     const defaults = await window.api?.getDefaultMailTemplates?.({ businessId });
+                    const tomb = await window.api?.getMailTemplateTombstones?.({ businessId });
                     const existing = templates || {};
                     const hasAny = Object.keys(existing).length > 0;
                     let replace = false;
@@ -701,6 +905,11 @@ export default function MailComposer({
                       next = { ...existing, ...defaults };
                     } else {
                       next = { ...defaults, ...existing };
+                    }
+                    // Respect tombstones: never add deleted default keys
+                    if (Array.isArray(tomb) && tomb.length) {
+                      const hide = new Set(tomb.map(k => String(k || '').toLowerCase()));
+                      Object.keys(next).forEach(k => { if (hide.has(String(k).toLowerCase())) delete next[k]; });
                     }
                     await window.api?.saveMailTemplates?.({ businessId, templates: next });
                     setTemplates(next);
@@ -734,13 +943,15 @@ export default function MailComposer({
                   className="rounded border border-red-300 text-red-700 px-2 py-1 text-xs"
                   onClick={async () => {
                     if (!window.confirm('Delete this template?')) return;
-                    const next = { ...(templates || {}) };
-                    delete next[selectedTemplate];
                     try {
-                      await window.api?.saveMailTemplates?.({ businessId, templates: next });
+                      await window.api?.deleteMailTemplate?.({ businessId, key: selectedTemplate });
+                      // Remove locally and advance selection
+                      const next = { ...(templates || {}) };
+                      delete next[selectedTemplate];
                       setTemplates(next);
                       const first = Object.keys(next).includes('enquiry_ack') ? 'enquiry_ack' : (Object.keys(next)[0] || '');
                       if (first) handleTemplateSelect(first, next);
+                      else setSelectedTemplate('');
                       pushToast('Template deleted', 'success');
                     } catch (err) { pushToast(err?.message || 'Unable to delete template', 'error'); }
                   }}
@@ -822,7 +1033,10 @@ export default function MailComposer({
                 ref={subjectRef}
                 className="w-full rounded border border-slate-300 px-2 py-1"
                 value={templateSubject}
-                onChange={e => setTemplateSubject(e.target.value)}
+                onChange={e => {
+                  setTemplateSubject(e.target.value);
+                  setSubjectDirty(true);
+                }}
                 onFocus={() => setLastFocus('subject')}
               />
               <div className="mt-1 text-xs text-slate-500">Preview: {renderedSubject || '(empty)'}</div>
