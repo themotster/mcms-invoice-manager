@@ -4,7 +4,8 @@ import ToastOverlay from './ToastOverlay';
 
 const TOKEN_REGEX = /{{\s*([a-zA-Z0-9_.-]+)(?:\|([^}]+))?\s*}}/g;
 const TOKEN_CHIP_CLASS = 'mail-token-chip';
-const TOKEN_CHIP_STYLE = 'background:#eef2ff;border:1px solid #c7d2fe;border-radius:4px;padding:0 4px;margin:0 2px;display:inline-block;color:#312e81;font-size:0.85em;line-height:1.4;';
+// Keep token chips visually distinct without overriding font sizing
+const TOKEN_CHIP_STYLE = 'background:#eef2ff;border:1px solid #c7d2fe;border-radius:4px;padding:0 4px;margin:0 2px;display:inline-block;';
 const TOKEN_FALLBACKS = {
   client_first_name: 'there'
 };
@@ -167,14 +168,18 @@ const extractTemplateFromDisplay = (displayHtml) => {
   return doc.body.innerHTML;
 };
 
+const SIG_START = '<!--__IM_SIG_START__-->';
+const SIG_END = '<!--__IM_SIG_END__-->';
+
 const appendSignatureHtml = (bodyHtml, signatureHtml) => {
   const trimmedBody = (bodyHtml || '').trim();
   if (!signatureHtml) return trimmedBody;
-  if (!trimmedBody) return signatureHtml;
+  const wrappedSig = `${SIG_START}${signatureHtml}${SIG_END}`;
+  if (!trimmedBody) return wrappedSig;
   if (/(<br\s*\/?>|<\/p>)$/i.test(trimmedBody)) {
-    return `${trimmedBody}${signatureHtml}`;
+    return `${trimmedBody}${wrappedSig}`;
   }
-  return `${trimmedBody}<br><br>${signatureHtml}`;
+  return `${trimmedBody}<br><br>${wrappedSig}`;
 };
 
 const hasMeaningfulContent = (html) => {
@@ -240,12 +245,42 @@ export default function MailComposer({
   const [dragging, setDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [size, setSize] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem('invoiceMaster:mailComposerSize');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Number.isFinite(parsed.w) && Number.isFinite(parsed.h)) {
+          return { w: parsed.w, h: parsed.h };
+        }
+      }
+    } catch (_) {}
+    return { w: 860, h: 600 };
+  });
+  const [resizing, setResizing] = useState(false);
+  const resizeStartRef = useRef({ x: 0, y: 0, w: 0, h: 0, dir: 'se' });
+  const clampPosition = useCallback(() => {
+    const margin = 8;
+    const maxX = Math.max(margin, window.innerWidth - size.w - margin);
+    const maxY = Math.max(margin, window.innerHeight - size.h - margin);
+    const nx = Math.min(Math.max(pos.x, margin), maxX);
+    const ny = Math.min(Math.max(pos.y, margin), maxY);
+    if (nx !== pos.x || ny !== pos.y) setPos({ x: nx, y: ny });
+  }, [pos.x, pos.y, size.w, size.h]);
   const headerRef = useRef(null);
   const portalElRef = useRef(null);
   const subjectRef = useRef(null);
   const bodyEditorRef = useRef(null);
   const [lastFocus, setLastFocus] = useState('body');
   const [tokenChoice, setTokenChoice] = useState('client_name');
+  const [formatFamily, setFormatFamily] = useState('Arial, Helvetica, sans-serif');
+  const [formatSize, setFormatSize] = useState('12pt');
+  const [formatMenuOpen, setFormatMenuOpen] = useState(false);
+  const formatMenuRef = useRef(null);
+  const formatButtonRef = useRef(null);
+  const [templateMenuOpen, setTemplateMenuOpen] = useState(false);
+  const templateMenuRef = useRef(null);
+  const templateMenuButtonRef = useRef(null);
   const [jobFiles, setJobFiles] = useState([]);
   const [jobFilesLoading, setJobFilesLoading] = useState(false);
   const previousTemplateRef = useRef('');
@@ -310,6 +345,46 @@ export default function MailComposer({
     };
   }, [dragging]);
 
+  // Resizing logic
+  useEffect(() => {
+    if (!resizing) return;
+    const onMove = (e) => {
+      e.preventDefault();
+      const start = resizeStartRef.current;
+      const dx = e.clientX - start.x;
+      const dy = e.clientY - start.y;
+      const minW = 600;
+      const minH = 380;
+      const maxW = Math.max(minW, window.innerWidth - pos.x - 16);
+      const maxH = Math.max(minH, window.innerHeight - pos.y - 16);
+      let nextW = size.w;
+      let nextH = size.h;
+      const dir = String(start.dir || 'se');
+      if (dir.includes('e')) {
+        nextW = Math.min(maxW, Math.max(minW, start.w + dx));
+      }
+      if (dir.includes('s')) {
+        nextH = Math.min(maxH, Math.max(minH, start.h + dy));
+      }
+      setSize({ w: nextW, h: nextH });
+    };
+    const onUp = () => {
+      setResizing(false);
+      try { window.localStorage.setItem('invoiceMaster:mailComposerSize', JSON.stringify(size)); } catch (_) {}
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+      window.removeEventListener('blur', onUp, true);
+    };
+    window.addEventListener('mousemove', onMove, true);
+    window.addEventListener('mouseup', onUp, true);
+    window.addEventListener('blur', onUp, true);
+    return () => {
+      window.removeEventListener('mousemove', onMove, true);
+      window.removeEventListener('mouseup', onUp, true);
+      window.removeEventListener('blur', onUp, true);
+    };
+  }, [resizing, pos.x, pos.y, size]);
+
   // Persist position between sessions (localStorage)
   useEffect(() => {
     try {
@@ -336,6 +411,22 @@ export default function MailComposer({
       window.removeEventListener('blur', onUp, true);
     };
   }, [dragging, pos]);
+
+  // Persist on any position or size change (not just on drag end)
+  useEffect(() => {
+    try { window.localStorage.setItem('invoiceMaster:mailComposerPos', JSON.stringify(pos)); } catch (_) {}
+  }, [pos.x, pos.y]);
+  useEffect(() => {
+    try { window.localStorage.setItem('invoiceMaster:mailComposerSize', JSON.stringify(size)); } catch (_) {}
+  }, [size.w, size.h]);
+
+  // Clamp panel inside viewport on size change or window resize
+  useEffect(() => { clampPosition(); }, [clampPosition, size.w, size.h, open]);
+  useEffect(() => {
+    const onResize = () => clampPosition();
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [clampPosition]);
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
   const [templateCtx, setTemplateCtx] = useState({});
@@ -571,6 +662,234 @@ export default function MailComposer({
   }, [tokenMap]);
 
   const displayBodyHtml = useMemo(() => renderTemplateWithTokens(templateBody, tokenMap), [templateBody, tokenMap]);
+
+  const selectionInEditor = () => {
+    const sel = window.getSelection && window.getSelection();
+    if (!sel || sel.rangeCount === 0) return null;
+    const range = sel.getRangeAt(0);
+    const editor = bodyEditorRef.current;
+    if (!editor) return null;
+    const container = range.commonAncestorContainer;
+    if (!container) return null;
+    const el = container.nodeType === 1 ? container : container.parentElement;
+    if (!el) return null;
+    return editor.contains(el) ? range : null;
+  };
+
+  const applyFormatToSelection = useCallback(() => {
+    const editor = bodyEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const range = selectionInEditor();
+    if (!range || range.collapsed) {
+      // No selection: set defaults for future typing
+      editor.style.fontFamily = formatFamily || '';
+      editor.style.fontSize = formatSize || '';
+      return;
+    }
+    const frag = range.cloneContents();
+    const wrapper = document.createElement('span');
+    if (formatFamily) wrapper.style.fontFamily = formatFamily;
+    if (formatSize) wrapper.style.fontSize = formatSize;
+    wrapper.appendChild(frag);
+    range.deleteContents();
+    range.insertNode(wrapper);
+    // Notify React state of change
+    handleBodyInput();
+  }, [formatFamily, formatSize, handleBodyInput]);
+
+  const execInline = useCallback((cmd) => {
+    const editor = bodyEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    try { document.execCommand(cmd, false, null); } catch (_err) {}
+    handleBodyInput();
+  }, [handleBodyInput]);
+
+  const clearFormatting = useCallback(() => {
+    const editor = bodyEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    const range = selectionInEditor();
+    if (range && !range.collapsed) {
+      try { document.execCommand('removeFormat', false, null); } catch (_err) {}
+      handleBodyInput();
+      return;
+    }
+    // No selection: strip inline styles across the body but preserve the global wrapper and token chips
+    const isTokenChip = (el) => el && el.classList && el.classList.contains(TOKEN_CHIP_CLASS);
+    const isGlobalWrapper = (el) => el && el.getAttribute && el.getAttribute(FORMAT_WRAP_ATTR) === '1';
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_ELEMENT, null);
+    let node = walker.currentNode;
+    while (node) {
+      const el = node;
+      if (!isTokenChip(el) && !isGlobalWrapper(el) && el.hasAttribute && el.hasAttribute('style')) {
+        el.removeAttribute('style');
+      }
+      node = walker.nextNode();
+    }
+    handleBodyInput();
+  }, [handleBodyInput]);
+
+  const FORMAT_WRAP_ATTR = 'data-im-format-wrap';
+  const applyFormatToAll = useCallback(() => {
+    const editor = bodyEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    // Remove previous wrapper if present
+    const prev = editor.querySelector(`div[${FORMAT_WRAP_ATTR}="1"]`);
+    if (prev && prev.parentNode === editor) {
+      // unwrap
+      while (prev.firstChild) editor.insertBefore(prev.firstChild, prev);
+      editor.removeChild(prev);
+    }
+    const wrapper = document.createElement('div');
+    wrapper.setAttribute(FORMAT_WRAP_ATTR, '1');
+    if (formatFamily) wrapper.style.fontFamily = formatFamily;
+    if (formatSize) wrapper.style.fontSize = formatSize;
+    // move existing nodes into wrapper
+    const nodes = Array.from(editor.childNodes);
+    nodes.forEach(n => wrapper.appendChild(n));
+    editor.appendChild(wrapper);
+    handleBodyInput();
+  }, [formatFamily, formatSize, handleBodyInput]);
+
+  // Dropdown open/close management
+  useEffect(() => {
+    const onDocClick = (e) => {
+      if (!formatMenuOpen) return;
+      const menu = formatMenuRef.current;
+      const btn = formatButtonRef.current;
+      if (menu && menu.contains(e.target)) return;
+      if (btn && btn.contains(e.target)) return;
+      setFormatMenuOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setFormatMenuOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [formatMenuOpen]);
+
+  // Template kebab menu open/close management
+  useEffect(() => {
+    const onDocClick = (e) => {
+      if (!templateMenuOpen) return;
+      const menu = templateMenuRef.current;
+      const btn = templateMenuButtonRef.current;
+      if (menu && menu.contains(e.target)) return;
+      if (btn && btn.contains(e.target)) return;
+      setTemplateMenuOpen(false);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') setTemplateMenuOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [templateMenuOpen]);
+
+  const handleSaveCurrentTemplate = useCallback(async () => {
+    try {
+      setSavingPreset(true);
+      const next = { ...(templates || {}) };
+      let key = selectedTemplate;
+      if (!key) {
+        const name = window.prompt('Template name', 'New template');
+        if (!name) { setSavingPreset(false); return; }
+        key = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+        if (!key) { setSavingPreset(false); return; }
+      }
+      const label = next[key]?.label || key;
+      next[key] = { subject: templateSubject, body: templateBody, label };
+      await window.api?.saveMailTemplates?.({ businessId, templates: next });
+      setTemplates(next);
+      handleTemplateSelect(key, next);
+      pushToast('Template saved', 'success');
+    } catch (err) {
+      pushToast(err?.message || 'Unable to save template', 'error');
+    } finally {
+      setSavingPreset(false);
+      setTemplateMenuOpen(false);
+    }
+  }, [businessId, templates, selectedTemplate, templateSubject, templateBody, handleTemplateSelect]);
+
+  const handleCreateTemplate = useCallback(async () => {
+    const name = window.prompt('New template name (e.g. “Chaser”)', '');
+    if (!name) return;
+    const key = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    if (!key) return;
+    const next = { ...(templates || {}) };
+    if (next[key]) { pushToast('Template already exists', 'warning'); return; }
+    next[key] = { label: name, subject: templateSubject, body: templateBody };
+    try {
+      await window.api?.saveMailTemplates?.({ businessId, templates: next });
+      setTemplates(next);
+      handleTemplateSelect(key, next);
+      pushToast('Template created', 'success');
+    } catch (err) {
+      pushToast(err?.message || 'Unable to create template', 'error');
+    } finally {
+      setTemplateMenuOpen(false);
+    }
+  }, [businessId, templates, templateSubject, templateBody, handleTemplateSelect]);
+
+  const handleDeleteTemplate = useCallback(async () => {
+    if (!selectedTemplate || !templates[selectedTemplate]) return;
+    if (!window.confirm('Delete this template?')) return;
+    try {
+      await window.api?.deleteMailTemplate?.({ businessId, key: selectedTemplate });
+      const next = { ...(templates || {}) };
+      delete next[selectedTemplate];
+      setTemplates(next);
+      const first = Object.keys(next).includes('enquiry_ack') ? 'enquiry_ack' : (Object.keys(next)[0] || '');
+      if (first) handleTemplateSelect(first, next);
+      else setSelectedTemplate('');
+      pushToast('Template deleted', 'success');
+    } catch (err) {
+      pushToast(err?.message || 'Unable to delete template', 'error');
+    } finally {
+      setTemplateMenuOpen(false);
+    }
+  }, [businessId, templates, selectedTemplate, handleTemplateSelect]);
+
+  // Robust list insertion with fallback when execCommand is unavailable
+  const insertList = useCallback((ordered) => {
+    const cmd = ordered ? 'insertOrderedList' : 'insertUnorderedList';
+    const editor = bodyEditorRef.current;
+    if (!editor) return;
+    editor.focus();
+    let ok = false;
+    try { ok = document.execCommand(cmd, false, null); } catch (_err) { ok = false; }
+    if (ok) { handleBodyInput(); return; }
+    // Fallback: wrap selection or insert a new empty list item
+    const range = selectionInEditor();
+    const list = document.createElement(ordered ? 'ol' : 'ul');
+    const li = document.createElement('li');
+    li.innerHTML = '&nbsp;';
+    if (range && !range.collapsed) {
+      const text = range.toString();
+      const items = text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+      if (items.length) {
+        list.innerHTML = items.map(s => `<li>${escapeHtml(s)}</li>`).join('');
+      } else {
+        list.appendChild(li);
+      }
+      range.deleteContents();
+      range.insertNode(list);
+    } else {
+      list.appendChild(li);
+      const r = document.createRange();
+      const sel = window.getSelection();
+      editor.appendChild(list);
+      r.setStart(li, 0); r.collapse(true);
+      sel.removeAllRanges(); sel.addRange(r);
+    }
+    handleBodyInput();
+  }, [handleBodyInput]);
 
   useEffect(() => {
     if (!open) return;
@@ -812,13 +1131,17 @@ export default function MailComposer({
       }}
     >
       <div
-        className="w-full max-w-3xl rounded-lg bg-white shadow-2xl ring-2 ring-indigo-500/40"
+        className="group rounded-lg bg-white shadow-2xl ring-2 ring-indigo-500/40 flex flex-col overflow-hidden relative"
         style={{
           position: 'fixed',
           left: Math.max(8, pos.x),
           top: Math.max(8, pos.y),
           zIndex: signatureModalOpen ? 9999999998 : 10000000000,
-          pointerEvents: signatureModalOpen ? 'none' : 'auto'
+          pointerEvents: signatureModalOpen ? 'none' : 'auto',
+          width: `${size.w}px`,
+          height: `${size.h}px`,
+          maxWidth: `calc(100vw - ${Math.max(8, pos.x)}px)`,
+          maxHeight: `calc(100vh - ${Math.max(8, pos.y)}px)`
         }}
       >
         <div
@@ -846,9 +1169,10 @@ export default function MailComposer({
             aria-label="Close"
           >✕</button>
         </div>
-        <div className="p-4 space-y-3 text-sm">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-sm bg-gray-100">
+          <div className="mt-1 text-[11px] uppercase tracking-wide text-gray-500">Message template</div>
           <div className="grid grid-cols-6 gap-2 items-center">
-            <label className="col-span-1 text-slate-600">Template</label>
+            <label className="col-span-1 text-gray-600">Template</label>
             <div className="col-span-5 flex items-center gap-2">
               <select value={selectedTemplate} onChange={e => handleTemplateSelect(e.target.value)} className="rounded border border-slate-300 px-2 py-1">
                 {Object.keys(templates || {}).length === 0 ? (
@@ -859,175 +1183,52 @@ export default function MailComposer({
                   ))
                 )}
               </select>
-              <button
-                type="button"
-                className="rounded border border-slate-300 px-2 py-1 text-xs"
-                disabled={savingPreset}
-                onClick={async () => {
-                  try {
-                    setSavingPreset(true);
-                    const next = { ...(templates || {}) };
-                    let key = selectedTemplate;
-                    if (!key) {
-                      const name = window.prompt('Template name', 'New template');
-                      if (!name) { setSavingPreset(false); return; }
-                      key = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-                      if (!key) { setSavingPreset(false); return; }
-                    }
-                    const label = next[key]?.label || key;
-                    next[key] = { subject: templateSubject, body: templateBody, label };
-                    await window.api?.saveMailTemplates?.({ businessId, templates: next });
-                    setTemplates(next);
-                    handleTemplateSelect(key, next);
-                    pushToast('Template saved', 'success');
-                  } catch (err) {
-                    pushToast(err?.message || 'Unable to save template', 'error');
-                  } finally {
-                    setSavingPreset(false);
-                  }
-                }}
-              >Save template</button>
-              <button
-                type="button"
-                className="rounded border border-slate-300 px-2 py-1 text-xs"
-                onClick={async () => {
-                  try {
-                    const defaults = await window.api?.getDefaultMailTemplates?.({ businessId });
-                    const tomb = await window.api?.getMailTemplateTombstones?.({ businessId });
-                    const existing = templates || {};
-                    const hasAny = Object.keys(existing).length > 0;
-                    let replace = false;
-                    if (hasAny) {
-                      replace = window.confirm('Replace existing templates with defaults? Click OK to replace, Cancel to add missing only.');
-                    }
-                    let next = {};
-                    if (replace) {
-                      next = { ...existing, ...defaults };
-                    } else {
-                      next = { ...defaults, ...existing };
-                    }
-                    // Respect tombstones: never add deleted default keys
-                    if (Array.isArray(tomb) && tomb.length) {
-                      const hide = new Set(tomb.map(k => String(k || '').toLowerCase()));
-                      Object.keys(next).forEach(k => { if (hide.has(String(k).toLowerCase())) delete next[k]; });
-                    }
-                    await window.api?.saveMailTemplates?.({ businessId, templates: next });
-                    setTemplates(next);
-                    const pref = selectedTemplate && next[selectedTemplate]
-                      ? selectedTemplate
-                      : (Object.keys(next).includes('enquiry_ack') ? 'enquiry_ack' : Object.keys(next)[0]);
-                    if (pref) handleTemplateSelect(pref, next);
-                    pushToast('Defaults seeded', 'success');
-                  } catch (err) {
-                    pushToast(err?.message || 'Unable to seed defaults', 'error');
-                  }
-                }}
-              >Seed defaults</button>
-              <button
-                type="button"
-                className="rounded border border-slate-300 px-2 py-1 text-xs"
-                onClick={async () => {
-                  const name = window.prompt('New template name (e.g. “Chaser”)', '');
-                  if (!name) return;
-                  const key = name.toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
-                  if (!key) return;
-                  const next = { ...(templates || {}) };
-                  if (next[key]) { pushToast('Template already exists', 'warning'); return; }
-                  next[key] = { label: name, subject: templateSubject, body: templateBody };
-                  try { await window.api?.saveMailTemplates?.({ businessId, templates: next }); setTemplates(next); handleTemplateSelect(key, next); pushToast('Template created', 'success'); } catch (err) { pushToast(err?.message || 'Unable to create template', 'error'); }
-                }}
-              >New template…</button>
-              {selectedTemplate && templates[selectedTemplate] ? (
+              <div className="relative inline-block">
                 <button
+                  ref={templateMenuButtonRef}
                   type="button"
-                  className="rounded border border-red-300 text-red-700 px-2 py-1 text-xs"
-                  onClick={async () => {
-                    if (!window.confirm('Delete this template?')) return;
-                    try {
-                      await window.api?.deleteMailTemplate?.({ businessId, key: selectedTemplate });
-                      // Remove locally and advance selection
-                      const next = { ...(templates || {}) };
-                      delete next[selectedTemplate];
-                      setTemplates(next);
-                      const first = Object.keys(next).includes('enquiry_ack') ? 'enquiry_ack' : (Object.keys(next)[0] || '');
-                      if (first) handleTemplateSelect(first, next);
-                      else setSelectedTemplate('');
-                      pushToast('Template deleted', 'success');
-                    } catch (err) { pushToast(err?.message || 'Unable to delete template', 'error'); }
-                  }}
-                >Delete</button>
-              ) : null}
-            </div>
-          </div>
-
-          {/* Job folder files with inline checkboxes */}
-          <div className="grid grid-cols-6 gap-2 items-start">
-            <label className="col-span-1 text-slate-600 mt-1">Job files</label>
-            <div className="col-span-5">
-              <div className="mb-2 flex items-center gap-2 text-xs">
-                <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={async () => {
-                  try { setJobFilesLoading(true); const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' }); setJobFiles(Array.isArray(files) ? files : []); } catch (_) {} finally { setJobFilesLoading(false); }
-                }}>Refresh</button>
-                <span className="text-slate-500">Tick to attach from the job folder</span>
-              </div>
-              <div className="max-h-48 overflow-auto rounded border border-slate-200">
-                {jobFilesLoading ? (
-                  <div className="px-2 py-2 text-sm text-slate-500">Loading…</div>
-                ) : (jobFiles.length === 0 ? (
-                  <div className="px-2 py-2 text-sm text-slate-500">No files in job folder</div>
-                ) : jobFiles.map(f => {
-                  const checked = attachments.includes(f.path);
-                  return (
-                    <label key={f.path} className="flex items-center gap-2 px-2 py-1 text-sm text-slate-700">
-                      <input type="checkbox" checked={checked} onChange={e => {
-                        const on = e.target.checked;
-                        setAttachments(prev => {
-                          const set = new Set(prev || []);
-                          if (on) set.add(f.path); else set.delete(f.path);
-                          return Array.from(set);
-                        });
-                      }} />
-                      <span className="truncate" title={f.path}>{f.name}</span>
-                      <span className="ml-auto text-xs text-slate-500">{Math.round((f.size || 0) / 1024)} KB</span>
-                    </label>
-                  );
-                }))}
+                  className="rounded border border-slate-300 px-2 py-1 text-xs"
+                  onClick={() => setTemplateMenuOpen(v => !v)}
+                  aria-expanded={templateMenuOpen}
+                  aria-haspopup="menu"
+                  title="Template actions"
+                >⋮</button>
+                {templateMenuOpen ? (
+                  <div
+                    ref={templateMenuRef}
+                    className="absolute right-0 z-50 mt-1 w-44 rounded border border-gray-200 bg-white shadow-lg py-1"
+                    role="menu"
+                  >
+                    <button type="button" className="block w-full px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100" onClick={handleSaveCurrentTemplate} disabled={savingPreset}>Save template</button>
+                    <button type="button" className="block w-full px-3 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-100" onClick={handleCreateTemplate}>New template…</button>
+                    <div className="my-1 border-t border-gray-200" />
+                    <button type="button" className="block w-full px-3 py-1.5 text-left text-sm text-rose-700 hover:bg-rose-50 disabled:opacity-60" onClick={handleDeleteTemplate} disabled={!selectedTemplate || !templates[selectedTemplate]}>Delete</button>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>
 
-          <div className="grid grid-cols-6 gap-2 items-center">
-            <label className="col-span-1 text-slate-600">Tokens</label>
-            <div className="col-span-5 flex items-center gap-2">
-              <select value={tokenChoice} onChange={e => setTokenChoice(e.target.value)} className="rounded border border-slate-300 px-2 py-1">
-                {TOKEN_OPTIONS.map(opt => (
-                  <option key={opt.key} value={opt.key}>{opt.label}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                className="rounded border border-slate-300 px-2 py-1 text-xs"
-                title="Focus Subject or Body, then insert"
-                onClick={() => insertToken(tokenChoice)}
-              >Insert token</button>
-              <span className="text-xs text-slate-500">Inserts at cursor in last focused field</span>
+          {/* Tokens moved under Body (more contextual), job files moved under Attachments */}
+
+          <div className="mt-2 text-[11px] uppercase tracking-wide text-gray-500">Recipients</div>
+          <div className="rounded border border-gray-200 bg-gray-100 shadow-sm p-2 space-y-2">
+            <div className="grid grid-cols-6 gap-2 items-center">
+              <label className="col-span-1 text-gray-600">To</label>
+              <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={to} onChange={e => setTo(e.target.value)} placeholder="email@example.com" />
+            </div>
+            <div className="grid grid-cols-6 gap-2 items-center">
+              <label className="col-span-1 text-gray-600">Cc</label>
+              <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={cc} onChange={e => setCc(e.target.value)} placeholder="optional" />
+            </div>
+            <div className="grid grid-cols-6 gap-2 items-center">
+              <label className="col-span-1 text-gray-600">Bcc</label>
+              <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={bcc} onChange={e => setBcc(e.target.value)} placeholder="optional" />
             </div>
           </div>
-
+          <div className="mt-2 text-[11px] uppercase tracking-wide text-gray-500">Content</div>
           <div className="grid grid-cols-6 gap-2 items-center">
-            <label className="col-span-1 text-slate-600">To</label>
-            <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={to} onChange={e => setTo(e.target.value)} placeholder="email@example.com" />
-          </div>
-          <div className="grid grid-cols-6 gap-2 items-center">
-            <label className="col-span-1 text-slate-600">Cc</label>
-            <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={cc} onChange={e => setCc(e.target.value)} placeholder="optional" />
-          </div>
-          <div className="grid grid-cols-6 gap-2 items-center">
-            <label className="col-span-1 text-slate-600">Bcc</label>
-            <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={bcc} onChange={e => setBcc(e.target.value)} placeholder="optional" />
-          </div>
-          <div className="grid grid-cols-6 gap-2 items-center">
-            <label className="col-span-1 text-slate-600">Subject</label>
+            <label className="col-span-1 text-gray-600">Subject</label>
             <div className="col-span-5">
               <input
                 ref={subjectRef}
@@ -1042,18 +1243,88 @@ export default function MailComposer({
               <div className="mt-1 text-xs text-slate-500">Preview: {renderedSubject || '(empty)'}</div>
             </div>
           </div>
-          <div>
-            <label className="block text-slate-600 mb-1">Body</label>
+          <div className="rounded border border-gray-200 bg-white shadow-sm p-2">
+            <label className="block text-gray-600 mb-1">Body</label>
+            <div className="mb-2 text-xs relative inline-block">
+              <button
+                ref={formatButtonRef}
+                type="button"
+                className="rounded border border-slate-300 px-2 py-1"
+                onClick={() => setFormatMenuOpen(v => !v)}
+                aria-expanded={formatMenuOpen}
+                aria-haspopup="menu"
+              >Format ▾</button>
+              {formatMenuOpen ? (
+                <div
+                  ref={formatMenuRef}
+                  className="absolute z-50 mt-1 w-[min(90vw,420px)] rounded border border-gray-200 bg-white shadow-lg p-2"
+                  role="menu"
+                >
+                  <div className="flex items-center gap-2 mb-2">
+                    <select value={formatFamily} onChange={e => setFormatFamily(e.target.value)} className="rounded border border-slate-300 px-2 py-1" title="Font family">
+                      <option value="Arial, Helvetica, sans-serif">Arial</option>
+                      <option value="Helvetica, Arial, sans-serif">Helvetica</option>
+                      <option value="Calibri, Arial, Helvetica, sans-serif">Calibri</option>
+                      <option value="Verdana, Geneva, sans-serif">Verdana</option>
+                      <option value="Tahoma, Geneva, sans-serif">Tahoma</option>
+                      <option value="Times New Roman, Times, serif">Times New Roman</option>
+                      <option value="Georgia, serif">Georgia</option>
+                    </select>
+                    <select value={formatSize} onChange={e => setFormatSize(e.target.value)} className="rounded border border-slate-300 px-2 py-1" title="Font size">
+                      <option value="10pt">10 pt</option>
+                      <option value="11pt">11 pt</option>
+                      <option value="12pt">12 pt</option>
+                      <option value="13pt">13 pt</option>
+                      <option value="14pt">14 pt</option>
+                      <option value="16pt">16 pt</option>
+                    </select>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={applyFormatToSelection}>Apply</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={applyFormatToAll}>Apply to all</button>
+                  </div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1 font-bold" onClick={() => execInline('bold')}>B</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1 italic" onClick={() => execInline('italic')}>I</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1 underline" onClick={() => execInline('underline')}>U</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={clearFormatting}>Clear</button>
+                  </div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => insertList(false)}>• List</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => insertList(true)}>1. List</button>
+                    <div className="mx-1 h-5 w-px bg-slate-200" aria-hidden />
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => execInline('justifyLeft')}>Left</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => execInline('justifyCenter')}>Center</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => execInline('justifyRight')}>Right</button>
+                    <div className="mx-1 h-5 w-px bg-slate-200" aria-hidden />
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => execInline('undo')}>Undo</button>
+                    <button type="button" className="rounded border border-slate-300 px-2 py-1" onClick={() => execInline('redo')}>Redo</button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <div
               ref={bodyEditorRef}
-              className="rounded border border-slate-300 px-2 py-2 whitespace-pre-wrap focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              style={{ minHeight: '160px' }}
+              className="rounded border border-slate-300 bg-white px-2 py-2 whitespace-pre-wrap focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              style={{ minHeight: '160px', maxHeight: '40vh', overflowY: 'auto' }}
               contentEditable
               suppressContentEditableWarning
               onInput={handleBodyInput}
               onFocus={() => setLastFocus('body')}
             />
-            <div className="mt-2 text-xs text-slate-500">Tokens show live data. Delete a chip to remove a token.</div>
+            <div className="mt-2 text-xs text-gray-500">Tokens show live data. Delete a chip to remove a token.</div>
+            <div className="mt-2 flex items-center gap-2 text-xs">
+              <span className="text-gray-600">Insert token</span>
+              <select value={tokenChoice} onChange={e => setTokenChoice(e.target.value)} className="rounded border border-slate-300 px-2 py-1">
+                {TOKEN_OPTIONS.map(opt => (
+                  <option key={opt.key} value={opt.key}>{opt.label}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="rounded border border-slate-300 px-2 py-1"
+                title="Focus Subject or Body, then insert"
+                onClick={() => insertToken(tokenChoice)}
+              >Insert</button>
+            </div>
             <div className="mt-2 flex items-center gap-2 text-xs">
               <label className="inline-flex items-center gap-2 text-slate-600">
                 <input type="checkbox" checked={includeSignature} onChange={e => setIncludeSignature(e.target.checked)} />
@@ -1068,15 +1339,15 @@ export default function MailComposer({
           </div>
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <div className="text-slate-600">Attachments</div>
-              
+              <div className="text-gray-700 font-medium">Attachments</div>
+            
               <button
                 type="button"
                 className="rounded border border-slate-300 px-2 py-1 text-xs"
                 onClick={() => setAttachments([])}
               >Clear all</button>
             </div>
-            <div className="rounded border border-slate-200 divide-y">
+            <div className="rounded border border-gray-200 bg-white shadow-sm divide-y">
               {attachments.length === 0 ? (
                 <div className="px-2 py-2 text-slate-500 text-sm">No attachments</div>
               ) : attachments.map((p, idx) => (
@@ -1085,6 +1356,37 @@ export default function MailComposer({
                   <button type="button" className="rounded border border-slate-300 px-2 py-0.5 text-xs" onClick={() => setAttachments(prev => prev.filter(x => x !== p))}>Remove</button>
                 </div>
               ))}
+            </div>
+            <div className="mt-2 rounded border border-gray-200 bg-gray-100 shadow-sm p-2">
+              <div className="mb-2 flex items-center justify-between">
+                <div className="text-slate-600 text-sm font-medium">Add from job folder</div>
+                <button type="button" className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={async () => {
+                  try { setJobFilesLoading(true); const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' }); setJobFiles(Array.isArray(files) ? files : []); } catch (_) {} finally { setJobFilesLoading(false); }
+                }}>Refresh</button>
+              </div>
+              <div className="max-h-40 overflow-auto rounded border border-slate-200 bg-white">
+                {jobFilesLoading ? (
+                  <div className="px-2 py-2 text-sm text-gray-500">Loading…</div>
+                ) : (jobFiles.length === 0 ? (
+                  <div className="px-2 py-2 text-sm text-gray-500">No files in job folder</div>
+                ) : jobFiles.map(f => {
+                  const checked = attachments.includes(f.path);
+                  return (
+                    <label key={f.path} className="flex items-center gap-2 px-2 py-1 text-sm text-gray-700">
+                      <input type="checkbox" checked={checked} onChange={e => {
+                        const on = e.target.checked;
+                        setAttachments(prev => {
+                          const set = new Set(prev || []);
+                          if (on) set.add(f.path); else set.delete(f.path);
+                          return Array.from(set);
+                        });
+                      }} />
+                      <span className="truncate" title={f.path}>{f.name}</span>
+                      <span className="ml-auto text-xs text-gray-500">{Math.round((f.size || 0) / 1024)} KB</span>
+                    </label>
+                  );
+                }))}
+              </div>
             </div>
           </div>
           <div className="space-y-2">
@@ -1142,6 +1444,42 @@ export default function MailComposer({
             onClick={handleSend}
           >{sendWhen === 'later' ? 'Schedule' : 'Send'}</button>
         </div>
+        {/* Invisible resize zones: east edge, south edge, and bottom-right corner */}
+        <div
+          className="absolute right-0 top-0 h-full w-2 cursor-e-resize"
+          onMouseDown={(e) => {
+            e.preventDefault(); e.stopPropagation();
+            resizeStartRef.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h, dir: 'e' };
+            setResizing(true);
+          }}
+          title="Resize width"
+        />
+        <div
+          className="absolute bottom-0 left-0 w-full h-2 cursor-s-resize"
+          onMouseDown={(e) => {
+            e.preventDefault(); e.stopPropagation();
+            resizeStartRef.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h, dir: 's' };
+            setResizing(true);
+          }}
+          title="Resize height"
+        />
+        <div
+          className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize"
+          onMouseDown={(e) => {
+            e.preventDefault(); e.stopPropagation();
+            resizeStartRef.current = { x: e.clientX, y: e.clientY, w: size.w, h: size.h, dir: 'se' };
+            setResizing(true);
+          }}
+          title="Resize"
+        >
+          {/* Hover-only diagonal grip */}
+          <svg
+            className="pointer-events-none absolute bottom-0 right-0 h-3 w-3 opacity-0 group-hover:opacity-70 text-gray-400"
+            viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"
+          >
+            <path d="M2 10 L10 2 M5 10 L10 5 M8 10 L10 8" stroke="currentColor" strokeWidth="1" />
+          </svg>
+        </div>
       </div>
       <ToastOverlay notices={toasts} />
     </div>
@@ -1159,7 +1497,7 @@ export default function MailComposer({
             aria-label="Close"
           >✕</button>
         </div>
-        <div className="p-4 space-y-3 text-sm">
+        <div className="p-4 space-y-4 text-sm bg-slate-50">
           <textarea
             rows={10}
             className="w-full rounded border border-slate-300 px-2 py-1 font-mono text-xs"

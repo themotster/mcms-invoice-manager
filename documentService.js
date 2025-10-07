@@ -45,6 +45,68 @@ function normalizeTokenKey(value) {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
 }
+
+// Normalize outgoing email HTML to consistent typography across templates and signatures
+function normalizeEmailHtml(input, opts = {}) {
+  try {
+    const baseFamily = String(opts.baseFamily || 'Arial, Helvetica, sans-serif');
+    const baseSize = String(opts.baseSize || '10pt');
+    const baseLineHeight = String(opts.baseLineHeight || '1.45');
+    let html = String(input || '');
+    if (!html) return '';
+    // Strip inline font-size declarations to avoid mixed sizes
+    html = html.replace(/font-size\s*:\s*[^;"']+;?/gi, '');
+    // Optionally strip conflicting font-family declarations (keep link/icon fonts intact by not being overly aggressive)
+    // html = html.replace(/font-family\s*:\s*[^;"']+;?/gi, '');
+    // Remove empty style attributes (e.g., style=" ") left behind
+    html = html.replace(/\sstyle=\"\s*\"/gi, '');
+    // Wrap in a base container to set default family/size/line-height
+    // Avoid duplicating wrapper if already present
+    const trimmed = html.trim();
+    const wrapperOpen = `<div style="font-family:${baseFamily};font-size:${baseSize};line-height:${baseLineHeight};color:#3c3c3b;">`;
+    const wrapperClose = '</div>';
+    if (!/^<div\b[^>]*>/.test(trimmed) || !/font-size:\s*\d/i.test(trimmed)) {
+      return `${wrapperOpen}${trimmed}${wrapperClose}`;
+    }
+    return trimmed;
+  } catch (_err) {
+    return String(input || '');
+  }
+}
+
+// Variant that preserves the signature region (wrapped by composer with comment markers)
+function normalizeEmailHtmlPreserveSignature(input, opts = {}) {
+  try {
+    const SIG_START = '<!--__IM_SIG_START__-->';
+    const SIG_END = '<!--__IM_SIG_END__-->';
+    const baseFamily = String(opts.baseFamily || 'Arial, Helvetica, sans-serif');
+    const baseSize = String(opts.baseSize || '10pt');
+    const baseLineHeight = String(opts.baseLineHeight || '1.45');
+    let html = String(input || '');
+    if (!html) return '';
+
+    const strip = (frag) => String(frag || '')
+      .replace(/font-size\s*:\s*[^;"']+;?/gi, '')
+      .replace(/\sstyle=\"\s*\"/gi, '');
+    const wrap = (frag) => {
+      const t = String(frag || '').trim();
+      if (!t) return '';
+      return `<div style="font-family:${baseFamily};font-size:${baseSize};line-height:${baseLineHeight};color:#3c3c3b;">${t}</div>`;
+    };
+
+    const start = html.indexOf(SIG_START);
+    const end = start >= 0 ? html.indexOf(SIG_END, start + SIG_START.length) : -1;
+    if (start >= 0 && end > start) {
+      const before = html.slice(0, start);
+      const sig = html.slice(start, end + SIG_END.length);
+      const after = html.slice(end + SIG_END.length);
+      return `${wrap(strip(before))}${sig}${wrap(strip(after))}`;
+    }
+    return wrap(strip(html));
+  } catch (_err) {
+    return String(input || '');
+  }
+}
 const DEFAULT_FIELD_VALUE_SOURCES = {
   client_name: 'jobsheet.client_name',
   client_email: 'jobsheet.client_email',

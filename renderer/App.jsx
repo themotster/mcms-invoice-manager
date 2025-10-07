@@ -4462,13 +4462,18 @@ function DocumentsInlinePanel({
     }
   }, [documentRows, onToggleLock, forcePendingLockTick]);
 
-  const renderActionPill = ({ label, onClick, disabled, tone = 'slate', key: keyProp }) => {
+  const renderActionPill = ({ label, onClick, disabled, tone = 'slate', key: keyProp, variant = 'outline' }) => {
     const base = 'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1';
-    const toneClass = tone === 'indigo'
-      ? 'border-indigo-200 text-indigo-600 hover:bg-indigo-50'
-      : tone === 'danger'
-        ? 'border-red-200 text-red-600 hover:bg-red-50'
-        : 'border-slate-300 text-slate-600 hover:bg-slate-100';
+    let toneClass = '';
+    if (variant === 'solid' && tone === 'indigo') {
+      toneClass = 'bg-indigo-600 border-indigo-600 text-white hover:bg-indigo-500';
+    } else if (tone === 'indigo') {
+      toneClass = 'border-indigo-200 text-indigo-600 hover:bg-indigo-50';
+    } else if (tone === 'danger') {
+      toneClass = 'border-red-200 text-red-600 hover:bg-red-50';
+    } else {
+      toneClass = 'border-slate-300 text-slate-600 hover:bg-slate-100';
+    }
     return (
       <button
         key={keyProp}
@@ -4712,7 +4717,8 @@ function DocumentsInlinePanel({
           label: scheduleLabel,
           onClick: () => scheduleBalanceEmail(pdfDoc?.file_path || ''),
           disabled: !pdfReady || !pdfDoc?.file_path,
-          tone: 'indigo'
+          tone: 'indigo',
+          variant: 'solid'
         }));
         if (scheduleDateDisplay) {
           emailControls.push(<span key="scheduled-for" className="text-xs text-slate-500">Scheduled for {scheduleDateDisplay}</span>);
@@ -4723,7 +4729,8 @@ function DocumentsInlinePanel({
           label: 'Send',
           onClick: handleMailPrimaryClick,
           disabled: mailDisabled,
-          tone: 'indigo'
+          tone: 'indigo',
+          variant: 'solid'
         }));
         emailControls.push(<span key="fallback" className="text-xs text-slate-500">{emailFallbackLabel}</span>);
       }
@@ -4814,7 +4821,8 @@ function DocumentsInlinePanel({
         label: 'Send',
         onClick: () => openComposer({ templateKey: group.templateKey, attachments, includeSignature: composerIncludeSignature }),
         disabled: composeDisabled,
-        tone: 'indigo'
+        tone: 'indigo',
+        variant: 'solid'
       }));
     }
     if (!mailReady) {
