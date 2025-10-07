@@ -2630,6 +2630,70 @@ function deleteAhmenJobsheet(jobsheetId) {
   });
 }
 
+async function deleteJobsheetCompletely(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+  const jobsheetId = Number(options.jobsheetId ?? options.jobsheet_id);
+  const removeFiles = options.removeFiles !== false; // default true
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+  if (!Number.isInteger(jobsheetId)) throw new Error('jobsheetId is required');
+
+  // Gather document paths first (by jobsheet id only to avoid FK stragglers where business_id may not match)
+  const docs = await new Promise((resolve, reject) => {
+    db.all(
+      `SELECT document_id, file_path FROM documents WHERE jobsheet_id = ?`,
+      [jobsheetId],
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve(Array.isArray(rows) ? rows : []);
+      }
+    );
+  });
+
+  const results = { filesTrashed: 0, documentsRemoved: 0, emailsRemoved: 0, scheduledRemoved: 0, overridesRemoved: 0, jobsheetsRemoved: 0, fileErrors: [] };
+
+  if (removeFiles && docs.length) {
+    for (const row of docs) {
+      const p = row?.file_path ? String(row.file_path) : '';
+      if (!p) continue;
+      try {
+        await deleteDocumentByPath({ businessId, absolutePath: p });
+        results.filesTrashed += 1;
+      } catch (err) {
+        results.fileErrors.push({ path: p, message: err?.message || String(err) });
+      }
+    }
+  }
+
+  // Remove DB rows for this jobsheet
+  await new Promise((resolve, reject) => {
+    db.run(`DELETE FROM scheduled_emails WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
+      if (err) reject(err); else { results.scheduledRemoved = this.changes || 0; resolve(); }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    db.run(`DELETE FROM email_log WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
+      if (err) reject(err); else { results.emailsRemoved = this.changes || 0; resolve(); }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    db.run(`DELETE FROM documents WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
+      if (err) reject(err); else { results.documentsRemoved = this.changes || 0; resolve(); }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    db.run(`DELETE FROM jobsheet_template_overrides WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
+      if (err) reject(err); else { results.overridesRemoved = this.changes || 0; resolve(); }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    db.run(`DELETE FROM ahmen_jobsheets WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
+      if (err) reject(err); else { results.jobsheetsRemoved = this.changes || 0; resolve(); }
+    });
+  });
+
+  return results;
+}
+
 function getAhmenVenues(options = {}) {
   const params = [];
   const conditions = [];
@@ -3903,6 +3967,7 @@ module.exports = {
   listDocumentTree,
   deleteDocumentFolder,
   deleteDocumentByPath,
+  deleteJobsheetCompletely,
 emptyDocumentsTrash
 };
 

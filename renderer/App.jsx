@@ -2987,11 +2987,28 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   }, [onChange, selectedEntries]);
 
   const selectedServiceId = formState.pricing_service_id != null ? String(formState.pricing_service_id) : '';
+  // Preference: auto-select default team when service changes
+  const [autoSelectDefaultTeam, setAutoSelectDefaultTeam] = useState(() => {
+    try { return window.localStorage.getItem('pricing:autoDefaultTeam') !== '0'; } catch (_) { return true; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('pricing:autoDefaultTeam', autoSelectDefaultTeam ? '1' : '0'); } catch (_) {}
+  }, [autoSelectDefaultTeam]);
   const selectedService = serviceTypes.find(type => String(type.id) === selectedServiceId) || null;
   const lastServiceIdRef = useRef('');
+  const serviceEffectDidMountRef = useRef(false);
 
   useEffect(() => {
     const currentServiceId = selectedService ? String(selectedService.id) : '';
+    // Avoid re-applying default singers on the initial mount if a service is already selected
+    // (e.g., navigating away and back). Still allow defaults when the user actively changes service after mount.
+    if (!serviceEffectDidMountRef.current) {
+      serviceEffectDidMountRef.current = true;
+      if (currentServiceId) {
+        lastServiceIdRef.current = currentServiceId;
+        return;
+      }
+    }
     if (!currentServiceId) {
       if (selectedEntries.length) updateSelected([]);
       lastServiceIdRef.current = '';
@@ -3000,6 +3017,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
 
     if (currentServiceId !== lastServiceIdRef.current) {
       lastServiceIdRef.current = currentServiceId;
+      if (!autoSelectDefaultTeam) {
+        // Respect user preference: do not auto-apply defaults on service change
+        return;
+      }
       const previousMap = new Map(selectedEntries.map(e => [e.id, e]));
       const defaults = sortedSingers
         .filter(singer => {
@@ -3053,7 +3074,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     if (!equalSingerEntries(normalized, selectedEntries)) {
       updateSelected(normalized);
     }
-  }, [selectedService, sortedSingers, selectedEntries, poolMap, updateSelected]);
+  }, [selectedService, sortedSingers, selectedEntries, poolMap, updateSelected, autoSelectDefaultTeam]);
 
   const internalTotals = useMemo(() => {
     let base = 0;
@@ -3473,6 +3494,10 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-medium text-slate-600">Select your lineup</span>
           <div className="flex items-center gap-2">
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 mr-2">
+              <input type="checkbox" checked={autoSelectDefaultTeam} onChange={e => setAutoSelectDefaultTeam(e.target.checked)} />
+              Auto-select on service change
+            </label>
             <button
               type="button"
               onClick={handleSelectDefaultTeam}
@@ -7518,7 +7543,17 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         setDeletingId(null);
         return;
       }
-      await api.deleteAhmenJobsheet(jobsheetId);
+      let cascaded = false;
+      try {
+        const deep = window.confirm('Also delete all related documents and emails (and move files to trash)? Click OK for full removal, Cancel for jobsheet only.');
+        if (deep && api.deleteJobsheetCompletely) {
+          cascaded = true;
+          await api.deleteJobsheetCompletely({ businessId: business.id, jobsheetId, removeFiles: true });
+        }
+      } catch (_) {}
+      if (!cascaded) {
+        await api.deleteAhmenJobsheet(jobsheetId);
+      }
       setMessage('Jobsheet deleted');
       await refreshJobsheets();
       window.api?.notifyJobsheetChange?.({ type: 'jobsheet-deleted', businessId: business.id, jobsheetId });
@@ -9305,6 +9340,13 @@ function JobsheetEditorWindow({
     if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
     const api = window.api;
     if (!api || !api.updateAhmenJobsheet) return;
+    // Skip autosave until a client name is entered to avoid backend validation errors
+    const hasClientName = !!String(formState?.client_name || '').trim();
+    if (!hasClientName) {
+      // Clear any previous autosave error to keep UI calm while drafting
+      // setError(''); // optional: keep silent
+      return;
+    }
     autoSaveTimer.current = setTimeout(async () => {
       setSaving(true);
       try {
@@ -9333,6 +9375,11 @@ function JobsheetEditorWindow({
     const api = window.api;
     if (!api || !api.updateAhmenJobsheet) return;
     const currentState = formStateRef.current;
+    const hasClientName = !!String(currentState?.client_name || '').trim();
+    if (!hasClientName) {
+      setError('Enter a client name before saving');
+      return;
+    }
     setSaving(true);
     try {
       const payload = preparePayload(currentState, numericBusinessId);
@@ -9887,12 +9934,21 @@ function JobsheetEditorWindow({
     setSaving(true);
     try {
       const api = window.api;
-      if (!api || !api.deleteAhmenJobsheet) {
+      if (!api) {
         setError('Unable to delete jobsheet: API unavailable');
         setSaving(false);
         return;
       }
-      await api.deleteAhmenJobsheet(jobsheetId);
+      // Prefer full cascade removal to avoid FK errors
+      if (api.deleteJobsheetCompletely) {
+        await api.deleteJobsheetCompletely({ businessId: numericBusinessId, jobsheetId, removeFiles: true });
+      } else if (api.deleteAhmenJobsheet) {
+        await api.deleteAhmenJobsheet(jobsheetId);
+      } else {
+        setError('Unable to delete jobsheet: API unavailable');
+        setSaving(false);
+        return;
+      }
       window.api?.notifyJobsheetChange?.({ type: 'jobsheet-deleted', businessId: numericBusinessId, jobsheetId });
       closeEditor();
     } catch (err) {
