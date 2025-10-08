@@ -166,6 +166,7 @@ const AHMEN_JOBSHEET_FIELDS = [
   'balance_reminder_date',
   'service_types',
   'specialist_singers',
+  'gig_info',
   'notes',
   'pricing_service_id',
   'pricing_selected_singers',
@@ -498,6 +499,7 @@ function initializeDatabase() {
       balance_reminder_date TEXT,
       service_types TEXT,
       specialist_singers TEXT,
+      gig_info TEXT,
       notes TEXT,
       pricing_service_id TEXT,
       pricing_selected_singers TEXT,
@@ -557,6 +559,8 @@ function initializeDatabase() {
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_custom_fees TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_total REAL', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN gig_info TEXT', logDuplicateColumn);
+    
     db.run(`UPDATE ahmen_jobsheets SET status='enquiry' WHERE status IS NULL OR status='' OR status='draft'`, err => {
       if (err) console.error('Failed to normalize jobsheet status:', err);
     });

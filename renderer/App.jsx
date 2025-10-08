@@ -361,6 +361,10 @@ const FIELD_META = {
     component: 'documentsPanel',
     always: true
   },
+  gig_info_panel: {
+    component: 'gigInfoPanel',
+    always: true
+  },
   notes: {
     label: 'Internal Notes',
     type: 'textarea',
@@ -531,6 +535,12 @@ const GROUP_CONFIG = {
     description: 'Generate Excel outputs and manage PDFs.',
     staticOnly: true,
     fields: ['documents_panel']
+  },
+  gig_info: {
+    title: 'Gig Info',
+    description: 'Fill in and generate a singer-facing gig info PDF.',
+    staticOnly: true,
+    fields: ['gig_info_panel']
   }
 };
 
@@ -2907,6 +2917,7 @@ function equalSingerEntries(a, b) {
     const lockedA = Boolean(a[i].locked);
     const lockedB = Boolean(b[i].locked);
     if (lockedA !== lockedB) return false;
+    // availability flag removed
   }
   return true;
 }
@@ -2923,6 +2934,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   }
 
   const serviceTypes = pricingConfig.serviceTypes ?? [];
+  // Availability tracking removed; UI simplified
   const existingPool = Array.isArray(pricingConfig.singerPool) ? pricingConfig.singerPool : [];
   const singerPool = useMemo(
     () => existingPool.map(singer => ({
@@ -3533,6 +3545,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
               const displayFee = serviceDetails?.fee != null ? serviceDetails.fee : singer.fee;
               const selectionEntry = selectedEntries.find(entry => entry.id === singerId);
               const isLocked = Boolean(selectionEntry?.locked);
+              
               const selectionFee = selectionEntry?.fee;
               const feeInputValue = formatFeeForInput(
                 selectionFee !== undefined && selectionFee !== null && selectionFee !== ''
@@ -3543,7 +3556,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
               return (
                 <div
                   key={singerId}
-                  className={`flex flex-wrap items-center gap-3 rounded border px-3 py-2 text-sm transition ${
+                  className={`flex flex-nowrap items-center gap-2 rounded border px-3 py-2 text-sm transition ${
                     isSelected
                       ? isLocked
                         ? 'border-red-300 bg-red-500 text-white shadow-sm'
@@ -3562,14 +3575,15 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                     {isSelected ? '✓' : ''}
                   </button>
 
-                  <div className="flex min-w-[10rem] flex-1 items-center">
-                    <span className={`font-medium leading-tight ${isSelected ? 'text-white' : 'text-slate-700'}`}>
+                  <div className="flex min-w-[8rem] sm:min-w-[12rem] flex-1 items-center overflow-hidden">
+                    <span className={`font-medium leading-tight truncate ${isSelected ? 'text-white' : 'text-slate-700'}`}>
                       {singer.name || 'Unnamed singer'}
                     </span>
                   </div>
+                  
 
                   <label
-                    className={`flex flex-shrink-0 items-center gap-1 text-xs uppercase tracking-wide ${
+                    className={`flex w-36 sm:w-44 flex-shrink-0 items-center gap-1 text-xs uppercase tracking-wide ${
                       isSelected ? 'text-white/80' : 'text-slate-500'
                     }`}
                   >
@@ -3579,7 +3593,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                       <input
                         type="number"
                         step="0.01"
-                        className={`w-28 rounded border px-5 py-1 text-sm focus:outline-none focus:ring-2 ${
+                        className={`w-24 sm:w-28 rounded border px-5 py-1 text-sm focus:outline-none focus:ring-2 ${
                           isSelected
                             ? 'border-white/70 bg-white text-indigo-700 placeholder-indigo-300 focus:ring-white/60'
                             : 'border-slate-300 bg-white text-slate-700 placeholder-slate-400 focus:ring-indigo-500'
@@ -3620,7 +3634,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
                     </div>
                   </label>
 
-                  <div className="ml-auto flex items-center gap-2">
+                  <div className="ml-auto flex items-center gap-2 flex-shrink-0">
                     <button
                       type="button"
                       onClick={(event) => {
@@ -3974,6 +3988,502 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   );
 }
 
+function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
+  const parseJson = (raw) => {
+    if (!raw) return { values: {}, include: {} };
+    try { const obj = JSON.parse(raw); return obj && typeof obj === 'object' ? obj : { values: {}, include: {} }; } catch (_) { return { values: {}, include: {} }; }
+  };
+  const initial = parseJson(formState?.gig_info || '');
+  const [values, setValues] = useState({ ...(initial.values || {}) });
+  const [include, setInclude] = useState({ ...(initial.include || {}) });
+  const [gigToasts, setGigToasts] = useState([]);
+  const pushGigToast = (text, tone = 'info') => {
+    const notice = { id: `gig-toast-${Date.now()}-${Math.random().toString(36).slice(2)}`, text, tone };
+    setGigToasts(prev => [...prev, notice]);
+    setTimeout(() => setGigToasts(prev => prev.filter(t => t !== notice)), 3000);
+  };
+
+  // Helpers for time formatting and call-time computation
+  const fmtTime = (input) => {
+    if (!input) return '';
+    let s = String(input).trim();
+    if (!s) return '';
+    s = s.replace(/\./g, ':').replace(/\s+/g, '');
+    let mer = null;
+    const lower = s.toLowerCase();
+    if (/(am|pm)$/.test(lower)) {
+      mer = lower.slice(-2);
+      s = lower.slice(0, -2);
+    }
+    let h = 0; let m = 0;
+    if (/^\d{1,2}:\d{2}$/.test(s)) {
+      const parts = s.split(':');
+      h = Number(parts[0]);
+      m = Number(parts[1]);
+    } else if (/^\d{3,4}$/.test(s)) {
+      const v = s.padStart(4, '0');
+      h = Number(v.slice(0, 2));
+      m = Number(v.slice(2));
+    } else if (/^\d{1,2}$/.test(s)) {
+      h = Number(s);
+      m = 0;
+    } else {
+      return String(input);
+    }
+    if (Number.isNaN(h) || Number.isNaN(m)) return '';
+    if (mer) {
+      if (mer === 'pm' && h < 12) h += 12;
+      if (mer === 'am' && h === 12) h = 0;
+    }
+    h = Math.max(0, Math.min(23, h));
+    m = Math.max(0, Math.min(59, m));
+    const outMer = h >= 12 ? 'pm' : 'am';
+    const h12 = (h % 12) === 0 ? 12 : (h % 12);
+    const mm = String(m).padStart(2, '0');
+    return `${h12}:${mm} ${outMer}`;
+  };
+  const parseMinutes = (input) => {
+    if (!input) return null;
+    let s = String(input).trim();
+    if (!s) return null;
+    s = s.replace(/\./g, ':').replace(/\s+/g, '');
+    let mer = null;
+    const lower = s.toLowerCase();
+    if (/(am|pm)$/.test(lower)) { mer = lower.slice(-2); s = lower.slice(0, -2); }
+    let h = 0; let m = 0;
+    if (/^\d{1,2}:\d{2}$/.test(s)) { const parts = s.split(':'); h = Number(parts[0]); m = Number(parts[1]); }
+    else if (/^\d{3,4}$/.test(s)) { const v = s.padStart(4, '0'); h = Number(v.slice(0,2)); m = Number(v.slice(2)); }
+    else if (/^\d{1,2}$/.test(s)) { h = Number(s); m = 0; }
+    else { return null; }
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    if (mer) { if (mer === 'pm' && h < 12) h += 12; if (mer === 'am' && h === 12) h = 0; }
+    h = Math.max(0, Math.min(23, h)); m = Math.max(0, Math.min(59, m));
+    return h * 60 + m;
+  };
+  const fmtFromMinutes = (mins) => {
+    if (mins == null) return '';
+    let v = ((mins % 1440) + 1440) % 1440;
+    const h = Math.floor(v / 60); const m = v % 60;
+    const outMer = h >= 12 ? 'pm' : 'am';
+    const h12 = (h % 12) === 0 ? 12 : (h % 12);
+    const mm = String(m).padStart(2, '0');
+    return `${h12}:${mm} ${outMer}`;
+  };
+
+  // Prefill from jobsheet on first mount for missing fields
+  useEffect(() => {
+    setValues(prev => ({
+      ...prev,
+      client_name: prev.client_name ?? (formState.client_name ?? ''),
+      event_type: prev.event_type ?? (formState.event_type ?? '')
+    }));
+    // Default to including schedule and time lines (prefilled once)
+    setInclude(prev => ({
+      ...prev,
+      client_name: prev.client_name ?? Boolean(formState.client_name),
+      event_type: prev.event_type ?? Boolean(formState.event_type),
+      event_date: prev.event_date ?? true,
+      schedule: prev.schedule ?? true,
+      event_time: prev.event_time ?? true,
+      call_time: prev.call_time ?? true,
+      personnel_lineup: prev.personnel_lineup ?? false,
+      repertoire: prev.repertoire ?? false
+    }));
+    // Seed default editable lines if absent
+    setValues(prev => {
+      const next = { ...prev };
+      const tStart = fmtTime(formState.event_start);
+      const tEnd = fmtTime(formState.event_end);
+      const startMins = parseMinutes(formState.event_start);
+      if ((next.event_time == null || String(next.event_time).trim() === '') && (tStart || tEnd)) {
+        next.event_time = tStart && tEnd
+          ? `Event time: ${tStart} – ${tEnd}`
+          : (tStart ? `Event time: ${tStart}` : (tEnd ? `Event end: ${tEnd}` : ''));
+      }
+      if ((next.call_time == null || String(next.call_time).trim() === '') && startMins != null) {
+        next.call_time = `Call time: ${fmtFromMinutes(startMins - 75)}`;
+      }
+      // Prefill personnel lineup if not set
+      try {
+        if (next.personnel_lineup == null || String(next.personnel_lineup).trim() === '') {
+          const arr = Array.isArray(formState.pricing_selected_singers) ? formState.pricing_selected_singers : [];
+          const names = arr.map(e => (e && typeof e === 'object' ? (e.name || '') : '')).filter(Boolean);
+          if (names.length) {
+            next.personnel_lineup = names.join(', ');
+            setInclude(prevInc => ({ ...prevInc, personnel_lineup: true }));
+          }
+        }
+      } catch (_) {}
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Push to form state (autosave handles persistence)
+  useEffect(() => {
+    onChange('gig_info', JSON.stringify({ values, include }));
+  }, [values, include, onChange]);
+
+  const setVal = (key, v) => setValues(prev => ({ ...prev, [key]: v }));
+  const setInc = (key, v) => setInclude(prev => ({ ...prev, [key]: v }));
+  const [showPreview, setShowPreview] = useState(true);
+
+  const handleGeneratePdf = async () => {
+    try {
+      const res = await window.api?.createGigInfoPdf?.({
+        businessId,
+        jobsheetId,
+        gigInfo: { values, include }
+      });
+      if (!res || res.ok === false) throw new Error(res?.message || 'Unable to generate PDF');
+      pushGigToast('Gig Info PDF created', 'success');
+    } catch (err) {
+      pushGigToast(err?.message || 'Unable to generate PDF', 'error');
+    }
+  };
+
+  const [revealLoading, setRevealLoading] = useState(false);
+  const handleRevealLatestPdf = async () => {
+    try {
+      setRevealLoading(true);
+      const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
+      const list = Array.isArray(files) ? files : [];
+      const match = list.find(f => /^gig info(?: - .+)?(?: \(\d+\))?\.pdf$/i.test(f?.name || '')) || null;
+      if (!match) { pushGigToast('No Gig Info PDF found for this job', 'warning'); return; }
+      const res = await window.api?.showItemInFolder?.(match.path);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to reveal file');
+    } catch (err) {
+      pushGigToast(err?.message || 'Unable to reveal PDF', 'error');
+    } finally {
+      setRevealLoading(false);
+    }
+  };
+
+  const [copying, setCopying] = useState(false);
+  const handleCopyLatestPdf = async () => {
+    try {
+      setCopying(true);
+      const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
+      const list = Array.isArray(files) ? files : [];
+      const match = list.find(f => /^gig info(?: - .+)?(?: \(\d+\))?\.pdf$/i.test(f?.name || '')) || null;
+      if (!match) { pushGigToast('No Gig Info PDF found for this job', 'warning'); return; }
+      const res = await window.api?.copyFileToClipboard?.(match.path);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to copy PDF');
+      pushGigToast('Copied to clipboard. Paste in WhatsApp to attach.', 'success');
+    } catch (err) {
+      pushGigToast(err?.message || 'Unable to copy PDF', 'error');
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  // Load presets for dress code and repertoire
+  const [dressPresets, setDressPresets] = useState([]);
+  const [repPresets, setRepPresets] = useState([]);
+  const refreshPresets = useCallback(async () => {
+    try {
+      const data = await window.api?.getGigInfoPresets?.({ businessId });
+      setDressPresets(Array.isArray(data?.dress_codes) ? data.dress_codes : []);
+      setRepPresets(Array.isArray(data?.repertoire) ? data.repertoire : []);
+    } catch (_) {
+      setDressPresets([]); setRepPresets([]);
+    }
+  }, [businessId]);
+  useEffect(() => { refreshPresets(); }, [refreshPresets]);
+
+  const renderPreview = () => {
+    const header = include.event_date !== false ? `Gig info sheet: ${formatDateDisplay(formState.event_date)}` : 'Gig info sheet';
+    const blocks = [];
+    if (include.client_name && (values.client_name || formState.client_name)) {
+      blocks.push({ label: 'Client', value: values.client_name || formState.client_name });
+    }
+    if (include.event_type && (values.event_type || formState.event_type)) {
+      blocks.push({ label: 'Event', value: values.event_type || formState.event_type });
+    }
+    if (include.venue_block !== false) {
+      const lines = [
+        values.venue_name || formState.venue_name,
+        values.venue_address1 || formState.venue_address1,
+        values.venue_address2 || formState.venue_address2,
+        values.venue_address3 || formState.venue_address3,
+        [values.venue_town || formState.venue_town, values.venue_postcode || formState.venue_postcode].filter(Boolean).join(' ')
+      ].filter(Boolean);
+      if (lines.length) blocks.push({ label: 'Venue', value: lines.join('\n') });
+    }
+    // Build editable schedule block from stored values
+    const schedulePieces = [];
+    const evTime = include.event_time !== false ? String(values.event_time || '').trim() : '';
+    const call = include.call_time !== false ? String(values.call_time || '').trim() : '';
+    const schedText = include.schedule ? String(values.schedule || '').trim() : '';
+    if (evTime) schedulePieces.push(evTime);
+    if (call) schedulePieces.push(call);
+    if (schedText) schedulePieces.push(schedText);
+    if (schedulePieces.length) blocks.push({ label: 'Schedule', value: schedulePieces.join('\n') });
+    if (include.personnel_lineup && String(values.personnel_lineup || '').trim()) { blocks.push({ label: 'Personnel', value: String(values.personnel_lineup || '').trim() }); }
+    if (include.repertoire && String(values.repertoire || '').trim()) { blocks.push({ label: 'Setlist / Repertoire', value: String(values.repertoire || '').trim() }); }
+    if (include.dress_code && values.dress_code) blocks.push({ label: 'Dress code', value: values.dress_code });
+    if (include.kit_notes && values.kit_notes) blocks.push({ label: 'Kit', value: values.kit_notes });
+    if (include.contacts && (values.contractor_name || values.contractor_phone || values.venue_contact_name || values.venue_contact_phone)) {
+      const lines = [];
+      if (values.contractor_name || values.contractor_phone) lines.push([values.contractor_name, values.contractor_phone].filter(Boolean).join(' · '));
+      if (values.venue_contact_name || values.venue_contact_phone) lines.push([values.venue_contact_name, values.venue_contact_phone].filter(Boolean).join(' · '));
+      blocks.push({ label: 'Contacts', value: lines.join('\n') });
+    }
+    if (include.notes && values.notes) blocks.push({ label: 'Notes', value: values.notes });
+    return (
+      <div className="rounded border border-slate-200 bg-white p-3">
+        <div className="text-base font-semibold text-slate-800 mb-2">{header}</div>
+        <div className="space-y-2">
+          {blocks.map((b, i) => (
+            <div key={i}>
+              <div className="text-[11px] uppercase tracking-wide text-slate-500">{b.label}</div>
+              <div className="whitespace-pre-wrap text-sm text-slate-800">{b.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded border border-slate-200 bg-white p-3">
+        <div className="text-sm font-semibold text-slate-700">Header</div>
+        <label className="mt-2 flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={include.event_date !== false} onChange={e => setInc('event_date', e.target.checked)} />
+          Include event date in header (Gig info sheet: {formatDateDisplay(formState.event_date)})
+        </label>
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-3">
+        <div className="text-sm font-semibold text-slate-700">Client</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.client_name} onChange={e => setInc('client_name', e.target.checked)} />
+          Include client name
+        </label>
+        <input
+          className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+          value={values.client_name || ''}
+          onChange={e => setVal('client_name', e.target.value)}
+          placeholder="Client name"
+        />
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-3">
+        <div className="text-sm font-semibold text-slate-700">Event</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.event_type} onChange={e => setInc('event_type', e.target.checked)} />
+          Include event type
+        </label>
+        <input
+          className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+          value={values.event_type || ''}
+          onChange={e => setVal('event_type', e.target.value)}
+          placeholder="Event type (e.g., Wedding, Corporate)"
+        />
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Venue</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={include.venue_block !== false} onChange={e => setInc('venue_block', e.target.checked)} />
+          Include venue block
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Venue name" value={values.venue_name || ''} onChange={e => setVal('venue_name', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Address line 1" value={values.venue_address1 || ''} onChange={e => setVal('venue_address1', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Address line 2" value={values.venue_address2 || ''} onChange={e => setVal('venue_address2', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Address line 3" value={values.venue_address3 || ''} onChange={e => setVal('venue_address3', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Town/City" value={values.venue_town || ''} onChange={e => setVal('venue_town', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Postcode" value={values.venue_postcode || ''} onChange={e => setVal('venue_postcode', e.target.value)} />
+        </div>
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Schedule</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.schedule} onChange={e => setInc('schedule', e.target.checked)} />
+          Include schedule
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={include.event_time !== false} onChange={e => setInc('event_time', e.target.checked)} />
+            Include event time
+          </label>
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Event time: 6:00 pm – 8:30 pm" value={values.event_time || ''} onChange={e => setVal('event_time', e.target.value)} />
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={include.call_time !== false} onChange={e => setInc('call_time', e.target.checked)} />
+            Include call time
+          </label>
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Call time: 4:45 pm" value={values.call_time || ''} onChange={e => setVal('call_time', e.target.value)} />
+        </div>
+        <textarea rows={4} className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder={'- 18:00 Call\n- 19:30 Set 1\n- 20:15 Break\n- 20:45 Set 2'} value={values.schedule || ''} onChange={e => setVal('schedule', e.target.value)} />
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Personnel</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.personnel_lineup} onChange={e => setInc('personnel_lineup', e.target.checked)} />
+          Include personnel lineup
+        </label>
+        <textarea
+          rows={3}
+          className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+          placeholder={'Lead: Alice\nTenor: Bob\nBaritone: Carlos\nBass: Dan'}
+          value={values.personnel_lineup || ''}
+          onChange={e => setVal('personnel_lineup', e.target.value)}
+        />
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Setlist / Repertoire</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.repertoire} onChange={e => setInc('repertoire', e.target.checked)} />
+          Include setlist / repertoire
+        </label>
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <select
+              className="shrink-0 rounded border border-slate-300 px-2 py-1.5 text-sm w-40"
+              value=""
+              onChange={e => { const v = e.target.value || ''; if (v) setVal('repertoire', v); }}
+            >
+              <option value="">Preset…</option>
+              {repPresets.map((p, i) => {
+                const label = (p.split(/\n/)[0] || p);
+                return <option key={i} value={p}>{label.length > 40 ? label.slice(0, 40) + '…' : label}</option>;
+              })}
+            </select>
+            <button
+              type="button"
+              className="shrink-0 rounded border border-slate-300 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-50 whitespace-nowrap"
+              onClick={async () => { try { const v = String(values.repertoire || '').trim(); if (!v) return; await window.api?.saveGigInfoPreset?.({ businessId, kind: 'repertoire', value: v }); refreshPresets(); } catch (_) {} }}
+            >
+              Save current
+            </button>
+          </div>
+          <textarea
+            rows={4}
+            className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm"
+            placeholder={'- All You Need Is Love\n- Stand By Me\n- Can’t Help Falling In Love'}
+            value={values.repertoire || ''}
+            onChange={e => setVal('repertoire', e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Dress & Kit</div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={!!include.dress_code} onChange={e => setInc('dress_code', e.target.checked)} />
+            Include dress code
+          </label>
+          <div className="space-y-2">
+            {/* Checklist of dress code items */}
+            <div className="flex flex-wrap gap-3">
+              {dressPresets.length ? dressPresets.map((item, idx) => {
+                const selectedSet = new Set(String(values.dress_code || '').split(/[,•\n]+/).map(s => s.trim()).filter(Boolean));
+                const checked = selectedSet.has(item);
+                return (
+                  <label key={idx} className="inline-flex items-center gap-1.5 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        const next = new Set(selectedSet);
+                        if (e.target.checked) next.add(item); else next.delete(item);
+                        setVal('dress_code', Array.from(next).join(', '));
+                      }}
+                    />
+                    <span>{item}</span>
+                    {/* Manage controls (quick delete) */}
+                    <button
+                      type="button"
+                      title="Delete"
+                      className="ml-1 rounded border border-slate-300 px-1 text-xs text-slate-500 hover:bg-slate-100"
+                      onClick={async () => { try { await window.api?.deleteGigInfoPreset?.({ businessId, kind: 'dress_code', value: item }); refreshPresets(); } catch (_) {} }}
+                    >
+                      ✕
+                    </button>
+                  </label>
+                );
+              }) : (
+                <div className="text-xs text-slate-500">No dress code items yet.</div>
+              )}
+            </div>
+            {/* Add new & rename */}
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                className="rounded border border-slate-300 px-2 py-1 text-sm"
+                placeholder="Add new item…"
+                value={values.__draftDressItem || ''}
+                onChange={e => setVal('__draftDressItem', e.target.value)}
+              />
+              <button
+                type="button"
+                className="rounded border border-slate-300 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                onClick={async () => { try { const v = String(values.__draftDressItem || '').trim(); if (!v) return; await window.api?.saveGigInfoPreset?.({ businessId, kind: 'dress_code', value: v }); setVal('__draftDressItem', ''); refreshPresets(); } catch (_) {} }}
+              >
+                Add
+              </button>
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <input type="checkbox" checked={!!include.kit_notes} onChange={e => setInc('kit_notes', e.target.checked)} />
+            Include kit notes
+          </label>
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Kit notes" value={values.kit_notes || ''} onChange={e => setVal('kit_notes', e.target.value)} />
+        </div>
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Contacts</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.contacts} onChange={e => setInc('contacts', e.target.checked)} />
+          Include contacts
+        </label>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Contractor/MD name" value={values.contractor_name || ''} onChange={e => setVal('contractor_name', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Contractor/MD phone" value={values.contractor_phone || ''} onChange={e => setVal('contractor_phone', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Venue contact name" value={values.venue_contact_name || ''} onChange={e => setVal('venue_contact_name', e.target.value)} />
+          <input className="rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Venue contact phone" value={values.venue_contact_phone || ''} onChange={e => setVal('venue_contact_phone', e.target.value)} />
+        </div>
+      </div>
+
+      <div className="rounded border border-slate-200 bg-white p-3 space-y-2">
+        <div className="text-sm font-semibold text-slate-700">Notes</div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.notes} onChange={e => setInc('notes', e.target.checked)} />
+          Include notes
+        </label>
+        <textarea rows={3} className="w-full rounded border border-slate-300 px-3 py-1.5 text-sm" placeholder="Any additional information for the team" value={values.notes || ''} onChange={e => setVal('notes', e.target.value)} />
+      </div>
+
+      <div className="flex items-center justify-end gap-2">
+        <button type="button" className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setShowPreview(v => !v)}>{showPreview ? 'Hide preview' : 'Preview'}</button>
+        <button type="button" className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500" onClick={handleGeneratePdf}>Generate PDF</button>
+        <button
+          type="button"
+          className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+          onClick={handleRevealLatestPdf}
+          disabled={revealLoading}
+        >
+          {revealLoading ? 'Revealing…' : 'Reveal PDF'}
+        </button>
+        <button
+          type="button"
+          className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
+          onClick={handleCopyLatestPdf}
+          disabled={copying}
+        >
+          {copying ? 'Copying…' : 'Copy PDF'}
+        </button>
+      </div>
+      {showPreview ? renderPreview() : null}
+    </div>
+  );
+}
 function DocumentsInlinePanel({
   jobsheetId,
   jobsheetStatus,
@@ -5087,6 +5597,7 @@ function DocumentsInlinePanel({
           </div>
         </div>
       </div>
+      <ToastOverlay notices={gigToasts} />
     </div>
   );
 }
@@ -5905,6 +6416,17 @@ function JobsheetEditor({
                       </div>
                     );
                   }
+                  if (field.component === 'gigInfoPanel') {
+                    return (
+                      <GigInfoPanel
+                        key="gigInfoPanel"
+                        formState={formState}
+                        onChange={handleFieldChange}
+                        businessId={Number(businessId) || 0}
+                        jobsheetId={jobsheetId}
+                      />
+                    );
+                  }
                   if (field.component === 'productionPanel') {
                     return (
                       <ProductionPanel
@@ -6146,7 +6668,21 @@ function JobsheetEditor({
 function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [jobsheets, setJobsheets] = useState([]);
   const [listLoading, setListLoading] = useState(true);
-  const [sortConfig, setSortConfig] = useState({ key: 'event_date', direction: 'desc' });
+  const [sortConfig, setSortConfig] = useState(() => {
+    if (typeof window === 'undefined') return { key: 'event_date', direction: 'desc' };
+    try {
+      const persist = window.localStorage.getItem('app:persistUiState') === 'true';
+      if (!persist) return { key: 'event_date', direction: 'desc' };
+      const raw = window.localStorage.getItem(`ui:${business.id}:jobsheetSort`);
+      if (!raw) return { key: 'event_date', direction: 'desc' };
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && parsed.key) {
+        const dir = parsed.direction === 'asc' ? 'asc' : (parsed.direction === 'desc' ? 'desc' : 'desc');
+        return { key: String(parsed.key), direction: dir };
+      }
+    } catch (_err) {}
+    return { key: 'event_date', direction: 'desc' };
+  });
   const [deletingId, setDeletingId] = useState(null);
   const [statusUpdatingId, setStatusUpdatingId] = useState(null);
   const [message, setMessage] = useState('');
@@ -7632,6 +8168,16 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
       return { key: columnKey, direction: columnKey === 'client_name' ? 'asc' : 'desc' };
     });
   }, []);
+
+  // Persist jobsheet sort when enabled
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      if (window.localStorage.getItem('app:persistUiState') === 'true') {
+        window.localStorage.setItem(`ui:${business.id}:jobsheetSort`, JSON.stringify(sortConfig || {}));
+      }
+    } catch (_err) {}
+  }, [business.id, sortConfig]);
 
   const workspaceToasts = [];
   if (error) workspaceToasts.push({ id: 'workspace-error', tone: 'error', text: error });

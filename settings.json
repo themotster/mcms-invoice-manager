@@ -44,5 +44,17 @@
     "2": [
       "invoice_deposit"
     ]
+  },
+  "gig_info_presets_by_business": {
+    "2": {
+      "dress_codes": [
+        "Herbie blue suit",
+        "Blue patent shoes",
+        "Black patent shoes",
+        "Blue velvet tux jacket",
+        "Black tux trousers",
+        "White shirt"
+      ]
+    }
   }
 }

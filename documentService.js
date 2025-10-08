@@ -6,6 +6,7 @@ try { chokidar = require('chokidar'); } catch (_err) { chokidar = null; }
 const ExcelJS = require('exceljs');
 const db = require('./db');
 const msal = require('@azure/msal-node');
+const { BrowserWindow } = require('electron');
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 function readSettings() {
   try {
@@ -1989,6 +1990,272 @@ async function exportWorkbookPdfs(options = {}) {
   return { ok, workbook_path: normalizedPath, outputs, message };
 }
 
+function formatGigDate(value) {
+  if (!value) return '';
+  try {
+    const d = new Date(value);
+    if (Number.isNaN(d.valueOf())) return String(value);
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  } catch (_) { return String(value); }
+}
+
+function safeHtml(text) {
+  return String(text == null ? '' : text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function buildGigInfoHtml(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id);
+  const jobsheetId = Number(options.jobsheetId ?? options.jobsheet_id);
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+  if (!Number.isInteger(jobsheetId)) throw new Error('jobsheetId is required');
+
+  const js = await db.getAhmenJobsheet(jobsheetId);
+  if (!js) throw new Error('Jobsheet not found');
+
+  let info = {};
+  if (options && options.gigInfo && typeof options.gigInfo === 'object') {
+    info = {
+      values: (options.gigInfo.values && typeof options.gigInfo.values === 'object') ? options.gigInfo.values : {},
+      include: (options.gigInfo.include && typeof options.gigInfo.include === 'object') ? options.gigInfo.include : {}
+    };
+  } else {
+    try { info = js.gig_info ? JSON.parse(js.gig_info) || {} : {}; } catch (_) { info = {}; }
+  }
+  const values = (info && info.values) || {};
+  const include = (info && info.include) || {};
+
+  const titleDate = include.event_date !== false ? formatGigDate(js.event_date) : '';
+  const header = `Gig info sheet${titleDate ? `: ${titleDate}` : ''}`;
+
+  const clientName = include.client_name !== false ? (values.client_name || js.client_name || '') : '';
+  const eventType = include.event_type !== false ? (values.event_type || js.event_type || '') : '';
+
+  const parts = [];
+  if (clientName) parts.push(`<div class="section"><div class="label">Client</div><div class="value">${safeHtml(clientName)}</div></div>`);
+  if (eventType) parts.push(`<div class="section"><div class="label">Event</div><div class="value">${safeHtml(eventType)}</div></div>`);
+
+  // Venue block
+  const venueIncluded = include.venue_block !== false;
+  if (venueIncluded) {
+    const vName = values.venue_name || js.venue_name || '';
+    const a1 = values.venue_address1 || js.venue_address1 || '';
+    const a2 = values.venue_address2 || js.venue_address2 || '';
+    const a3 = values.venue_address3 || js.venue_address3 || '';
+    const town = values.venue_town || js.venue_town || '';
+    const pc = values.venue_postcode || js.venue_postcode || '';
+    const lines = [vName, a1, a2, a3, [town, pc].filter(Boolean).join(' ')].filter(Boolean);
+    if (lines.length) {
+      parts.push(`<div class="section"><div class="label">Venue</div><div class="value">${lines.map(safeHtml).join('<br>')}</div></div>`);
+    }
+  }
+
+  // Schedule (default to included unless explicitly disabled). Include event times (12-hour am/pm) and call time 1:15 before start.
+  {
+    const formatTime = (input) => {
+      if (!input) return '';
+      let s = String(input).trim();
+      if (!s) return '';
+      s = s.replace(/\./g, ':').replace(/\s+/g, '');
+      let mer = null;
+      const lower = s.toLowerCase();
+      if (/(am|pm)$/.test(lower)) {
+        mer = lower.slice(-2);
+        s = lower.slice(0, -2);
+      }
+      let h = 0; let m = 0;
+      if (/^\d{1,2}:\d{2}$/.test(s)) {
+        const parts = s.split(':');
+        h = Number(parts[0]);
+        m = Number(parts[1]);
+      } else if (/^\d{3,4}$/.test(s)) {
+        const v = s.padStart(4, '0');
+        h = Number(v.slice(0, 2));
+        m = Number(v.slice(2));
+      } else if (/^\d{1,2}$/.test(s)) {
+        h = Number(s);
+        m = 0;
+      } else {
+        return String(input);
+      }
+      if (Number.isNaN(h) || Number.isNaN(m)) return '';
+      if (mer) {
+        if (mer === 'pm' && h < 12) h += 12;
+        if (mer === 'am' && h === 12) h = 0;
+      }
+      h = Math.max(0, Math.min(23, h));
+      m = Math.max(0, Math.min(59, m));
+      const outMer = h >= 12 ? 'pm' : 'am';
+      const h12 = (h % 12) === 0 ? 12 : (h % 12);
+      const mm = String(m).padStart(2, '0');
+      return `${h12}:${mm} ${outMer}`;
+    };
+    const parseMinutes = (input) => {
+      if (!input) return null;
+      let s = String(input).trim();
+      if (!s) return null;
+      s = s.replace(/\./g, ':').replace(/\s+/g, '');
+      let mer = null;
+      const lower = s.toLowerCase();
+      if (/(am|pm)$/.test(lower)) { mer = lower.slice(-2); s = lower.slice(0, -2); }
+      let h = 0; let m = 0;
+      if (/^\d{1,2}:\d{2}$/.test(s)) { const parts = s.split(':'); h = Number(parts[0]); m = Number(parts[1]); }
+      else if (/^\d{3,4}$/.test(s)) { const v = s.padStart(4, '0'); h = Number(v.slice(0,2)); m = Number(v.slice(2)); }
+      else if (/^\d{1,2}$/.test(s)) { h = Number(s); m = 0; }
+      else { return null; }
+      if (Number.isNaN(h) || Number.isNaN(m)) return null;
+      if (mer) { if (mer === 'pm' && h < 12) h += 12; if (mer === 'am' && h === 12) h = 0; }
+      h = Math.max(0, Math.min(23, h)); m = Math.max(0, Math.min(59, m));
+      return h * 60 + m;
+    };
+    const fmtFromMinutes = (mins) => {
+      if (mins == null) return '';
+      let v = ((mins % 1440) + 1440) % 1440;
+      const h = Math.floor(v / 60); const m = v % 60;
+      const outMer = h >= 12 ? 'pm' : 'am';
+      const h12 = (h % 12) === 0 ? 12 : (h % 12);
+      const mm = String(m).padStart(2, '0');
+      return `${h12}:${mm} ${outMer}`;
+    };
+    const startTime = formatTime(js.event_start);
+    const endTime = formatTime(js.event_end);
+    const timeLine = startTime && endTime
+      ? `Event time: ${startTime} – ${endTime}`
+      : (startTime ? `Event time: ${startTime}` : (endTime ? `Event end: ${endTime}` : ''));
+    // Call time: 1 hour 15 minutes before start
+    const startMins = parseMinutes(js.event_start);
+    const callTime = startMins != null ? fmtFromMinutes(startMins - 75) : '';
+    const eventTime = include.event_time !== false ? String((values.event_time || '')).trim() : '';
+    const callTimeLine = include.call_time !== false ? String((values.call_time || '')).trim() : '';
+    const scheduleText = include.schedule ? String((values.schedule || '')).trim() : '';
+    const scheduleCombined = [eventTime, callTimeLine, scheduleText].filter(Boolean).join('\n');
+    if (scheduleCombined) {
+      parts.push(`<div class="section"><div class="label">Schedule</div><div class="value">${safeHtml(scheduleCombined).replace(/\n/g, '<br>')}</div></div>`);
+    }
+  }
+
+  // Personnel lineup
+  if (include.personnel_lineup) {
+    const line = String((values.personnel_lineup || '')).trim();
+    if (line) parts.push(`<div class=\"section\"><div class=\"label\">Personnel</div><div class=\"value\">${safeHtml(line).replace(/\\n/g, '<br>')}</div></div>`);
+  }
+
+  // Setlist / Repertoire
+  if (include.repertoire) {
+    const rep = String((values.repertoire || '')).trim();
+    if (rep) parts.push(`<div class=\"section\"><div class=\"label\">Setlist / Repertoire</div><div class=\"value\">${safeHtml(rep).replace(/\\n/g, '<br>')}</div></div>`);
+  }
+
+  // Dress & Kit
+  if (include.dress_code) {
+    const dress = values.dress_code || '';
+    if (dress.trim()) parts.push(`<div class="section"><div class="label">Dress code</div><div class="value">${safeHtml(dress)}</div></div>`);
+  }
+  if (include.kit_notes) {
+    const kit = values.kit_notes || '';
+    if (kit.trim()) parts.push(`<div class="section"><div class="label">Kit</div><div class="value">${safeHtml(kit)}</div></div>`);
+  }
+
+  // Contacts
+  if (include.contacts) {
+    const c1 = values.contractor_name || '';
+    const c1p = values.contractor_phone || '';
+    const vcn = values.venue_contact_name || '';
+    const vcp = values.venue_contact_phone || '';
+    const lines = [];
+    if (c1 || c1p) lines.push([c1, c1p].filter(Boolean).map(safeHtml).join(' · '));
+    if (vcn || vcp) lines.push([vcn, vcp].filter(Boolean).map(safeHtml).join(' · '));
+    if (lines.length) {
+      parts.push(`<div class="section"><div class="label">Contacts</div><div class="value">${lines.join('<br>')}</div></div>`);
+    }
+  }
+
+  // Notes
+  if (include.notes) {
+    const notes = values.notes || '';
+    if (notes.trim()) parts.push(`<div class="section"><div class="label">Notes</div><div class="value">${safeHtml(notes).replace(/\n/g, '<br>')}</div></div>`);
+  }
+
+  const html = `<!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      /* Base */
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+        color: #0f172a;
+        margin: 24px;
+        line-height: 1.5;
+        background: #ffffff;
+      }
+      .doc { max-width: 780px; margin: 0 auto; }
+      .title {
+        font-size: 22px;
+        font-weight: 800;
+        color: #0f172a;
+        margin: 0 0 18px 0;
+      }
+
+      /* Sections */
+      .section {
+        padding: 12px 14px;
+        border: 1px solid #e5e7eb; /* slate-200 */
+        background-color: #f8fafc; /* slate-50 */
+        border-radius: 10px;
+        margin: 12px 0;
+      }
+      .label {
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        color: #475569; /* slate-600 */
+        margin: 0 0 6px 0;
+      }
+      .value {
+        font-size: 14px;
+        color: #0f172a; /* slate-900 */
+        white-space: pre-wrap;
+      }
+      .footer { margin-top: 28px; font-size: 11px; color: #64748b; }
+
+      /* Let content flow across page breaks naturally */
+      @media print {
+        .section { break-inside: auto; page-break-inside: auto; }
+        .value { overflow-wrap: anywhere; word-break: break-word; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="doc">
+      <div class="title">${safeHtml(header)}</div>
+      ${parts.join('\n')}
+    </div>
+  </body>
+  </html>`;
+
+  // Determine save path
+  const ensured = await module.exports.ensureJobsheetFolder({ businessId, jobsheetId });
+  const folderPath = ensured?.folder_path || ensured?.path || '';
+  if (!folderPath) throw new Error('Unable to resolve jobsheet folder');
+  // Name PDF with human date suffix when available (e.g., "Gig Info - 08 Oct 2025.pdf")
+  const rawDate = js.event_date ? String(js.event_date).trim() : '';
+  const datePart = rawDate ? formatGigDate(rawDate).replace(/,/g, '') : '';
+  const base = datePart ? `Gig Info - ${datePart}` : 'Gig Info';
+  let target = path.join(folderPath, `${base}.pdf`);
+  let n = 2;
+  while (await pathExists(target)) {
+    target = path.join(folderPath, `${base} (${n}).pdf`);
+    n += 1;
+    if (n > 999) break;
+  }
+  return { html, targetPath: target };
+}
+
 async function syncJobsheetOutputs(options = {}) {
   const businessId = Number(options.businessId ?? options.business_id ?? options.id);
   if (!Number.isInteger(businessId)) {
@@ -2985,6 +3252,7 @@ module.exports = {
   sendMailViaGraph,
   scheduleMailViaGraph,
   resolveTemplateDefaultAttachments,
+  buildGigInfoHtml,
   // List files in a jobsheet's folder (non-recursive)
   listJobFolderFiles: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
@@ -3101,6 +3369,111 @@ module.exports = {
       }
     };
     return T;
+  },
+  // Gig Info presets (dress code and repertoire)
+  getGigInfoPresets: async (options = {}) => {
+    const s = readSettings();
+    const businessId = Number(options.businessId ?? options.business_id);
+    const norm = (v) => Array.isArray(v) ? v.filter(x => typeof x === 'string' && x.trim()).map(String) : [];
+    if (Number.isInteger(businessId)) {
+      const map = s.gig_info_presets_by_business || {};
+      const entry = map[businessId] || {};
+      return {
+        dress_codes: norm(entry.dress_codes),
+        repertoire: norm(entry.repertoire)
+      };
+    }
+    const def = s.gig_info_presets || {};
+    return {
+      dress_codes: norm(def.dress_codes),
+      repertoire: norm(def.repertoire)
+    };
+  },
+  saveGigInfoPreset: async (options = {}) => {
+    const kindRaw = String(options.kind || '').toLowerCase();
+    const kind = kindRaw === 'dress_code' || kindRaw === 'dress' ? 'dress_codes' : (kindRaw === 'repertoire' || kindRaw === 'setlist' ? 'repertoire' : null);
+    const value = String(options.value || '').trim();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (!kind) throw new Error('Invalid preset kind');
+    if (!value) throw new Error('Preset value is empty');
+    const s = readSettings();
+    const cap = Number.isInteger(options.limit) ? options.limit : 20;
+    const pushUniqueFront = (arr, v) => {
+      const list = Array.isArray(arr) ? arr.slice() : [];
+      const existingIndex = list.findIndex(x => String(x) === v);
+      if (existingIndex >= 0) list.splice(existingIndex, 1);
+      list.unshift(v);
+      if (cap > 0 && list.length > cap) list.length = cap;
+      return list;
+    };
+    if (Number.isInteger(businessId)) {
+      const map = s.gig_info_presets_by_business || {};
+      const entry = map[businessId] || {};
+      entry[kind] = pushUniqueFront(entry[kind], value);
+      map[businessId] = entry;
+      s.gig_info_presets_by_business = map;
+    } else {
+      const def = s.gig_info_presets || {};
+      def[kind] = pushUniqueFront(def[kind], value);
+      s.gig_info_presets = def;
+    }
+    writeSettings(s);
+    return { ok: true };
+  },
+  deleteGigInfoPreset: async (options = {}) => {
+    const kindRaw = String(options.kind || '').toLowerCase();
+    const kind = kindRaw === 'dress_code' || kindRaw === 'dress' ? 'dress_codes' : (kindRaw === 'repertoire' || kindRaw === 'setlist' ? 'repertoire' : null);
+    const value = String(options.value || '').trim();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (!kind) throw new Error('Invalid preset kind');
+    if (!value) throw new Error('Preset value is empty');
+    const s = readSettings();
+    const remove = (arr, v) => (Array.isArray(arr) ? arr.filter(x => String(x) !== v) : []);
+    if (Number.isInteger(businessId)) {
+      const map = s.gig_info_presets_by_business || {};
+      const entry = map[businessId] || {};
+      entry[kind] = remove(entry[kind], value);
+      map[businessId] = entry;
+      s.gig_info_presets_by_business = map;
+    } else {
+      const def = s.gig_info_presets || {};
+      def[kind] = remove(def[kind], value);
+      s.gig_info_presets = def;
+    }
+    writeSettings(s);
+    return { ok: true };
+  },
+  renameGigInfoPreset: async (options = {}) => {
+    const kindRaw = String(options.kind || '').toLowerCase();
+    const kind = kindRaw === 'dress_code' || kindRaw === 'dress' ? 'dress_codes' : (kindRaw === 'repertoire' || kindRaw === 'setlist' ? 'repertoire' : null);
+    const from = String(options.from || '').trim();
+    const to = String(options.to || '').trim();
+    const businessId = Number(options.businessId ?? options.business_id);
+    if (!kind) throw new Error('Invalid preset kind');
+    if (!from || !to) throw new Error('Both from and to are required');
+    const s = readSettings();
+    const replace = (arr, a, b) => {
+      const list = Array.isArray(arr) ? arr.slice() : [];
+      const idx = list.findIndex(x => String(x) === a);
+      if (idx === -1) return list;
+      // Remove any existing identical target, then set new at same index
+      const filtered = list.filter(x => String(x) !== b);
+      filtered.splice(idx, 1, b);
+      return filtered;
+    };
+    if (Number.isInteger(businessId)) {
+      const map = s.gig_info_presets_by_business || {};
+      const entry = map[businessId] || {};
+      entry[kind] = replace(entry[kind], from, to);
+      map[businessId] = entry;
+      s.gig_info_presets_by_business = map;
+    } else {
+      const def = s.gig_info_presets || {};
+      def[kind] = replace(def[kind], from, to);
+      s.gig_info_presets = def;
+    }
+    writeSettings(s);
+    return { ok: true };
   },
   // Mail templates (subject/body only), per business
   getMailTemplates: async (options = {}) => {
