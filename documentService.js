@@ -2028,6 +2028,7 @@ async function buildGigInfoHtml(options = {}) {
   }
   const values = (info && info.values) || {};
   const include = (info && info.include) || {};
+  const compact = include.compact_spacing === true;
 
   const titleDate = include.event_date !== false ? formatGigDate(js.event_date) : '';
   const header = `Gig info sheet${titleDate ? `: ${titleDate}` : ''}`;
@@ -2194,33 +2195,12 @@ async function buildGigInfoHtml(options = {}) {
         background: #ffffff;
       }
       .doc { max-width: 780px; margin: 0 auto; }
-      .title {
-        font-size: 22px;
-        font-weight: 800;
-        color: #0f172a;
-        margin: 0 0 18px 0;
-      }
+      .title { font-size: 22px; font-weight: 800; color: #0f172a; margin: 0 0 ${compact ? '12px' : '18px'} 0; }
 
       /* Sections */
-      .section {
-        padding: 12px 14px;
-        border: 1px solid #e5e7eb; /* slate-200 */
-        background-color: #f8fafc; /* slate-50 */
-        border-radius: 10px;
-        margin: 12px 0;
-      }
-      .label {
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: #475569; /* slate-600 */
-        margin: 0 0 6px 0;
-      }
-      .value {
-        font-size: 14px;
-        color: #0f172a; /* slate-900 */
-        white-space: pre-wrap;
-      }
+      .section { padding: ${compact ? '8px 10px' : '12px 14px'}; border: 1px solid #e5e7eb; background-color: #f8fafc; border-radius: 10px; margin: ${compact ? '8px 0' : '12px 0'}; }
+      .label { font-size: ${compact ? '11px' : '12px'}; text-transform: uppercase; letter-spacing: 0.04em; color: #475569; margin: 0 0 ${compact ? '4px' : '6px'} 0; }
+      .value { font-size: ${compact ? '13px' : '14px'}; color: #0f172a; white-space: pre-wrap; }
       .footer { margin-top: 28px; font-size: 11px; color: #64748b; }
 
       /* Let content flow across page breaks naturally */

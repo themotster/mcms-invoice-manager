@@ -1,5 +1,5 @@
 const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const documentService = require('./documentService');
@@ -35,9 +35,12 @@ const CHILD_WINDOW_OPTIONS = {
   webPreferences: {
     preload: path.join(__dirname, 'preload.js'),
     contextIsolation: true,
-    nodeIntegration: true,
+    nodeIntegration: false,
+    sandbox: false,
     enableRemoteModule: false,
-    nativeWindowOpen: true
+    nativeWindowOpen: true,
+    webSecurity: true,
+    allowRunningInsecureContent: false
   }
 };
 
@@ -94,9 +97,12 @@ function createWindow() {
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
-      nodeIntegration: true,
+      nodeIntegration: false,
+      sandbox: false,
       enableRemoteModule: false,
-      nativeWindowOpen: true
+      nativeWindowOpen: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false
     }
   };
 
@@ -224,6 +230,23 @@ app.whenReady().then(() => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
     }
+  });
+
+  // Security: open external links in default browser; block in‑app navigation to remote content
+  app.on('web-contents-created', (_event, contents) => {
+    contents.setWindowOpenHandler(({ url }) => {
+      try { const u = new URL(url); if (u.protocol === 'http:' || u.protocol === 'https:') { shell.openExternal(url); return { action: 'deny' }; } } catch (_) {}
+      return { action: 'deny' };
+    });
+    contents.on('will-navigate', (e, url) => {
+      try {
+        const u = new URL(url);
+        if (u.protocol === 'http:' || u.protocol === 'https:') {
+          e.preventDefault();
+          shell.openExternal(url);
+        }
+      } catch (_) { /* non-URL targets (like file) are allowed */ }
+    });
   });
 });
 
@@ -366,12 +389,22 @@ ipcMain.handle('copy-file-to-clipboard', async (_event, targetPath) => {
 
     // macOS: set a true file reference on the clipboard via AppleScript
     if (process.platform === 'darwin') {
-      await new Promise((resolve, reject) => {
-        const script = `set the clipboard to (POSIX file \"${abs.replace(/\\/g, '\\\\').replace(/\"/g, '\\\"')}\")`;
-        execFile('osascript', ['-e', script], (err) => {
-          if (err) reject(err); else resolve();
+      // Prefer writing a file URL UTI that many apps (e.g., WhatsApp) accept
+      try {
+        const fileUrl = 'file://' + abs.split(path.sep).map(encodeURIComponent).join('/');
+        try { clipboard.clear(); } catch (_) {}
+        try { clipboard.writeBuffer('public.file-url', Buffer.from(fileUrl)); } catch (_) {}
+        try { clipboard.writeBuffer('text/uri-list', Buffer.from(fileUrl)); } catch (_) {}
+      } catch (_) {}
+      // Fallback to AppleScript alias on macOS for broader compatibility
+      try {
+        await new Promise((resolve, reject) => {
+          const script = `set the clipboard to (POSIX file \"${abs.replace(/\\/g, '\\\\').replace(/\"/g, '\\\"')}\")`;
+          execFile('osascript', ['-e', script], (err) => {
+            if (err) reject(err); else resolve();
+          });
         });
-      });
+      } catch (_) {}
       return { ok: true };
     }
 
@@ -380,6 +413,60 @@ ipcMain.handle('copy-file-to-clipboard', async (_event, targetPath) => {
     try { clipboard.clear(); } catch (_) {}
     try { clipboard.writeBuffer('public.file-url', Buffer.from(fileUrl)); } catch (_) {}
     try { clipboard.writeBuffer('text/uri-list', Buffer.from(fileUrl)); } catch (_) {}
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+// Quick Look a file (macOS). Non-macOS falls back to opening the file.
+ipcMain.handle('quick-look-path', async (_event, targetPath) => {
+  try {
+    if (!targetPath || typeof targetPath !== 'string') return { ok: false, message: 'Missing path' };
+    const abs = path.resolve(targetPath);
+    try { await fs.promises.access(abs, fs.constants.R_OK); } catch (_) { return { ok: false, message: 'File not found' }; }
+    if (process.platform === 'darwin') {
+      // Preferred: trigger Finder-style Quick Look (spacebar) via AppleScript
+      const esc = abs.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const script = `
+tell application "Finder"
+  activate
+  try
+    set theItem to POSIX file "${esc}"
+    reveal theItem
+    set selection to {theItem}
+  end try
+end tell
+tell application "System Events"
+  keystroke space
+end tell`;
+      try {
+        await new Promise((resolve, reject) => {
+          execFile('osascript', ['-e', script], (err) => {
+            if (err) reject(err); else resolve();
+          });
+        });
+        return { ok: true, mode: 'finder-quicklook' };
+      } catch (_err) {
+        // Fallback: qlmanage (debug preview). May show [DEBUG] title on some macOS versions
+        try {
+          const child = spawn('qlmanage', ['-p', abs], { detached: true, stdio: 'ignore' });
+          child.unref();
+          return { ok: true, mode: 'qlmanage' };
+        } catch (err) {
+          // Final fallback: default handler (e.g., Preview for PDFs)
+          try {
+            const res = await shell.openPath(abs);
+            if (res) return { ok: false, message: res };
+            return { ok: true, mode: 'default' };
+          } catch (e) {
+            return { ok: false, message: err?.message || String(err) };
+          }
+        }
+      }
+    }
+    const res = await shell.openPath(abs);
+    if (res) return { ok: false, message: res };
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err?.message || String(err) };

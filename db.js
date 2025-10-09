@@ -514,6 +514,7 @@ function initializeDatabase() {
       pricing_production_discount_value REAL,
       pricing_production_total REAL,
       pricing_total REAL,
+      archived_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (business_id) REFERENCES business_settings(id),
@@ -560,6 +561,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_total REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN gig_info TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN archived_at TEXT', logDuplicateColumn);
     
     db.run(`UPDATE ahmen_jobsheets SET status='enquiry' WHERE status IS NULL OR status='' OR status='draft'`, err => {
       if (err) console.error('Failed to normalize jobsheet status:', err);
@@ -2511,6 +2513,9 @@ function getAhmenJobsheets(options = {}) {
     conditions.push('business_id = ?');
     params.push(options.businessId);
   }
+  if (!options.includeArchived) {
+    conditions.push('archived_at IS NULL');
+  }
   let query = 'SELECT * FROM ahmen_jobsheets';
   if (conditions.length) {
     query += ` WHERE ${conditions.join(' AND ')}`;
@@ -2607,6 +2612,25 @@ function updateAhmenJobsheetStatus(jobsheetId, status) {
     db.run(
       "UPDATE ahmen_jobsheets SET status = ?, updated_at = datetime('now') WHERE jobsheet_id = ?",
       [normalizedStatus, id],
+      function (err) {
+        if (err) reject(err);
+        else resolve(this.changes);
+      }
+    );
+  });
+}
+
+function setJobsheetArchived(jobsheetId, archived) {
+  return new Promise((resolve, reject) => {
+    const id = Number(jobsheetId);
+    if (!Number.isInteger(id)) {
+      reject(new Error('Invalid jobsheet id'));
+      return;
+    }
+    const valueExpr = archived ? "datetime('now')" : 'NULL';
+    db.run(
+      `UPDATE ahmen_jobsheets SET archived_at = ${valueExpr}, updated_at = datetime('now') WHERE jobsheet_id = ?`,
+      [id],
       function (err) {
         if (err) reject(err);
         else resolve(this.changes);
@@ -3953,6 +3977,7 @@ module.exports = {
   addAhmenJobsheet,
   updateAhmenJobsheet,
   updateAhmenJobsheetStatus,
+  setJobsheetArchived,
   deleteAhmenJobsheet,
   getAhmenVenues,
   saveAhmenVenue,

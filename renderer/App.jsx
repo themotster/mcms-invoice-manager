@@ -2080,6 +2080,9 @@ function JobsheetList({
   onNew,
   onDelete,
   onStatusChange,
+  onArchiveToggle,
+  includeArchived = false,
+  onToggleIncludeArchived,
   loading,
   deletingId,
   statusUpdatingId,
@@ -2090,6 +2093,83 @@ function JobsheetList({
   const [searchValue, setSearchValue] = useState('');
   const [statusFilters, setStatusFilters] = useState(() => new Set());
   const normalizedSearch = searchValue.trim().toLowerCase();
+
+  // Column controls: show/hide + reorder (persist per business)
+  const JOBSHEET_COLUMNS_STORAGE_KEY = `ui:${business?.id}:jobsheetColumns`;
+  const defaultOrder = useMemo(() => JOBSHEET_COLUMNS.map(c => c.key), []);
+  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
+  const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
+  const columnsMenuRef = useRef(null);
+  const columnsMenuContentRef = useRef(null);
+  const [columnOrder, setColumnOrder] = useState(() => {
+    if (typeof window === 'undefined') return defaultOrder;
+    try {
+      const raw = window.localStorage.getItem(JOBSHEET_COLUMNS_STORAGE_KEY);
+      if (!raw) return defaultOrder;
+      const parsed = JSON.parse(raw);
+      if (parsed && Array.isArray(parsed.order)) return parsed.order.filter(Boolean);
+    } catch (_) {}
+    return defaultOrder;
+  });
+  const [columnVisibility, setColumnVisibility] = useState(() => {
+    if (typeof window === 'undefined') return {};
+    try {
+      const raw = window.localStorage.getItem(JOBSHEET_COLUMNS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.visibility && typeof parsed.visibility === 'object') return parsed.visibility;
+    } catch (_) {}
+    return {};
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined' || !business) return;
+    try {
+      window.localStorage.setItem(JOBSHEET_COLUMNS_STORAGE_KEY, JSON.stringify({ order: columnOrder, visibility: columnVisibility }));
+    } catch (_) {}
+  }, [business, columnOrder, columnVisibility]);
+  const baseColumnMap = useMemo(() => new Map(JOBSHEET_COLUMNS.map(c => [c.key, c])), []);
+  const effectiveColumns = useMemo(() => {
+    const normalizedOrder = [...columnOrder].filter(k => baseColumnMap.has(k));
+    for (const key of baseColumnMap.keys()) if (!normalizedOrder.includes(key)) normalizedOrder.push(key);
+    const list = normalizedOrder
+      .map(k => baseColumnMap.get(k))
+      .filter(Boolean)
+      .filter(col => col.key === 'actions' ? true : (columnVisibility[col.key] !== false));
+    // Always keep actions last if present
+    const others = list.filter(c => c.key !== 'actions');
+    const actions = list.find(c => c.key === 'actions');
+    return actions ? [...others, actions] : others;
+  }, [columnOrder, columnVisibility, baseColumnMap]);
+
+  const moveColumn = useCallback((key, dir) => {
+    setColumnOrder(prev => {
+      const arr = prev.slice();
+      const idx = arr.indexOf(key);
+      if (idx < 0) return arr;
+      const swapWith = dir === 'up' ? idx - 1 : idx + 1;
+      if (swapWith < 0 || swapWith >= arr.length) return arr;
+      const tmp = arr[swapWith];
+      arr[swapWith] = arr[idx];
+      arr[idx] = tmp;
+      return arr;
+    });
+  }, []);
+  const toggleColumn = useCallback((key) => {
+    if (key === 'actions') return; // cannot hide actions
+    setColumnVisibility(prev => {
+      const currentVisible = prev?.[key] !== false; // default visible
+      const nextVisible = !currentVisible;
+      return { ...prev, [key]: nextVisible ? true : false };
+    });
+  }, []);
+  useEffect(() => {
+    if (!columnsMenuOpen) return undefined;
+    const onDoc = (e) => {
+      if (columnsMenuRef.current && !columnsMenuRef.current.contains(e.target)) setColumnsMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, [columnsMenuOpen]);
 
   const filteredJobsheets = useMemo(() => {
     if (!jobsheets || jobsheets.length === 0) {
@@ -2253,6 +2333,7 @@ function JobsheetList({
     const activeRowClass = ACTIVE_STATUS_ROW_CLASSES[statusKey] || baseRowClass;
     const numericRowId = sheet.jobsheet_id != null ? Number(sheet.jobsheet_id) : null;
     const isActive = numericRowId != null && activeJobsheetId != null && Number(activeJobsheetId) === numericRowId;
+    const isArchived = Boolean(sheet.archived_at);
 
     const rowBackground = isActive ? activeRowClass : baseRowClass;
     const baseCellClass = 'px-4 py-3 text-sm';
@@ -2268,7 +2349,7 @@ function JobsheetList({
       <tr
         key={sheet.jobsheet_id || sheet.client_name}
         onClick={() => onOpen(sheet.jobsheet_id)}
-        className="cursor-pointer"
+        className={`cursor-pointer ${isArchived ? 'opacity-70' : ''}`}
       >
         <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} ${firstCellExtras}`}>
           <div className="flex items-center gap-3">
@@ -2310,7 +2391,14 @@ function JobsheetList({
           {toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)))}
         </td>
         <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} ${lastCellExtras}`}>
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={(event) => { event.stopPropagation(); onArchiveToggle?.(sheet.jobsheet_id, !isArchived); }}
+              className={`rounded border px-2 py-1 text-xs font-medium ${isArchived ? 'border-slate-200 text-slate-600 hover:bg-slate-50' : 'border-amber-200 text-amber-700 hover:bg-amber-50'}`}
+            >
+              {isArchived ? 'Unarchive' : 'Archive'}
+            </button>
             <button
               type="button"
               disabled={deletingId === sheet.jobsheet_id}
@@ -2347,15 +2435,15 @@ function JobsheetList({
           </div>
         </div>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div className="relative w-full md:max-w-xs">
-            <input
-              type="search"
-              value={searchValue}
-              onChange={event => setSearchValue(event.target.value)}
-              placeholder="Search jobsheets"
-              className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            />
-          </div>
+              <div className="relative w-full md:max-w-xs">
+                <input
+                  type="search"
+                  value={searchValue}
+                  onChange={event => setSearchValue(event.target.value)}
+                  placeholder="Search jobsheets"
+                  className="w-full rounded border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                />
+              </div>
           <div className="flex flex-wrap items-center gap-2">
             {STATUS_OPTIONS.map(option => {
               const active = statusFilters.has(option.value);
@@ -2380,6 +2468,38 @@ function JobsheetList({
                 Clear
               </button>
             ) : null}
+            <label className="inline-flex items-center gap-2 text-xs text-slate-600 ml-2">
+              <input type="checkbox" checked={!!includeArchived} onChange={() => onToggleIncludeArchived?.()} />
+              Show archived
+            </label>
+            <div className="relative" ref={columnsMenuRef}>
+              <button
+                type="button"
+                onClick={() => setColumnsMenuOpen(v => !v)}
+                className="inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+              >
+                Columns
+              </button>
+              {columnsMenuOpen ? (
+                <div
+                  ref={columnsMenuContentRef}
+                  className={`absolute right-0 z-20 w-56 rounded border border-slate-200 bg-white p-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+                >
+                  {JOBSHEET_COLUMNS.map(col => (
+                    <div key={col.key} className="flex items-center justify-between gap-2 px-1 py-1 text-sm">
+                      <label className="inline-flex items-center gap-2 text-slate-700">
+                        <input type="checkbox" disabled={col.key === 'actions'} checked={col.key === 'actions' ? true : columnVisibility[col.key] !== false} onChange={() => toggleColumn(col.key)} />
+                        <span>{col.label || (col.key === 'actions' ? 'Actions' : col.key)}</span>
+                      </label>
+                      <div className="ml-2 flex items-center gap-1">
+                        <button type="button" className="rounded border border-slate-300 px-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => moveColumn(col.key, 'up')}>↑</button>
+                        <button type="button" className="rounded border border-slate-300 px-1 text-xs text-slate-600 hover:bg-slate-50" onClick={() => moveColumn(col.key, 'down')}>↓</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
           </div>
         </div>
       </div>
@@ -2393,7 +2513,7 @@ function JobsheetList({
             <table className="min-w-full text-sm border-separate border-spacing-y-2">
               <thead>
                 <tr className="bg-slate-50">
-                  {JOBSHEET_COLUMNS.map(column => {
+                  {effectiveColumns.map(column => {
                     const alignClass = column.align === 'right'
                       ? 'text-right'
                       : column.align === 'center'
@@ -2426,7 +2546,80 @@ function JobsheetList({
                 </tr>
               </thead>
               <tbody>
-                {sortedJobsheets.map(sheet => renderDataRow(sheet))}
+                {sortedJobsheets.map(sheet => {
+                  const statusKey = normalizeStatus(sheet.status) || 'enquiry';
+                  const statusStyles = STATUS_STYLES[statusKey] || 'bg-slate-200 text-slate-700 border border-slate-300';
+                  const statusDisabled = statusUpdatingId === sheet.jobsheet_id;
+                  const baseRowClass = STATUS_ROW_CLASSES[statusKey] || 'bg-white';
+                  const activeRowClass = ACTIVE_STATUS_ROW_CLASSES[statusKey] || baseRowClass;
+                  const numericRowId = sheet.jobsheet_id != null ? Number(sheet.jobsheet_id) : null;
+                  const isActive = numericRowId != null && activeJobsheetId != null && Number(activeJobsheetId) === numericRowId;
+                  const rowBackground = isActive ? activeRowClass : baseRowClass;
+                  const baseCellClass = 'px-4 py-3 text-sm';
+                  const verticalBorder = 'border-y border-transparent';
+                  const firstCellExtras = isActive ? "relative before:absolute before:inset-y-2 before:left-1 before:w-1 before:rounded-full before:bg-indigo-600 before:content-[''] before:block rounded-l-xl shadow-[0_0_0_2px_rgba(79,70,229,0.25)]" : 'rounded-l-xl';
+                  const lastCellExtras = isActive ? 'rounded-r-xl shadow-[0_0_0_2px_rgba(79,70,229,0.25)]' : 'rounded-r-xl';
+                  const currency = toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)));
+                  const isArchived = Boolean(sheet.archived_at);
+                  return (
+                    <tr key={sheet.jobsheet_id || sheet.client_name} onClick={() => onOpen(sheet.jobsheet_id)} className={`cursor-pointer ${isArchived ? 'opacity-70' : ''}`}>
+                      {effectiveColumns.map((col, idx) => {
+                        const alignClass = col.align === 'right' ? 'text-right' : (col.align === 'center' ? 'text-center' : 'text-left');
+                        const isFirst = idx === 0;
+                        const isLast = idx === effectiveColumns.length - 1;
+                        const extra = isFirst ? firstCellExtras : (isLast ? lastCellExtras : '');
+                        const common = `${rowBackground} ${baseCellClass} ${verticalBorder} ${extra}`;
+                        switch (col.key) {
+                          case 'client_name':
+                            return (<td key={col.key} className={`${common} ${alignClass}`}><div className="flex items-center gap-3">{isActive ? <span className="h-8 w-1 rounded-full bg-indigo-600" /> : null}<span className="font-medium text-slate-800 whitespace-nowrap">{sheet.client_name || 'Untitled booking'}</span></div></td>);
+                          case 'event_type':
+                            return (<td key={col.key} className={`${common} ${alignClass}`}>{sheet.event_type || '—'}</td>);
+                          case 'event_date':
+                            return (<td key={col.key} className={`${common} ${alignClass} whitespace-nowrap`}>{formatDateDisplay(sheet.event_date)}</td>);
+                          case 'venue_name':
+                            return (<td key={col.key} className={`${common} ${alignClass} truncate`}>{sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}</td>);
+                          case 'status':
+                            return (
+                              <td key={col.key} className={`${common} ${alignClass}`}>
+                                <div className="flex justify-center">
+                                  <select
+                                    value={statusKey}
+                                    disabled={statusDisabled}
+                                    className={`rounded-full px-3 py-1 text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 ${statusStyles} ${statusDisabled ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}
+                                    onClick={event => event.stopPropagation()}
+                                    onMouseDown={event => event.stopPropagation()}
+                                    onChange={event => {
+                                      event.stopPropagation();
+                                      const nextStatus = event.target.value;
+                                      if (!nextStatus || nextStatus === statusKey) return;
+                                      onStatusChange?.(sheet.jobsheet_id, nextStatus);
+                                    }}
+                                  >
+                                    {STATUS_OPTIONS.map(option => (
+                                      <option key={option.value} value={option.value}>{option.label}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                              </td>
+                            );
+                          case 'ahmen_fee':
+                            return (<td key={col.key} className={`${common} ${alignClass} text-slate-600`}>{currency}</td>);
+                          case 'actions':
+                            return (
+                              <td key={col.key} className={`${common} ${alignClass}`}>
+                                <div className="flex justify-end gap-2">
+                                  <button type="button" onClick={(event) => { event.stopPropagation(); onArchiveToggle?.(sheet.jobsheet_id, !isArchived); }} className={`rounded border px-2 py-1 text-xs font-medium ${isArchived ? 'border-slate-200 text-slate-600 hover:bg-slate-50' : 'border-amber-200 text-amber-700 hover:bg-amber-50'}`}>{isArchived ? 'Unarchive' : 'Archive'}</button>
+                                  <button type="button" disabled={deletingId === sheet.jobsheet_id} onClick={(event) => { event.stopPropagation(); onDelete(sheet.jobsheet_id); }} className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60">Delete</button>
+                                </div>
+                              </td>
+                            );
+                          default:
+                            return (<td key={col.key} className={`${common} ${alignClass}`}>—</td>);
+                        }
+                      })}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -4087,7 +4280,8 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
       event_time: prev.event_time ?? true,
       call_time: prev.call_time ?? true,
       personnel_lineup: prev.personnel_lineup ?? false,
-      repertoire: prev.repertoire ?? false
+      repertoire: prev.repertoire ?? false,
+      compact_spacing: prev.compact_spacing ?? false
     }));
     // Seed default editable lines if absent
     setValues(prev => {
@@ -4119,63 +4313,66 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Push to form state (autosave handles persistence)
+  // Push to form state (autosave handles persistence) without creating an update loop
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
   useEffect(() => {
-    onChange('gig_info', JSON.stringify({ values, include }));
-  }, [values, include, onChange]);
+    try { onChangeRef.current?.('gig_info', JSON.stringify({ values, include })); } catch (_) {}
+  }, [values, include]);
 
   const setVal = (key, v) => setValues(prev => ({ ...prev, [key]: v }));
   const setInc = (key, v) => setInclude(prev => ({ ...prev, [key]: v }));
   const [showPreview, setShowPreview] = useState(true);
 
-  const handleGeneratePdf = async () => {
-    try {
-      const res = await window.api?.createGigInfoPdf?.({
-        businessId,
-        jobsheetId,
-        gigInfo: { values, include }
-      });
-      if (!res || res.ok === false) throw new Error(res?.message || 'Unable to generate PDF');
-      pushGigToast('Gig Info PDF created', 'success');
-    } catch (err) {
-      pushGigToast(err?.message || 'Unable to generate PDF', 'error');
-    }
-  };
+  // deprecated standalone generate (replaced by single quick action)
 
-  const [revealLoading, setRevealLoading] = useState(false);
-  const handleRevealLatestPdf = async () => {
+  const [shareWorking, setShareWorking] = useState(false);
+  const lastPdfPathRef = useRef(null);
+  const handleRevealOnly = async () => {
     try {
-      setRevealLoading(true);
-      const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
-      const list = Array.isArray(files) ? files : [];
-      const match = list.find(f => /^gig info(?: - .+)?(?: \(\d+\))?\.pdf$/i.test(f?.name || '')) || null;
-      if (!match) { pushGigToast('No Gig Info PDF found for this job', 'warning'); return; }
-      const res = await window.api?.showItemInFolder?.(match.path);
-      if (res && res.ok === false) throw new Error(res.message || 'Unable to reveal file');
+      setShareWorking(true);
+      // Reveal an existing Gig Info PDF only (do not generate)
+      let pdfPath = null;
+      try {
+        const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
+        const gigInfos = (Array.isArray(files) ? files : []).filter(f => String(f?.name || '').toLowerCase().startsWith('gig info'));
+        if (gigInfos.length) {
+          pdfPath = gigInfos[0].path; // listJobFolderFiles returns sorted by mtime desc
+        }
+      } catch (_) {}
+      if (!pdfPath) {
+        pushGigToast('No Gig Info PDF found to reveal', 'warning');
+        return;
+      }
+      lastPdfPathRef.current = pdfPath;
+      const reveal = await window.api?.showItemInFolder?.(pdfPath);
+      if (reveal && reveal.ok === false) {
+        // Fallback: open the file if reveal failed
+        await window.api?.openPath?.(pdfPath);
+      }
+      pushGigToast('Revealed in Finder', 'success');
     } catch (err) {
       pushGigToast(err?.message || 'Unable to reveal PDF', 'error');
     } finally {
-      setRevealLoading(false);
+      setShareWorking(false);
+    }
+  };
+  const handleGenerateOnly = async () => {
+    try {
+      setShareWorking(true);
+      pushGigToast('Generating PDF…');
+      const res = await window.api?.createGigInfoPdf?.({ businessId, jobsheetId, gigInfo: { values, include } });
+      if (!res || res.ok === false || !res.file_path) throw new Error(res?.message || 'Unable to generate PDF');
+      lastPdfPathRef.current = res.file_path;
+      pushGigToast('Gig Info PDF generated', 'success');
+    } catch (err) {
+      pushGigToast(err?.message || 'Unable to generate PDF', 'error');
+    } finally {
+      setShareWorking(false);
     }
   };
 
-  const [copying, setCopying] = useState(false);
-  const handleCopyLatestPdf = async () => {
-    try {
-      setCopying(true);
-      const files = await window.api?.listJobFolderFiles?.({ businessId, jobsheetId, extensionPattern: '\\.(pdf)$' });
-      const list = Array.isArray(files) ? files : [];
-      const match = list.find(f => /^gig info(?: - .+)?(?: \(\d+\))?\.pdf$/i.test(f?.name || '')) || null;
-      if (!match) { pushGigToast('No Gig Info PDF found for this job', 'warning'); return; }
-      const res = await window.api?.copyFileToClipboard?.(match.path);
-      if (res && res.ok === false) throw new Error(res.message || 'Unable to copy PDF');
-      pushGigToast('Copied to clipboard. Paste in WhatsApp to attach.', 'success');
-    } catch (err) {
-      pushGigToast(err?.message || 'Unable to copy PDF', 'error');
-    } finally {
-      setCopying(false);
-    }
-  };
+  // (deprecated individual actions removed; single Share action defined above)
 
   // Load presets for dress code and repertoire
   const [dressPresets, setDressPresets] = useState([]);
@@ -4190,6 +4387,28 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
     }
   }, [businessId]);
   useEffect(() => { refreshPresets(); }, [refreshPresets]);
+
+  // Keep dress_code string in sync with explicit selections to avoid stray items
+  useEffect(() => {
+    try {
+      const presets = Array.isArray(dressPresets) ? new Set(dressPresets) : new Set();
+      const selected = Array.isArray(values.dress_code_items)
+        ? values.dress_code_items.filter(x => presets.size ? presets.has(x) : true)
+        : String(values.dress_code || '')
+            .split(/[,•\n]+/)
+            .map(s => s.trim())
+            .filter(Boolean)
+            .filter(x => presets.size ? presets.has(x) : true);
+      const joined = selected.join(', ');
+      if (joined !== String(values.dress_code || '')) {
+        setVal('dress_code', joined);
+      }
+      if (JSON.stringify(selected) !== JSON.stringify(values.dress_code_items || [])) {
+        setVal('dress_code_items', selected);
+      }
+    } catch (_) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dressPresets]);
 
   const renderPreview = () => {
     const header = include.event_date !== false ? `Gig info sheet: ${formatDateDisplay(formState.event_date)}` : 'Gig info sheet';
@@ -4230,10 +4449,11 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
       blocks.push({ label: 'Contacts', value: lines.join('\n') });
     }
     if (include.notes && values.notes) blocks.push({ label: 'Notes', value: values.notes });
+    const compact = include.compact_spacing === true;
     return (
-      <div className="rounded border border-slate-200 bg-white p-3">
+      <div className={`rounded border border-slate-200 bg-white ${compact ? 'p-2' : 'p-3'}`}>
         <div className="text-base font-semibold text-slate-800 mb-2">{header}</div>
-        <div className="space-y-2">
+        <div className={compact ? 'space-y-1' : 'space-y-2'}>
           {blocks.map((b, i) => (
             <div key={i}>
               <div className="text-[11px] uppercase tracking-wide text-slate-500">{b.label}</div>
@@ -4252,6 +4472,10 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
         <label className="mt-2 flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={include.event_date !== false} onChange={e => setInc('event_date', e.target.checked)} />
           Include event date in header (Gig info sheet: {formatDateDisplay(formState.event_date)})
+        </label>
+        <label className="mt-2 flex items-center gap-2 text-sm text-slate-600">
+          <input type="checkbox" checked={!!include.compact_spacing} onChange={e => setInc('compact_spacing', e.target.checked)} />
+          Compact spacing (tighter PDF layout)
         </label>
       </div>
 
@@ -4383,7 +4607,10 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
             {/* Checklist of dress code items */}
             <div className="flex flex-wrap gap-3">
               {dressPresets.length ? dressPresets.map((item, idx) => {
-                const selectedSet = new Set(String(values.dress_code || '').split(/[,•\n]+/).map(s => s.trim()).filter(Boolean));
+                const selectedTokens = Array.isArray(values.dress_code_items)
+                  ? values.dress_code_items
+                  : String(values.dress_code || '').split(/[,•\n]+/).map(s => s.trim()).filter(Boolean);
+                const selectedSet = new Set(selectedTokens);
                 const checked = selectedSet.has(item);
                 return (
                   <label key={idx} className="inline-flex items-center gap-1.5 text-sm text-slate-700">
@@ -4393,11 +4620,12 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
                       onChange={(e) => {
                         const next = new Set(selectedSet);
                         if (e.target.checked) next.add(item); else next.delete(item);
-                        setVal('dress_code', Array.from(next).join(', '));
+                        const arr = Array.from(next);
+                        setVal('dress_code', arr.join(', '));
+                        setVal('dress_code_items', arr);
                       }}
                     />
                     <span>{item}</span>
-                    {/* Manage controls (quick delete) */}
                     <button
                       type="button"
                       title="Delete"
@@ -4462,25 +4690,11 @@ function GigInfoPanel({ formState, onChange, businessId, jobsheetId }) {
 
       <div className="flex items-center justify-end gap-2">
         <button type="button" className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setShowPreview(v => !v)}>{showPreview ? 'Hide preview' : 'Preview'}</button>
-        <button type="button" className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500" onClick={handleGeneratePdf}>Generate PDF</button>
-        <button
-          type="button"
-          className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-          onClick={handleRevealLatestPdf}
-          disabled={revealLoading}
-        >
-          {revealLoading ? 'Revealing…' : 'Reveal PDF'}
-        </button>
-        <button
-          type="button"
-          className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-60 disabled:cursor-not-allowed"
-          onClick={handleCopyLatestPdf}
-          disabled={copying}
-        >
-          {copying ? 'Copying…' : 'Copy PDF'}
-        </button>
+        <button type="button" className="rounded border border-indigo-200 px-3 py-1.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-60 disabled:cursor-not-allowed" onClick={handleGenerateOnly} disabled={shareWorking}>{shareWorking ? 'Working…' : 'Generate PDF'}</button>
+        <button type="button" className="rounded border border-indigo-200 px-3 py-1.5 text-sm font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-60 disabled:cursor-not-allowed" onClick={handleRevealOnly} disabled={shareWorking}>{shareWorking ? 'Working…' : 'Reveal in Finder'}</button>
       </div>
       {showPreview ? renderPreview() : null}
+      <ToastOverlay notices={gigToasts} />
     </div>
   );
 }
@@ -5597,7 +5811,7 @@ function DocumentsInlinePanel({
           </div>
         </div>
       </div>
-      <ToastOverlay notices={gigToasts} />
+      <ToastOverlay notices={localToasts} />
     </div>
   );
 }
@@ -6668,6 +6882,16 @@ function JobsheetEditor({
 function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   const [jobsheets, setJobsheets] = useState([]);
   const [listLoading, setListLoading] = useState(true);
+  const [showArchived, setShowArchived] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const key = `ui:${business.id}:showArchived`;
+      const raw = window.localStorage.getItem(key);
+      return raw === '1' || raw === 'true';
+    } catch (_) {
+      return false;
+    }
+  });
   const [sortConfig, setSortConfig] = useState(() => {
     if (typeof window === 'undefined') return { key: 'event_date', direction: 'desc' };
     try {
@@ -6946,7 +7170,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         setListLoading(false);
         return;
       }
-      const data = await api.getAhmenJobsheets({ businessId: business.id });
+      const data = await api.getAhmenJobsheets({ businessId: business.id, includeArchived: showArchived });
       const mapped = (data || []).map(normalizeJobsheet);
       setJobsheets(mapped);
 
@@ -6965,7 +7189,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
     } finally {
       setListLoading(false);
     }
-  }, [business.id, normalizeJobsheet]);
+  }, [business.id, normalizeJobsheet, showArchived]);
 
   const loadDocumentTree = useCallback(async () => {
     if (!DOCUMENT_FEATURES_ENABLED) {
@@ -7251,6 +7475,33 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
   useEffect(() => {
     setError('');
     refreshJobsheets();
+  }, [refreshJobsheets]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    try {
+      window.localStorage.setItem(`ui:${business.id}:showArchived`, showArchived ? '1' : '0');
+    } catch (_) {}
+  }, [business.id, showArchived]);
+
+  const handleToggleShowArchived = useCallback(() => {
+    setShowArchived(prev => !prev);
+  }, []);
+
+  const handleArchiveToggle = useCallback(async (jobsheetId, archived) => {
+    if (!window.api || typeof window.api.setJobsheetArchived !== 'function') {
+      setError('Archive action unavailable');
+      return;
+    }
+    try {
+      await window.api.setJobsheetArchived(jobsheetId, archived);
+      setMessage(archived ? 'Jobsheet archived' : 'Jobsheet unarchived');
+      await refreshJobsheets();
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to toggle archive', err);
+      setError(err?.message || 'Unable to update archive state');
+    }
   }, [refreshJobsheets]);
 
   useEffect(() => {
@@ -8241,6 +8492,9 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
                   onNew={handleNew}
                   onDelete={handleDelete}
                   onStatusChange={handleStatusChange}
+                  onArchiveToggle={handleArchiveToggle}
+                  includeArchived={showArchived}
+                  onToggleIncludeArchived={handleToggleShowArchived}
                   loading={listLoading}
                   deletingId={deletingId}
                   statusUpdatingId={statusUpdatingId}
