@@ -3993,10 +3993,26 @@ module.exports = {
     placeholderMap.set('invoice_code', 'invoice_code');
 
     const placeholderKeys = collectPlaceholderKeys(workbook);
-    const fieldKeySet = new Set(['invoice_code', ...Array.from(placeholderKeys)]);
+    const mcmsKeys = [
+      'client_name','client_email','client_phone','client_address1','client_address2','client_town','client_postcode',
+      'issue_date','due_date','total_amount','invoice_code'
+    ];
+    const fieldKeySet = new Set(['invoice_code', ...mcmsKeys, ...Array.from(placeholderKeys)]);
     const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
     // Inject a contextPath source for invoice_code -> context.invoiceCode
     valueSources['invoice_code'] = { source_type: 'contextPath', source_path: 'invoiceCode' };
+    // Ensure MCMS-relevant placeholders point to context paths (override AhMen defaults)
+    const ensure = (key, path) => { if (!valueSources[key]) valueSources[key] = { source_type: 'contextPath', source_path: path }; };
+    ensure('client_name', 'client.name');
+    ensure('client_email', 'client.email');
+    ensure('client_phone', 'client.phone');
+    ensure('client_address1', 'client.address1');
+    ensure('client_address2', 'client.address2');
+    ensure('client_town', 'client.town');
+    ensure('client_postcode', 'client.postcode');
+    ensure('issue_date', 'issueDate');
+    ensure('due_date', 'dueDate');
+    ensure('total_amount', 'totalAmount');
 
     // Helper to fill the line items at an anchor {{items}}
     const writeLineItems = () => {

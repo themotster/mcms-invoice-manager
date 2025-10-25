@@ -5,3 +5,13 @@ dist/
 renderer/bundle.js
 renderer/bundle.js.map
 renderer/bundle.js.LICENSE.txt
+mcms/renderer/bundle.js
+mcms/renderer/bundle.js.map
+mcms/renderer/bundle.js.LICENSE.txt
+release/
+*.app
+*.dmg
+*.zip
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

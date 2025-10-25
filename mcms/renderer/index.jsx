@@ -66,18 +66,23 @@ function App() {
     try {
       const list = await window.api?.getMergeFields?.();
       const fields = Array.isArray(list) ? list : [];
-      // Map to minimal info and include special tokens
-      const base = fields.map(f => ({ field_key: f.field_key, label: f.label || f.field_key, placeholder: f.placeholder || '' }));
-      // Add invoice_code and items as special entries
+      const MCMS_KEYS = [
+        'client_name','client_email','client_phone','client_address1','client_address2','client_town','client_postcode',
+        'issue_date','due_date','total_amount'
+      ];
+      // Filter to MCMS-relevant fields
+      const base = fields
+        .filter(f => f && MCMS_KEYS.includes(f.field_key))
+        .map(f => ({ field_key: f.field_key, label: f.label || f.field_key, placeholder: f.placeholder || '' }));
+      // Add specials and any missing MCMS keys that aren't in DB yet
       const specials = [
         { field_key: 'invoice_code', label: 'Invoice code (e.g., INV-###)', placeholder: 'invoice_code', _special: true },
         { field_key: 'items', label: 'Line items anchor (table expand)', placeholder: 'items', _special: true }
       ];
-      // Combine ensuring no duplicates
       const seen = new Set(base.map(x => x.field_key));
-      const combined = base.slice();
-      specials.forEach(s => { if (!seen.has(s.field_key)) combined.push(s); });
-      setPhList(combined);
+      MCMS_KEYS.forEach(k => { if (!seen.has(k)) { base.push({ field_key: k, label: k.replace(/_/g,' '), placeholder: k }); seen.add(k); } });
+      specials.forEach(s => { if (!seen.has(s.field_key)) { base.push(s); seen.add(s.field_key); } });
+      setPhList(base);
       setPhEdits(new Map());
     } catch (err) { setPhError(err?.message || 'Unable to load placeholders'); }
     finally { setPhLoading(false); }
