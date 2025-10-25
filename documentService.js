@@ -6,6 +6,7 @@ try { chokidar = require('chokidar'); } catch (_err) { chokidar = null; }
 const ExcelJS = require('exceljs');
 const db = require('./db');
 const msal = require('@azure/msal-node');
+const ahmenCosting = require('./ahmenCosting');
 const { BrowserWindow } = require('electron');
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 function readSettings() {
@@ -45,6 +46,47 @@ function normalizeTokenKey(value) {
     .trim()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
+function formatCurrencyGBP(value) {
+  const num = Number(value);
+  const v = Number.isFinite(num) ? num : 0;
+  try {
+    return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(v);
+  } catch (_) {
+    return `£${v.toFixed(2)}`;
+  }
+}
+
+function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function buildItemsTableHtml(items = []) {
+  const safe = Array.isArray(items) ? items : [];
+  const rows = safe.map(it => {
+    const qty = it.quantity != null && Number.isFinite(it.quantity) ? String(it.quantity) : '';
+    const rate = it.rate != null && Number.isFinite(it.rate) ? formatCurrencyGBP(it.rate) : '';
+    const total = it.amount != null && Number.isFinite(it.amount) ? formatCurrencyGBP(it.amount) : '';
+    return `<tr><td>${escapeHtml(it.description || '')}</td><td style="text-align:right">${qty}</td><td>${escapeHtml(it.unit || '')}</td><td style="text-align:right">${rate}</td><td style="text-align:right">${total}</td></tr>`;
+  }).join('');
+  return `<table style="width:100%;border-collapse:collapse;margin-top:12px"><thead><tr style="background:#f9fafb"><th style="text-align:left;padding:8px;border-bottom:1px solid #e5e7eb">Description</th><th style="text-align:right;padding:8px;border-bottom:1px solid #e5e7eb;width:80px">Qty</th><th style="text-align:left;padding:8px;border-bottom:1px solid #e5e7eb;width:80px">Unit</th><th style="text-align:right;padding:8px;border-bottom:1px solid #e5e7eb;width:120px">Rate</th><th style="text-align:right;padding:8px;border-bottom:1px solid #e5e7eb;width:120px">Line Total</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderTemplateHtml(template, tokens) {
+  if (!template) return '';
+  let html = String(template);
+  Object.entries(tokens || {}).forEach(([key, value]) => {
+    const re = new RegExp(`{{\\s*${key}\\s*}}`, 'gi');
+    html = html.replace(re, value != null ? String(value) : '');
+  });
+  return html;
 }
 
 // Normalize outgoing email HTML to consistent typography across templates and signatures
@@ -1308,6 +1350,308 @@ function formatDisplayDate(dateInput) {
   }).format(date);
 }
 
+function formatTimeLabel(start, end) {
+  const fmt = (val) => {
+    if (!val) return '';
+    let s = String(val).trim();
+    if (!s) return '';
+    s = s.replace(/\./g, ':').replace(/\s+/g, '');
+    let mer = null;
+    const lower = s.toLowerCase();
+    if (/(am|pm)$/.test(lower)) { mer = lower.slice(-2); s = lower.slice(0, -2); }
+    let h = 0; let m = 0;
+    if (/^\d{1,2}:\d{2}$/.test(s)) { const parts = s.split(':'); h = Number(parts[0]); m = Number(parts[1]); }
+    else if (/^\d{3,4}$/.test(s)) { const v = s.padStart(4, '0'); h = Number(v.slice(0,2)); m = Number(v.slice(2)); }
+    else if (/^\d{1,2}$/.test(s)) { h = Number(s); m = 0; }
+    else { return String(val); }
+    if (Number.isNaN(h) || Number.isNaN(m)) return '';
+    if (mer) { if (mer === 'pm' && h < 12) h += 12; if (mer === 'am' && h === 12) h = 0; }
+    h = Math.max(0, Math.min(23, h)); m = Math.max(0, Math.min(59, m));
+    const outMer = h >= 12 ? 'pm' : 'am';
+    const h12 = (h % 12) === 0 ? 12 : (h % 12);
+    const mm = String(m).padStart(2, '0');
+    return `${h12}:${mm} ${outMer}`;
+  };
+  const a = fmt(start);
+  const b = fmt(end);
+  if (a && b) return `${a} – ${b}`;
+  return a || b || '';
+}
+
+async function buildPersonnelLogHtml(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id);
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+
+  const business = await db.getBusinessById(businessId);
+  if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+
+  const fromDate = options.fromDate || options.from_date || new Date().toISOString().slice(0, 10);
+  const toDate = options.toDate || options.to_date || null;
+
+  const includeArchived = options.includeArchived === true || options.include_archived === true;
+
+  const all = await db.getAhmenJobsheets({ businessId, includeArchived });
+
+  const isOnOrAfter = (d, base) => {
+    try {
+      const a = new Date(String(d));
+      const b = new Date(String(base));
+      if (Number.isNaN(a) || Number.isNaN(b)) return true;
+      // Compare dates in local time by yyyy-mm-dd
+      const aa = a.toISOString().slice(0,10);
+      const bb = b.toISOString().slice(0,10);
+      return aa >= bb;
+    } catch (_) { return true; }
+  };
+  const isOnOrBefore = (d, base) => {
+    try {
+      const a = new Date(String(d));
+      const b = new Date(String(base));
+      if (Number.isNaN(a) || Number.isNaN(b)) return true;
+      const aa = a.toISOString().slice(0,10);
+      const bb = b.toISOString().slice(0,10);
+      return aa <= bb;
+    } catch (_) { return true; }
+  };
+
+  const upcoming = (all || []).filter(js => js && js.event_date && (!fromDate || isOnOrAfter(js.event_date, fromDate)) && (!toDate || isOnOrBefore(js.event_date, toDate)));
+
+  upcoming.sort((a, b) => {
+    const da = new Date(a.event_date);
+    const dbd = new Date(b.event_date);
+    const cmp = da - dbd;
+    if (cmp !== 0) return cmp;
+    const sa = String(a.event_start || '');
+    const sb = String(b.event_start || '');
+    return sa.localeCompare(sb);
+  });
+
+  // Build singer pool map for id->name lookups
+  let poolMap = new Map();
+  try {
+    const pricing = await ahmenCosting.loadPricingConfig();
+    const pool = Array.isArray(pricing?.singerPool) ? pricing.singerPool : [];
+    poolMap = new Map(pool.map(s => [String(s.id), String(s.name || s.id)]));
+  } catch (_) {}
+
+  const esc = (s) => String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+  // Column selection
+  const allowedColumns = ['date','time','status','client','event','venue','personnel','singer_count','total','notes'];
+  const selectedColumns = Array.isArray(options.columns)
+    ? options.columns.map(String).map(s => s.toLowerCase()).filter(k => allowedColumns.includes(k))
+    : ['date','time','client','event','venue','personnel'];
+
+  const headerLabels = {
+    date: 'Date',
+    time: 'Time',
+    status: 'Status',
+    client: 'Client',
+    event: 'Event',
+    venue: 'Venue',
+    personnel: 'Personnel',
+    singer_count: 'Singers',
+    total: 'Total',
+    notes: 'Notes'
+  };
+
+  const rowsHtml = upcoming.map(js => {
+    let selected = [];
+    try {
+      if (Array.isArray(js.pricing_selected_singers)) {
+        selected = js.pricing_selected_singers;
+      } else if (typeof js.pricing_selected_singers === 'string' && js.pricing_selected_singers.trim()) {
+        selected = JSON.parse(js.pricing_selected_singers);
+      }
+    } catch (_) { selected = []; }
+
+    const names = selected.map(entry => {
+      try {
+        const id = entry && (entry.id ?? entry.singerId ?? entry.value);
+        const name = entry && entry.name;
+        const label = name || (id != null && poolMap.get(String(id))) || (id != null ? String(id) : '');
+        return label || '';
+      } catch (_) { return ''; }
+    }).filter(Boolean);
+
+    const specialist = String(js.specialist_singers || '').trim();
+    const personnel = [
+      names.join(', '),
+      specialist ? `(Specialist: ${specialist})` : ''
+    ].filter(Boolean).join(' ');
+
+    const date = formatDisplayDate(js.event_date);
+    const time = formatTimeLabel(js.event_start, js.event_end);
+    const status = String(js.status || '').trim();
+    const client = js.client_name || '';
+    const eventType = js.event_type || '';
+    const venue = [js.venue_name || '', js.venue_town || '', js.venue_postcode || ''].filter(Boolean).join(', ');
+    const singerCount = names.length;
+    const totalNumber = (() => {
+      const explicit = Number(js.pricing_total);
+      if (Number.isFinite(explicit) && explicit > 0) return explicit;
+      const a = Number(js.ahmen_fee) || 0;
+      const p = Number(js.production_fees) || 0;
+      const sum = a + p;
+      return Number.isFinite(sum) ? sum : 0;
+    })();
+    const total = new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(totalNumber);
+    const notes = (js.notes || '').toString().trim().slice(0, 180);
+
+    const base = { date, time, status, client, event: eventType, venue, personnel, singer_count: String(singerCount), total, notes };
+    const cells = selectedColumns.map(key => `<td>${esc(base[key] || '')}</td>`).join('');
+    return `<tr>${cells}</tr>`;
+  }).join('');
+
+  const title = 'Upcoming Events – Personnel';
+  const subtitleParts = [];
+  if (fromDate) subtitleParts.push(`from ${formatDisplayDate(fromDate)}`);
+  if (toDate) subtitleParts.push(`to ${formatDisplayDate(toDate)}`);
+  const subtitle = subtitleParts.join(' ');
+
+  const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>${esc(title)}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #111827; }
+    .container { padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    .subtitle { color: #6b7280; font-size: 12px; margin: 0 0 16px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border: 1px solid #e5e7eb; padding: 6px 8px; font-size: 12px; vertical-align: top; }
+    th { background: #f3f4f6; text-align: left; }
+    .c-date { white-space: nowrap; width: 80px; }
+    .c-time { white-space: nowrap; width: 90px; color: #374151; }
+    .c-client { width: 160px; }
+    .c-event { width: 140px; }
+    .c-venue { width: 220px; }
+    .c-personnel { width: auto; }
+    .empty { color: #6b7280; font-size: 13px; padding: 12px 0; }
+  </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>${esc(title)}</h1>
+      ${subtitle ? `<div class="subtitle">${esc(subtitle)}</div>` : ''}
+      ${upcoming.length === 0 ? (`<div class="empty">No upcoming events.</div>`) : (`
+        <table>
+          <thead>
+            <tr>
+              ${selectedColumns.map(key => `<th>${esc(headerLabels[key] || key)}</th>`).join('')}
+            </tr>
+          </thead>
+          <tbody>
+            ${rowsHtml}
+          </tbody>
+        </table>
+      `)}
+    </div>
+  </body>
+  </html>`;
+
+  // Target path: Documents folder under business save_path -> Reports
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const reportsDir = path.resolve(business.save_path, 'Reports');
+  await ensureDirectoryExists(reportsDir);
+  const fileName = toDate
+    ? `Upcoming Personnel ${fromDate} to ${toDate}.pdf`
+    : `Upcoming Personnel ${todayIso}.pdf`;
+  const targetPath = path.join(reportsDir, fileName);
+
+  return { html, targetPath };
+}
+
+async function buildPersonnelLogText(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id);
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+
+  const fromDate = options.fromDate || options.from_date || new Date().toISOString().slice(0, 10);
+  const toDate = options.toDate || options.to_date || null;
+  const includeArchived = options.includeArchived === true || options.include_archived === true;
+
+  const all = await db.getAhmenJobsheets({ businessId, includeArchived });
+
+  const isOnOrAfter = (d, base) => {
+    try { const a = new Date(String(d)); const b = new Date(String(base)); if (Number.isNaN(a) || Number.isNaN(b)) return true; return a.toISOString().slice(0,10) >= b.toISOString().slice(0,10); } catch (_) { return true; }
+  };
+  const isOnOrBefore = (d, base) => {
+    try { const a = new Date(String(d)); const b = new Date(String(base)); if (Number.isNaN(a) || Number.isNaN(b)) return true; return a.toISOString().slice(0,10) <= b.toISOString().slice(0,10); } catch (_) { return true; }
+  };
+
+  const upcoming = (all || []).filter(js => js && js.event_date && (!fromDate || isOnOrAfter(js.event_date, fromDate)) && (!toDate || isOnOrBefore(js.event_date, toDate)));
+  upcoming.sort((a, b) => { const da = new Date(a.event_date); const dbd = new Date(b.event_date); const cmp = da - dbd; if (cmp !== 0) return cmp; return String(a.event_start||'').localeCompare(String(b.event_start||'')); });
+
+  // Pool lookup
+  let poolMap = new Map();
+  try {
+    const pricing = await ahmenCosting.loadPricingConfig();
+    const pool = Array.isArray(pricing?.singerPool) ? pricing.singerPool : [];
+    poolMap = new Map(pool.map(s => [String(s.id), String(s.name || s.id)]));
+  } catch (_) {}
+
+  const allowedColumns = ['date','time','status','client','event','venue','personnel','singer_count','total','notes'];
+  const selectedColumns = Array.isArray(options.columns)
+    ? options.columns.map(String).map(s => s.toLowerCase()).filter(k => allowedColumns.includes(k))
+    : ['date','time','client','event','venue','personnel'];
+  const headerLabels = {
+    date: 'Date', time: 'Time', status: 'Status', client: 'Client', event: 'Event', venue: 'Venue', personnel: 'Personnel', singer_count: 'Singers', total: 'Total', notes: 'Notes'
+  };
+
+  const formatMoney = (n) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n || 0);
+  const singleLine = options.singleLine !== false; // default true for WhatsApp
+  const bullet = options.bullet !== false; // default true
+
+  const lines = upcoming.map(js => {
+    let selected = [];
+    try {
+      if (Array.isArray(js.pricing_selected_singers)) selected = js.pricing_selected_singers;
+      else if (typeof js.pricing_selected_singers === 'string' && js.pricing_selected_singers.trim()) selected = JSON.parse(js.pricing_selected_singers);
+    } catch (_) { selected = []; }
+    const names = selected.map(entry => {
+      const id = entry && (entry.id ?? entry.singerId ?? entry.value);
+      const name = entry && entry.name;
+      const label = name || (id != null && poolMap.get(String(id))) || (id != null ? String(id) : '');
+      return label || '';
+    }).filter(Boolean);
+    const specialist = String(js.specialist_singers || '').trim();
+    const personnel = [names.join(', '), specialist ? `(Specialist: ${specialist})` : ''].filter(Boolean).join(' ');
+    const date = formatDisplayDate(js.event_date);
+    const time = formatTimeLabel(js.event_start, js.event_end);
+    const status = String(js.status || '').trim();
+    const client = js.client_name || '';
+    const eventType = js.event_type || '';
+    const venue = [js.venue_name || '', js.venue_town || '', js.venue_postcode || ''].filter(Boolean).join(', ');
+    const singerCount = String(names.length);
+    const total = formatMoney((Number(js.pricing_total) && Number(js.pricing_total) > 0) ? Number(js.pricing_total) : (Number(js.ahmen_fee)||0) + (Number(js.production_fees)||0));
+    const notes = (js.notes || '').toString().trim().replace(/[\r\n]+/g, ' ').slice(0, 180);
+
+    const base = { date, time, status, client, event: eventType, venue, personnel, singer_count: singerCount, total, notes };
+    if (singleLine) {
+      const parts = selectedColumns.map(key => base[key]).filter(Boolean);
+      const line = parts.join(' — ');
+      return `${bullet ? '• ' : ''}${line}`;
+    }
+    const rows = selectedColumns.map(key => `${headerLabels[key]}: ${base[key] || ''}`);
+    return `${bullet ? '• ' : ''}${rows.shift() || ''}\n${rows.join('\n')}`;
+  });
+
+  const title = 'Upcoming Events — Personnel';
+  const subtitleParts = [];
+  if (fromDate) subtitleParts.push(`from ${formatDisplayDate(fromDate)}`);
+  if (toDate) subtitleParts.push(`to ${formatDisplayDate(toDate)}`);
+  const subtitle = subtitleParts.join(' ');
+  const header = [title, subtitle].filter(Boolean).join(' ');
+  const text = [header, '', ...lines].join('\n');
+  return { text };
+}
+
 function buildOutputDirectory(business, context, payload, fileLabel) {
   const baseSavePath = business?.save_path;
   if (!baseSavePath) {
@@ -1464,6 +1808,180 @@ async function createWorkbookDocument(payload = {}) {
 
 async function createDocument(payload = {}) {
   return createWorkbookDocument(payload);
+}
+
+// Build minimal HTML for MCMS invoices/quotes (no Excel dependency)
+async function buildMCMSDocumentHtml(options = {}) {
+  const businessId = Number(options.business_id ?? options.businessId);
+  if (!Number.isInteger(businessId)) throw new Error('business_id is required');
+  const rawType = String(options.doc_type || options.type || '').toLowerCase();
+  if (!rawType || (rawType !== 'invoice' && rawType !== 'quote')) throw new Error('doc_type must be invoice or quote');
+
+  const business = await db.getBusinessById(businessId);
+  if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+
+  const client = options.client || options.client_override || {};
+  const itemInput = Array.isArray(options.line_items || options.items) ? (options.line_items || options.items) : [];
+  const items = itemInput.map((it, idx) => {
+    const type = String(it?.item_type || it?.type || '').toLowerCase() || '';
+    const desc = (it?.description || '').toString();
+    const qty = Number(it?.quantity);
+    const unit = (it?.unit || (type === 'studio' ? 'hours' : 'unit')).toString();
+    const rate = Number(it?.rate);
+    const amount = Number.isFinite(Number(it?.amount)) ? Number(it?.amount) : (Number.isFinite(qty) && Number.isFinite(rate) ? qty * rate : 0);
+    return { item_type: type || 'custom', description: desc, quantity: Number.isFinite(qty) ? qty : null, unit, rate: Number.isFinite(rate) ? rate : null, amount, sort_order: idx };
+  }).filter(x => (x.amount != null && Number.isFinite(x.amount) && x.amount !== 0) || (x.description && x.description.trim()));
+  const computedSubtotal = items.reduce((sum, it) => sum + (Number.isFinite(it.amount) ? it.amount : 0), 0);
+  const totalAmount = options.total_amount != null && items.length === 0 ? Number(options.total_amount) : computedSubtotal;
+  const dueDate = options.due_date || null;
+  const issueDate = options.document_date || new Date().toISOString().slice(0, 10);
+
+  const payload = {
+    business_id: businessId,
+    client_override: client,
+    event_override: { event_date: issueDate },
+    total_amount: totalAmount,
+    due_date: dueDate,
+    document_date: new Date().toISOString()
+  };
+  const context = buildContext(payload, business);
+  const docLabel = rawType === 'invoice' ? 'Invoice' : 'Quote';
+  const naming = buildFileName(context, payload, { label: docLabel, key: `${rawType}_html` });
+  const directory = buildOutputDirectory(business, context, payload, naming.folderName);
+  await ensureDirectoryExists(directory);
+
+  // Reserve a document number
+  const inserted = await db.addDocument({
+    business_id: businessId,
+    doc_type: rawType,
+    status: 'draft',
+    total_amount: totalAmount,
+    balance_due: totalAmount,
+    due_date: dueDate,
+    client_name: context.client?.name || null,
+    event_name: null,
+    event_date: null,
+    document_date: payload.document_date,
+    definition_key: `${rawType}_html`
+  });
+  const number = inserted?.number != null ? Number(inserted.number) : null;
+  try { if (items.length) await db.saveDocumentItems(inserted.id, items); } catch (_) {}
+
+  const baseName = `${naming.folderName} - ${docLabel}`;
+  const suffixCode = rawType === 'invoice' ? (number != null ? `INV-${number}` : 'INV') : (number != null ? `Q-${number}` : 'Q');
+  let targetPath = path.join(directory, `${baseName} (${suffixCode}).pdf`);
+  let n = 2;
+  // Version file if exists
+  while (await pathExists(targetPath)) {
+    targetPath = path.join(directory, `${baseName} (${suffixCode}) (${n}).pdf`);
+    n += 1;
+    if (n > 1000) break;
+  }
+
+  const todayDisplay = formatDisplayDate(issueDate);
+  const dueDisplay = formatDisplayDate(dueDate);
+  const amountDisplay = formatCurrencyGBP(totalAmount);
+  const clientAddressLines = [client.address1 || client.address, client.address2, client.town, client.postcode].filter(Boolean).join('<br>');
+
+  const rowsHtml = (items.length ? items : [{ description: (rawType === 'invoice' ? 'Services rendered' : 'Quoted services'), quantity: null, unit: '', rate: null, amount: totalAmount }])
+    .map(it => {
+      const qty = it.quantity != null && Number.isFinite(it.quantity) ? it.quantity : '';
+      const rate = it.rate != null && Number.isFinite(it.rate) ? formatCurrencyGBP(it.rate) : '';
+      const lineTotal = it.amount != null && Number.isFinite(it.amount) ? formatCurrencyGBP(it.amount) : '';
+      return `<tr><td>${escapeHtml(it.description || '')}</td><td class="right">${qty}</td><td>${escapeHtml(it.unit || '')}</td><td class="right">${rate}</td><td class="right">${lineTotal}</td></tr>`;
+    }).join('');
+
+  // Use inline HTML if provided, otherwise custom HTML template if saved in settings
+  let htmlTemplate = (options && typeof options.inline_html === 'string') ? options.inline_html : '';
+  try {
+    if (!htmlTemplate) {
+      const tmpl = await module.exports.getHtmlTemplate({ businessId: businessId, docType: rawType });
+      if (tmpl && typeof tmpl.html === 'string') htmlTemplate = tmpl.html;
+    }
+  } catch (_) {}
+
+  let html = '';
+  if (htmlTemplate) {
+    const tokens = {
+      business_name: business.business_name || 'MCMS',
+      client_name: context.client?.name || '',
+      client_address_html: clientAddressLines || '',
+      invoice_title: docLabel,
+      invoice_code: suffixCode,
+      issue_date: todayDisplay || '',
+      due_date: dueDisplay || '',
+      total_amount: amountDisplay,
+      items_table: buildItemsTableHtml(items.length ? items : [{ description: (rawType === 'invoice' ? 'Services rendered' : 'Quoted services'), quantity: null, unit: '', rate: null, amount: totalAmount }])
+    };
+    html = renderTemplateHtml(htmlTemplate, tokens);
+  } else {
+    html = `<!doctype html>
+  <html>
+  <head>
+    <meta charset="utf-8" />
+    <title>${docLabel}${number != null ? ` #${number}` : ''}</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #111827; margin: 40px; }
+      h1 { font-size: 22px; margin: 0 0 4px 0; }
+      .muted { color: #6b7280; }
+      .row { display: flex; justify-content: space-between; align-items: flex-start; }
+      .section { margin: 18px 0; }
+      table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+      th, td { padding: 10px 8px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+      th { background: #f9fafb; font-weight: 600; font-size: 12px; }
+      .right { text-align: right; }
+      .total-row td { border-top: 2px solid #111827; font-weight: 700; }
+      .footer { margin-top: 28px; font-size: 12px; color: #6b7280; }
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <div>
+        <h1>${business.business_name || 'MCMS'}</h1>
+        <div class="muted">${options.fromEmail || 'mottitemp@hotmail.com'}</div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-size:28px; font-weight:700;">${docLabel}</div>
+        <div class="muted">${suffixCode}${number == null ? '' : ''}</div>
+      </div>
+    </div>
+
+    <div class="section row">
+      <div>
+        <div style="font-weight:600;">Bill to</div>
+        <div>${context.client?.name || ''}</div>
+        <div class="muted">${clientAddressLines || ''}</div>
+      </div>
+      <div style="text-align:right">
+        <div><span class="muted">Date:</span> ${todayDisplay || ''}</div>
+        ${rawType === 'invoice' ? `<div><span class="muted">Due:</span> ${dueDisplay || ''}</div>` : ''}
+      </div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th class="right" style="width:80px">Qty</th>
+          <th style="width:80px">Unit</th>
+          <th class="right" style="width:120px">Rate</th>
+          <th class="right" style="width:120px">Line Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rowsHtml}
+        <tr class="total-row"><td colspan="4">Total</td><td class="right">${formatCurrencyGBP(totalAmount)}</td></tr>
+      </tbody>
+    </table>
+
+    <div class="footer">
+      ${rawType === 'invoice' ? 'Please make payment by the due date.' : 'This quote is provided for your consideration.'}
+    </div>
+  </body>
+  </html>`;
+  }
+
+  return { html, targetPath, number, document_id: inserted?.id || null, business_id: businessId, doc_type: rawType };
 }
 
 const documentWatchers = new Map();
@@ -3187,6 +3705,226 @@ ensureScheduledMailWorker();
 module.exports = {
   normalizeTemplate,
   createDocument,
+  buildMCMSDocumentHtml,
+  getHtmlTemplate: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const docType = (options.docType || options.doc_type || '').toString().toLowerCase();
+    if (!Number.isInteger(businessId) || !docType) return { html: '' };
+    const s = readSettings();
+    const map = s.html_templates_by_business || {};
+    const byBiz = map[String(businessId)] || {};
+    return { html: byBiz[docType] || '' };
+  },
+  saveHtmlTemplate: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const docType = (options.docType || options.doc_type || '').toString().toLowerCase();
+    const html = (options.html || '').toString();
+    if (!Number.isInteger(businessId) || !docType) return { ok: false };
+    const s = readSettings();
+    const map = s.html_templates_by_business || {};
+    const byBiz = map[String(businessId)] || {};
+    byBiz[docType] = html;
+    map[String(businessId)] = byBiz;
+    s.html_templates_by_business = map;
+    writeSettings(s);
+    return { ok: true };
+  },
+  // Read a lightweight snapshot of an Excel workbook for in-app editing
+  readExcelSnapshot: async (options = {}) => {
+    const filePath = options.filePath || options.file_path;
+    const requestedSheet = options.sheetName || options.sheet || '';
+    const maxRows = Number.isInteger(options.maxRows) ? options.maxRows : 100;
+    const maxCols = Number.isInteger(options.maxCols) ? options.maxCols : 26; // A-Z
+    if (!filePath || typeof filePath !== 'string') throw new Error('filePath is required');
+    const resolved = path.resolve(filePath);
+    await ensureFileAccessible(resolved);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(resolved);
+    const sheetNames = wb.worksheets.map(ws => ws && ws.name).filter(Boolean);
+    if (!sheetNames.length) return { sheets: [], sheet: '', cells: [] };
+    const sheet = requestedSheet && sheetNames.includes(requestedSheet) ? requestedSheet : sheetNames[0];
+    const ws = wb.getWorksheet(sheet);
+    const rows = [];
+    for (let r = 1; r <= maxRows; r++) {
+      const row = [];
+      for (let c = 1; c <= maxCols; c++) {
+        try {
+          const cell = ws.getCell(r, c);
+          let val = cell && cell.value != null ? cell.value : '';
+          if (typeof val === 'object' && val && 'text' in val) val = val.text;
+          if (typeof val === 'object' && val && 'result' in val) val = val.result;
+          row.push(val == null ? '' : val);
+        } catch (_) {
+          row.push('');
+        }
+      }
+      rows.push(row);
+    }
+    return { sheets: sheetNames, sheet, cells: rows };
+  },
+  // Persist edited cells back to the Excel file
+  writeExcelCells: async (options = {}) => {
+    const filePath = options.filePath || options.file_path;
+    const sheetName = options.sheetName || options.sheet || '';
+    const changes = Array.isArray(options.changes) ? options.changes : [];
+    if (!filePath || typeof filePath !== 'string') throw new Error('filePath is required');
+    if (!sheetName) throw new Error('sheetName is required');
+    const resolved = path.resolve(filePath);
+    await ensureFileAccessible(resolved);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(resolved);
+    const ws = wb.getWorksheet(sheetName);
+    if (!ws) throw new Error('Sheet not found');
+    for (const ch of changes) {
+      const r = Number(ch.row), c = Number(ch.col);
+      if (!Number.isInteger(r) || !Number.isInteger(c) || r < 1 || c < 1) continue;
+      const v = ch.value;
+      ws.getCell(r, c).value = v;
+    }
+    await wb.xlsx.writeFile(resolved);
+    return { ok: true };
+  },
+  composeMailDraft,
+  composeMailDraft_mailto,
+  // MCMS: Create a numbered invoice/quote from a single Excel template without jobsheets
+  // Options: { business_id, doc_type: 'invoice'|'quote', definition_key, client_override, event_override, total_amount, due_date, document_date }
+  createNumberedDocument: async (options = {}) => {
+    const businessId = Number(options.business_id ?? options.businessId);
+    if (!Number.isInteger(businessId)) throw new Error('business_id is required');
+    const rawType = String(options.doc_type || options.type || '').toLowerCase();
+    if (!rawType || (rawType !== 'invoice' && rawType !== 'quote')) throw new Error('doc_type must be invoice or quote');
+
+    const definitionKey = options.definition_key || (rawType === 'invoice' ? 'invoice_balance' : 'quote');
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+
+    // Resolve template path from document definition
+    const def = await db.getDocumentDefinition(businessId, definitionKey);
+    const templatePath = def?.template_path || options.template_path || options.templatePath;
+    if (!templatePath) throw new Error('Template path is not configured for this document. Set it in Templates.');
+    const resolvedTemplate = path.resolve(templatePath);
+    await ensureFileAccessible(resolvedTemplate);
+
+    // Build context (client/event overrides supported)
+    const payload = {
+      business_id: businessId,
+      client_override: options.client_override || {},
+      event_override: options.event_override || {},
+      total_amount: options.total_amount ?? null,
+      balance_amount: options.total_amount ?? null,
+      balance_due: options.total_amount ?? null,
+      due_date: options.due_date || null,
+      document_date: options.document_date || new Date().toISOString(),
+      definition_key: definitionKey
+    };
+    const context = buildContext(payload, business);
+
+    // Determine target folder/name
+    const naming = buildFileName(context, payload, { label: rawType === 'invoice' ? 'Invoice' : 'Quote', key: definitionKey });
+    const directory = buildOutputDirectory(business, context, payload, naming.folderName);
+    await ensureDirectoryExists(directory);
+
+    // Compose workbook path and write filled workbook
+    const workbookPath = path.join(directory, `${naming.fileName}`);
+    // Avoid overwriting existing workbook
+    if (await pathExists(workbookPath)) throw new Error('Workbook already exists');
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(resolvedTemplate);
+
+    const bindings = await db.getMergeFieldBindingsByTemplate(TEMPLATE_BINDING_KEY);
+    const mergeFields = await db.getMergeFields();
+    const placeholderMap = new Map();
+    (mergeFields || []).forEach(f => {
+      const fieldKey = (f.field_key || '').toLowerCase();
+      const placeholder = (f.placeholder || '').toLowerCase();
+      const fieldSlug = normalizeTokenKey(fieldKey);
+      const placeholderSlug = normalizeTokenKey(placeholder);
+      if (fieldKey) placeholderMap.set(fieldKey, f.field_key);
+      if (placeholder) placeholderMap.set(placeholder, f.field_key);
+      if (fieldSlug) placeholderMap.set(fieldSlug, f.field_key);
+      if (placeholderSlug) placeholderMap.set(placeholderSlug, f.field_key);
+    });
+    const placeholderKeys = collectPlaceholderKeys(workbook);
+    const fieldKeySet = new Set((bindings || []).map(binding => binding.field_key).filter(Boolean));
+    placeholderKeys.forEach(key => {
+      const mapped = placeholderMap.get(String(key).toLowerCase()) || key;
+      fieldKeySet.add(mapped);
+    });
+    const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
+    await fillWorkbook(workbook, bindings, valueSources, context);
+    replaceWorkbookPlaceholders(workbook, valueSources, context, placeholderMap);
+    workbook.calcProperties = workbook.calcProperties || {};
+    workbook.calcProperties.fullCalcOnLoad = true;
+    sanitizeWorkbookValues(workbook);
+    await workbook.xlsx.writeFile(workbookPath);
+
+    // Reserve a document number (invoice/quote counter)
+    const insert = await db.addDocument({
+      business_id: businessId,
+      doc_type: rawType,
+      status: rawType === 'invoice' ? 'issued' : 'draft',
+      total_amount: options.total_amount ?? null,
+      balance_due: options.total_amount ?? null,
+      due_date: options.due_date || null,
+      client_name: context.client?.name || null,
+      event_name: context.event?.event_name || null,
+      event_date: context.event?.event_date || null,
+      document_date: payload.document_date,
+      definition_key: definitionKey
+    });
+
+    const number = insert?.number != null ? Number(insert.number) : null;
+    // Build target PDF path; version if needed
+    const baseName = path.basename(workbookPath, '.xlsx');
+    let pdfBase = baseName;
+    if (rawType === 'invoice' && number != null) {
+      // If template encodes invoice code in filename, add INV-# suffix
+      pdfBase = `${baseName} (INV-${number})`;
+    } else if (rawType === 'quote' && number != null) {
+      pdfBase = `${baseName} (Q-${number})`;
+    }
+    let pdfPath = path.join(directory, `${pdfBase}.pdf`);
+    let n = 2;
+    while (await pathExists(pdfPath)) {
+      pdfPath = path.join(directory, `${pdfBase} (${n}).pdf`);
+      n += 1;
+      if (n > 1000) break;
+    }
+
+    // Determine stamp text for invoice; quotes typically do not carry a numeric stamp
+    let stampCell = '';
+    let stampText = '';
+    if (rawType === 'invoice' && number != null) {
+      try {
+        const prefix = await readInvoicePrefixFromWorkbook(workbookPath);
+        stampCell = 'E9';
+        stampText = `${prefix}${number}`;
+      } catch (_) {
+        stampCell = 'E9';
+        stampText = `INV-${number}`;
+      }
+    }
+
+    // Export to PDF with optional stamping on the active sheet
+    await saveWorkbookAsPdf(workbookPath, pdfPath, stampCell && stampText ? { stampCell, stampText } : {});
+
+    // Update record with final path and status
+    await db.updateDocumentStatus(insert.id, {
+      file_path: pdfPath,
+      status: 'issued',
+      total_amount: options.total_amount ?? null,
+      balance_due: options.total_amount ?? null,
+      due_date: options.due_date || null
+    });
+
+    try {
+      const cb = watcherCallbacks.get(businessId);
+      if (typeof cb === 'function') cb({ businessId });
+    } catch (_) {}
+
+    return { ok: true, file_path: pdfPath, document_id: insert?.id || null, number };
+  },
   exportWorkbookPdfs,
   deleteDocument,
   syncJobsheetOutputs,
@@ -3233,6 +3971,8 @@ module.exports = {
   scheduleMailViaGraph,
   resolveTemplateDefaultAttachments,
   buildGigInfoHtml,
+  buildPersonnelLogHtml,
+  buildPersonnelLogText,
   // List files in a jobsheet's folder (non-recursive)
   listJobFolderFiles: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);

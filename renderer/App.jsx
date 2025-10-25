@@ -1,6 +1,8 @@
 import React, { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import TemplatesManager from './components/TemplatesManager';
+import WysiwygEditor from './components/WysiwygEditor.jsx';
+import { ExcelTemplateEditor } from './components/InvoiceCanvasEditor.jsx';
 import ToastOverlay from './components/ToastOverlay';
 import MailComposer from './components/MailComposer';
 import { normalizeVenues, buildVenueDraft } from './helpers/venues';
@@ -1528,6 +1530,14 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
                       <button type="button" onClick={() => { toggleLock(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
                         {locked ? 'Unlock' : 'Lock'}
                       </button>
+                      <button type="button" onClick={() => { handleSetNumber(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set number…</button>
+                      <button type="button" onClick={async () => {
+                        const current = doc?.due_date ? String(doc.due_date).slice(0,10) : '';
+                        const next = window.prompt('Set due date (YYYY-MM-DD)', current);
+                        if (next == null) { closeMenus(); return; }
+                        try { await window.api?.updateDocumentStatus?.(doc.document_id, { due_date: next }); refresh(); } catch (err) { window.alert(err?.message || 'Unable to set due date'); }
+                        closeMenus();
+                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set due date…</button>
                       <button type="button" onClick={() => { handleOpen(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Open</button>
                       <button type="button" onClick={() => { handleReveal(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Reveal in Finder</button>
                       <button type="button" onClick={() => { handleMarkPaidToggle(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
@@ -2027,51 +2037,7 @@ function applyDerivedFields(nextState) {
   return next;
 }
 
-function BusinessChooser({ businesses, loading, error, onSelect }) {
-  return (
-    <div className="min-h-screen bg-slate-100 flex flex-col items-center justify-center p-8">
-      <div className="max-w-4xl w-full">
-        <h1 className="text-3xl font-bold text-slate-800 text-center mb-8">Choose a business to continue</h1>
-        {error ? (
-          <div className="bg-red-100 text-red-700 p-4 rounded mb-6">{error}</div>
-        ) : null}
-        {loading ? (
-          <div className="text-center text-slate-600">Loading businesses…</div>
-        ) : (
-          <div className="grid gap-6 md:grid-cols-2">
-            {businesses.map(biz => (
-              <button
-                key={biz.id}
-                onClick={() => onSelect(biz)}
-                className="rounded-xl bg-white shadow-md hover:shadow-lg transition-shadow text-left p-6 border border-slate-200"
-              >
-                <div className="text-sm uppercase tracking-wide text-slate-500 mb-2">Business</div>
-                <div className="text-2xl font-semibold text-slate-800 mb-4">{biz.business_name}</div>
-                <dl className="text-sm text-slate-600 space-y-2">
-                  <div>
-                    <dt className="font-medium text-slate-500">Invoices to date</dt>
-                    <dd>{biz.last_invoice_number ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt className="font-medium text-slate-500">Quotes to date</dt>
-                    <dd>{biz.last_quote_number ?? '—'}</dd>
-                  </div>
-                  <div>
-                    <dt className="font-medium text-slate-500">Documents folder</dt>
-                    <dd className="truncate" title={biz.save_path}>{biz.save_path || 'Not configured'}</dd>
-                  </div>
-                </dl>
-              </button>
-            ))}
-            {!businesses.length ? (
-              <div className="col-span-full text-center text-slate-500">No businesses found. Populate the database first.</div>
-            ) : null}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+// BusinessChooser removed – single-business app
 
 function JobsheetList({
   business,
@@ -2093,6 +2059,80 @@ function JobsheetList({
   const [searchValue, setSearchValue] = useState('');
   const [statusFilters, setStatusFilters] = useState(() => new Set());
   const normalizedSearch = searchValue.trim().toLowerCase();
+  const [exportingPersonnel, setExportingPersonnel] = useState(false);
+  const [exportPanelOpen, setExportPanelOpen] = useState(false);
+  const [exportFormat, setExportFormat] = useState(() => {
+    try { const raw = window.localStorage.getItem(storageKey); if (raw) { const p = JSON.parse(raw); return p.format || 'pdf'; } } catch (_) {}
+    return 'pdf';
+  });
+  const defaultCols = ['date','time','client','event','venue','personnel'];
+  const storageKey = useMemo(() => business ? `ui:${business.id}:personnelExport` : 'ui:personnelExport', [business]);
+  const [exportFromDate, setExportFromDate] = useState(() => {
+    try { const raw = window.localStorage.getItem(storageKey); if (raw) { const p = JSON.parse(raw); return p.fromDate || ''; } } catch (_) {}
+    return '';
+  });
+  const [exportToDate, setExportToDate] = useState(() => {
+    try { const raw = window.localStorage.getItem(storageKey); if (raw) { const p = JSON.parse(raw); return p.toDate || ''; } } catch (_) {}
+    return '';
+  });
+  const [exportCols, setExportCols] = useState(() => {
+    try { const raw = window.localStorage.getItem(storageKey); if (raw) { const p = JSON.parse(raw); if (Array.isArray(p.columns) && p.columns.length) return p.columns; } } catch (_) {}
+    return defaultCols;
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem(storageKey, JSON.stringify({ fromDate: exportFromDate, toDate: exportToDate, columns: exportCols, format: exportFormat })); } catch (_) {}
+  }, [storageKey, exportFromDate, exportToDate, exportCols, exportFormat]);
+
+  const handleExportPersonnel = useCallback(async () => {
+    try {
+      if (!business || !business.id) return;
+      setExportingPersonnel(true);
+      const payload = { businessId: business.id };
+      if (exportFromDate) payload.fromDate = exportFromDate;
+      if (exportToDate) payload.toDate = exportToDate;
+      if (Array.isArray(exportCols) && exportCols.length) payload.columns = exportCols;
+      if (exportFormat === 'text') {
+        const res = await window.api?.createPersonnelLogText?.(payload);
+        if (!res || res.ok !== true || !res.text) throw new Error(res?.message || 'Unable to create personnel text');
+        try { await window.api?.copyTextToClipboard?.(res.text); } catch (_) {}
+        window.alert('Personnel list copied to clipboard');
+      } else {
+        const res = await window.api?.createPersonnelLogPdf?.(payload);
+        if (!res || res.ok !== true) throw new Error(res?.message || 'Unable to create personnel PDF');
+        try { await window.api?.showItemInFolder?.(res.file_path); } catch (_) {}
+        window.alert('Personnel log saved to:\n' + (res.file_path || ''));
+      }
+    } catch (err) {
+      window.alert(err?.message || 'Unable to export personnel log');
+    } finally {
+      setExportingPersonnel(false);
+      setExportPanelOpen(false);
+    }
+  }, [business, exportFromDate, exportToDate, exportCols, exportFormat]);
+
+  const allColumnOptions = [
+    { key: 'date', label: 'Date' },
+    { key: 'time', label: 'Time' },
+    { key: 'status', label: 'Status' },
+    { key: 'client', label: 'Client' },
+    { key: 'event', label: 'Event' },
+    { key: 'venue', label: 'Venue' },
+    { key: 'personnel', label: 'Personnel' },
+    { key: 'singer_count', label: 'Singer count' },
+    { key: 'total', label: 'Total (est.)' },
+    { key: 'notes', label: 'Notes' }
+  ];
+  const toggleExportCol = useCallback((key) => {
+    setExportCols(prev => {
+      const set = new Set(prev);
+      if (set.has(key)) set.delete(key); else set.add(key);
+      const next = Array.from(set);
+      // Maintain a sensible ordering based on allColumnOptions
+      const order = allColumnOptions.map(o => o.key);
+      next.sort((a, b) => order.indexOf(a) - order.indexOf(b));
+      return next;
+    });
+  }, []);
 
   // Column controls: show/hide + reorder (persist per business)
   const JOBSHEET_COLUMNS_STORAGE_KEY = `ui:${business?.id}:jobsheetColumns`;
@@ -2426,6 +2466,59 @@ function JobsheetList({
           </div>
           <div className="flex items-center gap-2">
             <ImportJobsheetButton business={business} onCreated={(id) => onOpen?.(id)} />
+            <div className="relative inline-block">
+              <button
+                type="button"
+                onClick={() => setExportPanelOpen(v => !v)}
+                className="inline-flex items-center gap-2 rounded border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-60"
+              >
+                {exportingPersonnel ? 'Exporting…' : 'Export Personnel PDF'}
+              </button>
+              {exportPanelOpen && (
+                <div className="absolute right-0 z-50 mt-2 w-80 rounded border border-slate-200 bg-white p-3 text-sm shadow-lg">
+                  <div className="mb-2 font-medium text-slate-700">Customize</div>
+                  <div className="mb-2 grid grid-cols-2 gap-x-3 gap-y-2">
+                    {allColumnOptions.map(opt => (
+                      <label key={opt.key} className="inline-flex items-center gap-2">
+                        <input
+                          type="checkbox"
+                          checked={exportCols.includes(opt.key)}
+                          onChange={() => toggleExportCol(opt.key)}
+                        />
+                        <span>{opt.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="mb-2 grid grid-cols-2 gap-3">
+                    <label className="block">
+                      <div className="text-xs text-slate-500">From date</div>
+                      <input type="date" value={exportFromDate} onChange={e => setExportFromDate(e.target.value)} className="w-full rounded border border-slate-300 px-2 py-1" />
+                    </label>
+                    <label className="block">
+                      <div className="text-xs text-slate-500">To date</div>
+                      <input type="date" value={exportToDate} onChange={e => setExportToDate(e.target.value)} className="w-full rounded border border-slate-300 px-2 py-1" />
+                    </label>
+                  </div>
+                  <div className="mb-2">
+                    <div className="text-xs text-slate-500 mb-1">Format</div>
+                    <div className="inline-flex items-center gap-4">
+                      <label className="inline-flex items-center gap-1">
+                        <input type="radio" name="exportFormat" value="pdf" checked={exportFormat === 'pdf'} onChange={() => setExportFormat('pdf')} />
+                        <span>PDF</span>
+                      </label>
+                      <label className="inline-flex items-center gap-1">
+                        <input type="radio" name="exportFormat" value="text" checked={exportFormat === 'text'} onChange={() => setExportFormat('text')} />
+                        <span>Text (copy to WhatsApp)</span>
+                      </label>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button type="button" onClick={() => setExportPanelOpen(false)} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">Cancel</button>
+                    <button type="button" onClick={handleExportPersonnel} disabled={exportingPersonnel || exportCols.length === 0} className="rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-60">Export</button>
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               onClick={onNew}
               className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium px-3 py-2 rounded"
@@ -6879,7 +6972,7 @@ function JobsheetEditor({
   );
 }
 
-function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
+function BusinessWorkspace({ business, onBusinessUpdate }) {
   const [jobsheets, setJobsheets] = useState([]);
   const [listLoading, setListLoading] = useState(true);
   const [showArchived, setShowArchived] = useState(() => {
@@ -8443,12 +8536,7 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
             <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
             <p className="text-sm text-slate-500">Manage jobsheets, documents, and templates in one workspace.</p>
           </div>
-          <button
-            onClick={onSwitch}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-          >
-            Switch business
-          </button>
+          {/* Switch business removed */}
         </div>
       </header>
 
@@ -8825,6 +8913,834 @@ function BusinessWorkspace({ business, onSwitch, onBusinessUpdate }) {
         </div>
       </main>
 
+    </div>
+  );
+}
+
+// Minimal MCMS workspace: clients + quotes/invoices
+function MCMSWorkspace({ business, onBusinessUpdate }) {
+  const [clients, setClients] = useState([]);
+  const [clientsLoading, setClientsLoading] = useState(true);
+  const [clientEditorOpen, setClientEditorOpen] = useState(false);
+  const [clientEditorLoading, setClientEditorLoading] = useState(false);
+  const [clientEditor, setClientEditor] = useState(null); // { client, emails, phones, addresses }
+  const [docs, setDocs] = useState([]);
+  const [docsLoading, setDocsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+
+  // Quick-add removed; use full editor modal
+  const [creatingDoc, setCreatingDoc] = useState(false);
+  const [docType, setDocType] = useState('invoice');
+  const [docClientId, setDocClientId] = useState('');
+  const [docAmount, setDocAmount] = useState('');
+  const [docDueDate, setDocDueDate] = useState('');
+  const [items, setItems] = useState([]);
+  const [templateHtml, setTemplateHtml] = useState('');
+  // Excel template generation state
+  const [excelClientId, setExcelClientId] = useState('');
+  const [excelAmount, setExcelAmount] = useState('');
+  const [excelDueDate, setExcelDueDate] = useState('');
+  const [excelTemplatePath, setExcelTemplatePath] = useState('');
+  const [excelBusy, setExcelBusy] = useState(false);
+
+  const loadInvoiceDefinition = useCallback(async () => {
+    try {
+      const defs = await window.api.getDocumentDefinitions(business.id, { includeInactive: true });
+      const list = Array.isArray(defs) ? defs : [];
+      const def = list.find(d => String(d.key || '').toLowerCase() === 'invoice_balance');
+      setExcelTemplatePath(def?.template_path || '');
+    } catch (err) { /* ignore */ }
+  }, [business.id]);
+
+  useEffect(() => {
+    if (workspaceSection === 'invoice') loadInvoiceDefinition();
+  }, [workspaceSection, loadInvoiceDefinition]);
+  const [workspaceSection, setWorkspaceSection] = useState('dashboard');
+  // Client search and Contacts import state
+  const [clientSearch, setClientSearch] = useState('');
+  const [contactsOpen, setContactsOpen] = useState(false);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contacts, setContacts] = useState([]);
+  const [contactsSearch, setContactsSearch] = useState('');
+  const [selectedContacts, setSelectedContacts] = useState(() => new Set());
+  const [skipDuplicates, setSkipDuplicates] = useState(true);
+
+  const refreshClients = useCallback(async () => {
+    setClientsLoading(true);
+    try {
+      const list = await window.api.getClients();
+      const filtered = Array.isArray(list) ? list.filter(c => !c.business_id || c.business_id === business.id) : [];
+      setClients(filtered);
+    } catch (err) {
+      console.error('Failed to load clients', err);
+      setError(err?.message || 'Unable to load clients');
+    } finally { setClientsLoading(false); }
+  }, [business.id]);
+
+  const refreshDocs = useCallback(async () => {
+    setDocsLoading(true);
+    try {
+      const list = await window.api.getDocuments({ businessId: business.id });
+      const filtered = Array.isArray(list) ? list.filter(d => {
+        const t = String(d.doc_type || '').toLowerCase();
+        return t === 'invoice' || t === 'quote';
+      }) : [];
+      setDocs(filtered);
+    } catch (err) {
+      console.error('Failed to load documents', err);
+      setError(err?.message || 'Unable to load documents');
+    } finally { setDocsLoading(false); }
+  }, [business.id]);
+
+  useEffect(() => { refreshClients(); }, [refreshClients]);
+  useEffect(() => { refreshDocs(); }, [refreshDocs]);
+
+  const handleAddClient = useCallback((e) => {
+    if (e && typeof e.preventDefault === 'function') e.preventDefault();
+    setError('');
+    setClientEditorOpen(true);
+    setClientEditor({
+      client: { business_id: business.id, name: '' },
+      emails: [{ label: 'Primary', email: '', is_primary: 1 }],
+      phones: [{ label: 'Mobile', phone: '', is_primary: 1 }],
+      addresses: [{ label: 'Billing', address1: '', address2: '', town: '', postcode: '', country: '', is_primary: 1 }]
+    });
+  }, [business.id]);
+
+  const openEditClient = useCallback(async (client) => {
+    if (!client) return;
+    setClientEditorOpen(true);
+    setClientEditorLoading(true);
+    setError('');
+    try {
+      const details = await window.api.getClientDetails(client.client_id);
+      const base = details?.client || client || {};
+      const emails = Array.isArray(details?.emails) && details.emails.length ? details.emails : [{ label: 'Primary', email: base.email || '', is_primary: 1 }];
+      const phones = Array.isArray(details?.phones) && details.phones.length ? details.phones : [{ label: 'Mobile', phone: base.phone || '', is_primary: 1 }];
+      const addresses = Array.isArray(details?.addresses) && details.addresses.length ? details.addresses : [{ label: 'Billing', address1: base.address1 || '', address2: base.address2 || '', town: base.town || '', postcode: base.postcode || '', country: '' , is_primary: 1 }];
+      setClientEditor({ client: base, emails, phones, addresses });
+    } catch (err) {
+      console.error('Failed to load client details', err);
+      setError(err?.message || 'Unable to load client details');
+      setClientEditor({ client, emails: [], phones: [], addresses: [] });
+    } finally { setClientEditorLoading(false); }
+  }, []);
+
+  const closeEditClient = useCallback(() => { setClientEditorOpen(false); setClientEditor(null); }, []);
+
+  const setPrimary = (list, index) => list.map((item, i) => ({ ...item, is_primary: i === index ? 1 : 0 }));
+
+  const saveClientEditor = useCallback(async () => {
+    if (!clientEditor || !clientEditor.client) return;
+    setError('');
+    setClientEditorLoading(true);
+    try {
+      let id = clientEditor.client.client_id;
+      const name = (clientEditor.client.name || '').trim();
+      if (!name) throw new Error('Client name is required');
+      // Ensure single primary per list in UI
+      const normalize = (arr, key) => {
+        const any = arr.some((x) => x && (x.is_primary === 1 || x.is_primary === true || x.is_primary === '1'));
+        const copy = arr.map(a => ({ ...a }));
+        if (!any && copy.length) copy[0].is_primary = 1;
+        return copy;
+      };
+      const emails = normalize(clientEditor.emails || [], 'email');
+      const phones = normalize(clientEditor.phones || [], 'phone');
+      const addresses = normalize(clientEditor.addresses || [], 'address1');
+      if (!Number.isInteger(id)) {
+        try {
+          id = await window.api.addClient({ business_id: business.id, name });
+        } catch (e) {
+          throw e;
+        }
+      }
+      await window.api.saveClientDetails(id, { name, emails, phones, addresses });
+      setMessage('Client updated');
+      setTimeout(() => setMessage(''), 1500);
+      closeEditClient();
+      refreshClients();
+    } catch (err) {
+      console.error('Failed to save client', err);
+      setError(err?.message || 'Unable to save client');
+    } finally { setClientEditorLoading(false); }
+  }, [clientEditor, closeEditClient, refreshClients]);
+
+  const deleteClient = useCallback(async (client) => {
+    if (!client) return;
+    try {
+      const ok = window.confirm(`Delete client “${client.name}”? This cannot be undone.`);
+      if (!ok) return;
+      await window.api.deleteClient(client.client_id);
+      setMessage('Client deleted');
+      setTimeout(() => setMessage(''), 1200);
+      refreshClients();
+    } catch (err) {
+      console.error('Delete client failed', err);
+      setError(err?.message || 'Unable to delete client');
+    }
+  }, [refreshClients]);
+
+  const handleCreateDocument = useCallback(async () => {
+    setCreatingDoc(true);
+    setError('');
+    try {
+      const client = clients.find(c => String(c.client_id) === String(docClientId));
+      if (!client) throw new Error('Select a client');
+      const computedTotal = Array.isArray(items) && items.length ? items.reduce((sum, it) => {
+        const qty = Number(it?.quantity);
+        const rate = Number(it?.rate);
+        const line = Number.isFinite(Number(it?.amount)) ? Number(it.amount) : (Number.isFinite(qty) && Number.isFinite(rate) ? qty * rate : 0);
+        return sum + (Number.isFinite(line) ? line : 0);
+      }, 0) : null;
+      const amount = (computedTotal != null && Number.isFinite(computedTotal)) ? computedTotal : Number(docAmount);
+      if (!Number.isFinite(amount) || amount <= 0) throw new Error('Enter a valid amount or add line items');
+      const res = await window.api.createMCMSDocument({
+        business_id: business.id,
+        doc_type: docType,
+        client_override: {
+          name: client.name,
+          email: client.email,
+          phone: client.phone,
+          address1: client.address1 || client.address || '',
+          address2: client.address2 || '',
+          town: client.town || '',
+          postcode: client.postcode || ''
+        },
+        total_amount: amount,
+        line_items: items,
+        due_date: docDueDate || null
+      });
+      setMessage(`${docType === 'invoice' ? 'Invoice' : 'Quote'} #${res?.number ?? ''} generated`);
+      setTimeout(() => setMessage(''), 1800);
+      setDocAmount(''); setDocClientId(''); setDocDueDate(''); setItems([]);
+      await refreshDocs();
+    } catch (err) {
+      console.error('Failed to create document', err);
+      setError(err?.message || 'Unable to create document');
+    } finally { setCreatingDoc(false); }
+  }, [clients, docType, docClientId, docAmount, docDueDate, business.id, refreshDocs, items]);
+
+  const emailDocument = useCallback(async (doc) => {
+    try {
+      const subject = `${(doc.doc_type || '').toString().toUpperCase()}${doc.number != null ? ` #${doc.number}` : ''} – ${doc.display_client_name || doc.client_name || ''}`.trim();
+      const body = '';
+      const to = '';
+      await window.api.composeMailDraft({ to, subject, body, attachments: [doc.file_path].filter(Boolean) });
+    } catch (err) {
+      console.error('Compose mail failed', err);
+      setError(err?.message || 'Unable to compose email');
+    }
+  }, []);
+
+  // Local document helpers for the Invoice log in MCMS tabs
+  const handleOpenDocumentFile = useCallback(async (filePath) => {
+    const path = filePath || '';
+    if (!path) { setError('PDF not available'); return; }
+    try {
+      setError('');
+      const res = await window.api?.openPath?.(path);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to open file');
+    } catch (err) {
+      console.error('Open failed', err);
+      setError(err?.message || 'Unable to open file');
+    }
+  }, []);
+
+  const handleRevealDocument = useCallback(async (filePath) => {
+    const path = filePath || '';
+    if (!path) { setError('PDF not available'); return; }
+    try {
+      setError('');
+      const res = await window.api?.showItemInFolder?.(path);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to reveal file');
+    } catch (err) {
+      console.error('Reveal failed', err);
+      setError(err?.message || 'Unable to reveal file');
+    }
+  }, []);
+
+  const handleDeleteDocumentRecord = useCallback(async (doc) => {
+    if (!doc || !doc.document_id) return;
+    const locked = !!doc.is_locked;
+    if (locked) { window.alert('Unlock the record before deleting.'); return; }
+    const removeFile = window.confirm('Also delete the PDF file from disk?');
+    try {
+      await window.api?.deleteDocument?.(doc.document_id, { removeFile });
+      setMessage('Deleted');
+      setTimeout(() => setMessage(''), 1200);
+      refreshDocs();
+    } catch (err) {
+      console.error('Delete failed', err);
+      setError(err?.message || 'Unable to delete');
+    }
+  }, [refreshDocs]);
+
+  const documentsContent = (
+    <div className="space-y-2">
+      {docsLoading ? <div className="text-sm text-slate-500">Loading…</div> : null}
+      {docs.map(row => {
+        const number = row.number != null ? `#${row.number}` : '';
+        const label = `${(row.doc_type || '').toString().toUpperCase()} ${number}`.trim();
+        return (
+          <div key={row.document_id} className="flex items-center justify-between rounded border border-slate-200 px-3 py-2">
+            <div className="flex flex-col">
+              <div className="text-sm font-medium text-slate-700">{label} — {row.display_client_name || row.client_name || ''}</div>
+              <div className="text-xs text-slate-500">{row.file_path || 'No file yet'}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              {row.file_path ? (
+                <>
+                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => window.api.openPath(row.file_path)}>Open</button>
+                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => window.api.showItemInFolder(row.file_path)}>Reveal</button>
+                  <button className="text-xs px-2 py-1 border rounded border-indigo-200 text-indigo-600 hover:bg-indigo-50" onClick={() => emailDocument(row)}>Email</button>
+                </>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  
+
+  const editor = clientEditor || { client: {}, emails: [], phones: [], addresses: [] };
+  const onChangeList = (key, updater) => setClientEditor(prev => prev ? { ...prev, [key]: updater(Array.isArray(prev[key]) ? prev[key] : []) } : prev);
+  const renderList = (title, key, columns) => {
+    const list = Array.isArray(editor[key]) ? editor[key] : [];
+    return (
+      <div className="space-y-2">
+        <div className="text-sm font-semibold text-slate-700">{title}</div>
+        {list.map((row, idx) => (
+          <div key={`${key}-${idx}`} className="flex flex-wrap items-end gap-2">
+            {columns.map(col => (
+              <div key={col.key} className="flex flex-col">
+                <label className="text-[11px] text-slate-500">{col.label}</label>
+                <input value={row[col.key] || ''} onChange={e => onChangeList(key, (arr) => { const next = [...arr]; next[idx] = { ...next[idx], [col.key]: e.target.value }; return next; })} className="border rounded px-2 py-1 text-sm" />
+              </div>
+            ))}
+            <label className="text-xs text-slate-600 inline-flex items-center gap-1">
+              <input type="checkbox" checked={!!row.is_primary} onChange={() => onChangeList(key, (arr) => setPrimary(arr, idx))} /> Primary
+            </label>
+            <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => onChangeList(key, (arr) => arr.filter((_, i) => i !== idx))}>Remove</button>
+          </div>
+        ))}
+        <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => onChangeList(key, (arr) => arr.concat([columns.reduce((o, c) => ({ ...o, [c.key]: '' }), { is_primary: list.length === 0 ? 1 : 0 })]))}>Add</button>
+      </div>
+    );
+  };
+
+  const editorModal = clientEditorOpen ? (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded shadow-xl w-full max-w-3xl p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-800">Edit client</div>
+            <div className="text-xs text-slate-500">Update contact methods and addresses</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={async ()=>{
+              setContactsOpen(true);
+              if (contacts.length) return;
+              setContactsLoading(true);
+              try {
+                const res = await window.api.listAppleContacts();
+                const list = (res && res.ok && Array.isArray(res.contacts)) ? res.contacts : [];
+                setContacts(list);
+              } catch (err) {
+                console.error('Failed to list Apple Contacts', err);
+                setError(err?.message || 'Unable to read Apple Contacts');
+              } finally { setContactsLoading(false); }
+            }}>Import from Contacts</button>
+            <button className="text-sm px-3 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={closeEditClient}>Close</button>
+          </div>
+        </div>
+        <div className="space-y-3">
+          <div className="flex flex-col">
+            <label className="text-[11px] text-slate-500">Name</label>
+            <input value={editor.client?.name || ''} onChange={e => setClientEditor(prev => prev ? { ...prev, client: { ...(prev.client || {}), name: e.target.value } } : prev)} className="border rounded px-2 py-1 text-sm" />
+          </div>
+          {renderList('Emails', 'emails', [
+            { key: 'label', label: 'Label' },
+            { key: 'email', label: 'Email' }
+          ])}
+          {renderList('Phones', 'phones', [
+            { key: 'label', label: 'Label' },
+            { key: 'phone', label: 'Phone' }
+          ])}
+          {renderList('Addresses', 'addresses', [
+            { key: 'label', label: 'Label' },
+            { key: 'address1', label: 'Address line 1' },
+            { key: 'address2', label: 'Address line 2' },
+            { key: 'town', label: 'Town/City' },
+            { key: 'postcode', label: 'Postcode' },
+            { key: 'country', label: 'Country' }
+          ])}
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          <button className="text-sm px-3 py-2 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={closeEditClient}>Cancel</button>
+          <button className="text-sm px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50" disabled={clientEditorLoading} onClick={saveClientEditor}>{clientEditorLoading ? 'Saving…' : 'Save changes'}</button>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  // Contacts import modal and helpers
+  const contactsList = Array.isArray(contacts) ? contacts : [];
+  const filteredContacts = contactsList.filter(c => {
+    if (!contactsSearch.trim()) return true;
+    const q = contactsSearch.trim().toLowerCase();
+    const hay = [c.name, (c.emails||[]).map(e=>e.value).join(' '), (c.phones||[]).map(p=>p.value).join(' ')].join(' ').toLowerCase();
+    return hay.includes(q);
+  });
+  const toggleContact = (id) => setSelectedContacts(prev => { const next = new Set(Array.from(prev)); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const setAllContacts = (all) => setSelectedContacts(all ? new Set(filteredContacts.map(c=>c.id||c.name)) : new Set());
+  const importSelectedContacts = async () => {
+    setError('');
+    try {
+      const ids = Array.from(selectedContacts);
+      if (!ids.length) { setContactsOpen(false); return; }
+      const list = contactsList.filter(c => ids.includes(c.id || c.name));
+      for (const c of list) {
+        const name = (c.name || '').trim() || ((c.firstName||'') + ' ' + (c.lastName||'')).trim();
+        if (!name) continue;
+        let existing = null;
+        try { existing = await window.api.getClientByName(business.id, name); } catch (_) {}
+        if (existing && skipDuplicates) continue;
+        let clientId = existing ? existing.client_id : null;
+        if (!clientId) {
+          try { clientId = await window.api.addClient({ business_id: business.id, name }); } catch (e) { clientId = null; }
+        }
+        if (!clientId) continue;
+        const emails = Array.isArray(c.emails) ? c.emails.filter(e => e && e.value).map((e,i) => ({ label: e.label || '', email: e.value || '', is_primary: i === 0 ? 1 : 0 })) : [];
+        const phones = Array.isArray(c.phones) ? c.phones.filter(p => p && p.value).map((p,i) => ({ label: p.label || '', phone: p.value || '', is_primary: i === 0 ? 1 : 0 })) : [];
+        const addresses = Array.isArray(c.addresses) ? c.addresses.map((a,i) => ({ label: a.label || '', address1: a.street || '', address2: '', town: a.city || '', postcode: a.zip || '', country: a.country || '', is_primary: i === 0 ? 1 : 0 })) : [];
+        try { await window.api.saveClientDetails(clientId, { name, emails, phones, addresses }); } catch (_) {}
+      }
+      setContactsOpen(false);
+      setSelectedContacts(new Set());
+      setMessage('Import complete');
+      setTimeout(() => setMessage(''), 1500);
+      refreshClients();
+    } catch (err) {
+      console.error('Import failed', err);
+      setError(err?.message || 'Unable to import contacts');
+    }
+  };
+
+  const importModal = contactsOpen ? (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+      <div className="bg-white rounded shadow-xl w-full max-w-4xl p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-lg font-semibold text-slate-800">Import from Apple Contacts</div>
+            <div className="text-xs text-slate-500">Select which contacts to import</div>
+          </div>
+          <button className="text-sm px-3 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setContactsOpen(false)}>Close</button>
+        </div>
+        <div className="flex items-center justify-between">
+          <input value={contactsSearch} onChange={e=>setContactsSearch(e.target.value)} placeholder="Search contacts…" className="text-sm border rounded px-2 py-1" />
+          <div className="flex items-center gap-2">
+            <label className="text-xs text-slate-600 inline-flex items-center gap-1"><input type="checkbox" checked={skipDuplicates} onChange={e=>setSkipDuplicates(e.target.checked)} /> Skip duplicates</label>
+            <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setAllContacts(true)}>Select all</button>
+            <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setAllContacts(false)}>Clear</button>
+          </div>
+        </div>
+        <div className="border rounded max-h-[50vh] overflow-auto">
+          {contactsLoading ? (
+            <div className="p-3 text-sm text-slate-500">Loading contacts…</div>
+          ) : filteredContacts.length === 0 ? (
+            <div className="p-3 text-sm text-slate-500">No contacts found. macOS may require Contacts permission for Automation. You can retry or import a vCard (.vcf) file.</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-slate-700">
+                  <th className="px-3 py-2 w-10"></th>
+                  <th className="px-3 py-2 text-left">Name</th>
+                  <th className="px-3 py-2 text-left">Emails</th>
+                  <th className="px-3 py-2 text-left">Phones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredContacts.map(c => {
+                  const id = c.id || c.name;
+                  const checked = selectedContacts.has(id);
+                  return (
+                    <tr key={id} className="border-t">
+                      <td className="px-3 py-2"><input type="checkbox" checked={checked} onChange={()=>toggleContact(id)} /></td>
+                      <td className="px-3 py-2">{c.name || `${c.firstName||''} ${c.lastName||''}`}</td>
+                      <td className="px-3 py-2">{(c.emails||[]).map(e=>e.value).filter(Boolean).join(', ')}</td>
+                      <td className="px-3 py-2">{(c.phones||[]).map(p=>p.value).filter(Boolean).join(', ')}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <button
+              className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50"
+              onClick={async ()=>{
+                try {
+                  const file = await window.api.chooseFile({ title: 'Select vCard file', filters: [{ name: 'vCard', extensions: ['vcf', 'vcard'] }] });
+                  if (!file) return;
+                  // Simple vCard parse in main process is not available; instead, quick-read via preload is not present.
+                  // Fallback UX: suggest dragging contacts into Contacts app selection then retry.
+                  setError('vCard import will be added next. For now, select contacts in Contacts and retry.');
+                } catch (err) {
+                  setError(err?.message || 'Unable to import vCard');
+                }
+              }}
+            >Import vCard…</button>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="text-sm px-3 py-2 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setContactsOpen(false)}>Cancel</button>
+            <button className="text-sm px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50" disabled={contactsLoading || selectedContacts.size === 0} onClick={importSelectedContacts}>Import selected</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  ) : null;
+
+  // Render MCMS layout + editor modal
+  return (
+    <div className="min-h-screen bg-slate-100">
+      <ToastOverlay notices={[
+        error ? { id: 'mcms-error', tone: 'error', text: error } : null,
+        message ? { id: 'mcms-message', tone: 'success', text: message } : null
+      ].filter(Boolean)} />
+      <header className="bg-white border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
+            <p className="text-sm text-slate-500">Clients, quotes and invoices.</p>
+          </div>
+          {/* Switch business removed */}
+        </div>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+        <nav className="flex gap-2">
+          {['clients','invoice','settings'].map(key => (
+            <button key={key} onClick={() => setWorkspaceSection(key)} className={`text-sm px-3 py-2 rounded border ${workspaceSection===key? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{key.charAt(0).toUpperCase()+key.slice(1)}</button>
+          ))}
+        </nav>
+
+        {workspaceSection === 'clients' ? (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-slate-700">Clients</h2>
+                <div className="flex items-center gap-2">
+                  <input value={clientSearch} onChange={e=>setClientSearch(e.target.value)} placeholder="Search…" className="text-xs border rounded px-2 py-1" />
+                  <button onClick={refreshClients} className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50">Refresh</button>
+                  <button onClick={async ()=>{
+                    setContactsOpen(true);
+                    if (contacts.length) return;
+                    setContactsLoading(true);
+                    try {
+                      const res = await window.api.listAppleContacts();
+                      const list = (res && res.ok && Array.isArray(res.contacts)) ? res.contacts : [];
+                      setContacts(list);
+                    } catch (err) {
+                      console.error('Failed to list Apple Contacts', err);
+                      setError(err?.message || 'Unable to read Apple Contacts');
+                    } finally { setContactsLoading(false); }
+                  }} className="hidden text-xs px-2 py-1 border rounded border-indigo-200 text-indigo-600 hover:bg-indigo-50">Import from Contacts</button>
+                  <button onClick={handleAddClient} className="text-xs px-2 py-1 border rounded border-indigo-200 text-indigo-600 hover:bg-indigo-50">Add contact</button>
+                </div>
+              </div>
+              
+              <div className="divide-y divide-slate-100">
+                {clientsLoading ? <div className="text-sm text-slate-500">Loading…</div> : null}
+                {clients
+                  .filter(c => {
+                    if (!clientSearch.trim()) return true;
+                    const q = clientSearch.trim().toLowerCase();
+                    const hay = [c.name, c.email, c.phone, c.address, c.town, c.postcode].filter(Boolean).join(' ').toLowerCase();
+                    return hay.includes(q);
+                  })
+                  .map(c => (
+                  <div key={c.client_id} className="py-2 text-sm flex items-center justify-between">
+                    <div>
+                      <div className="font-medium text-slate-700">{c.name}</div>
+                      <div className="text-xs text-slate-500">{[c.email, c.phone].filter(Boolean).join(' · ')}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => openEditClient(c)}>Edit</button>
+                      <button className="text-xs px-2 py-1 border rounded border-red-200 text-red-600 hover:bg-red-50" onClick={() => deleteClient(c)}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        ) : null}
+
+        {workspaceSection === 'invoice' ? (
+          <div className="space-y-6">
+            <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-slate-700">Generate from Excel template</h2>
+                <div className="text-xs text-slate-500">{excelTemplatePath ? `Template: ${excelTemplatePath}` : 'No template set'}</div>
+              </div>
+              <details className="rounded border border-slate-200">
+                <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-slate-700 bg-slate-50">Edit Excel template (beta)</summary>
+                <div className="p-3">
+                  <ExcelTemplateEditor initialPath={excelTemplatePath} onSaved={()=>{ setMessage('Template saved'); setTimeout(()=>setMessage(''), 1200); }} />
+                </div>
+              </details>
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="flex flex-col min-w-[220px]">
+                  <label className="text-xs text-slate-500">Client</label>
+                  <select value={excelClientId} onChange={e=>setExcelClientId(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                    <option value="">Select…</option>
+                    {clients.map(c => (<option key={c.client_id} value={c.client_id}>{c.name}</option>))}
+                  </select>
+                </div>
+                <div className="flex flex-col">
+                  <label className="text-xs text-slate-500">Amount</label>
+                  <input type="number" step="0.01" value={excelAmount} onChange={e=>setExcelAmount(e.target.value)} className="border rounded px-2 py-1 text-sm" placeholder="0.00" />
+                </div>
+                <div className="flex flex-col">
+                  <label className="text-xs text-slate-500">Due date</label>
+                  <input type="date" value={excelDueDate} onChange={e=>setExcelDueDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+                </div>
+                <button className="text-xs px-3 py-2 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={async ()=>{
+                  try {
+                    const file = await window.api.chooseFile({ title: 'Select invoice template (xlsx)', filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }] });
+                    if (!file) return;
+                    await window.api.saveDocumentDefinition(business.id, { key: 'invoice_balance', doc_type: 'invoice', label: 'Invoice – Balance', template_path: file, is_active: 1, is_locked: 0 });
+                    setExcelTemplatePath(file);
+                    setMessage('Template set'); setTimeout(()=>setMessage(''), 1200);
+                  } catch (err) { setError(err?.message || 'Unable to set template'); }
+                }}>Set template…</button>
+                <button disabled={excelBusy} className="text-xs px-3 py-2 rounded bg-indigo-600 text-white hover:bg-indigo-500 disabled:opacity-50" onClick={async ()=>{
+                  setError(''); setExcelBusy(true);
+                  try {
+                    const client = clients.find(c => String(c.client_id) === String(excelClientId));
+                    if (!client) throw new Error('Select a client');
+                    const amt = Number(excelAmount);
+                    if (!Number.isFinite(amt) || amt <= 0) throw new Error('Enter a valid amount');
+                    let tpl = excelTemplatePath;
+                    if (!tpl) {
+                      const defs = await window.api.getDocumentDefinitions(business.id, { includeInactive: true });
+                      const def = (Array.isArray(defs)?defs:[]).find(d => String(d.key||'').toLowerCase()==='invoice_balance');
+                      tpl = def?.template_path || '';
+                    }
+                    if (!tpl) throw new Error('Please set an Excel template first');
+                    const res = await window.api.createNumberedDocument({
+                      business_id: business.id,
+                      doc_type: 'invoice',
+                      definition_key: 'invoice_balance',
+                      client_override: {
+                        name: client.name, email: client.email, phone: client.phone,
+                        address1: client.address1 || client.address || '', address2: client.address2 || '', town: client.town || '', postcode: client.postcode || ''
+                      },
+                      total_amount: amt,
+                      due_date: excelDueDate || null
+                    });
+                    if (!res || !res.file_path) throw new Error('PDF not created');
+                    setMessage(`Invoice #${res?.number ?? ''} generated`); setTimeout(()=>setMessage(''), 1500);
+                    setExcelAmount(''); setExcelClientId(''); setExcelDueDate('');
+                    refreshDocs();
+                  } catch (err) { console.error(err); setError(err?.message || 'Unable to generate invoice'); }
+                  finally { setExcelBusy(false); }
+                }}>{excelBusy ? 'Generating…' : 'Generate Invoice'}</button>
+              </div>
+            </section>
+            
+            <section className="rounded-lg border border-slate-200 bg-white p-6">
+              <InvoiceLogPanel
+                business={business}
+                onOpenFile={handleOpenDocumentFile}
+                onRevealFile={handleRevealDocument}
+                onDeleteDocument={handleDeleteDocumentRecord}
+              />
+            </section>
+          </div>
+        ) : null}
+
+        {workspaceSection === 'quote' ? (
+          <div className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-slate-700">New Quote</h2>
+            </div>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="flex flex-col min-w-[200px]">
+                <label className="text-xs text-slate-500">Client</label>
+                <select value={docClientId} onChange={e=>setDocClientId(e.target.value)} className="border rounded px-2 py-1 text-sm">
+                  <option value="">Select…</option>
+                  {clients.map(c => (
+                    <option key={c.client_id} value={c.client_id}>{c.name}</option>
+                  ))}
+                </select>
+              </div>
+              {items.length === 0 ? (
+                <div className="flex flex-col">
+                  <label className="text-xs text-slate-500">Amount</label>
+                  <input type="number" step="0.01" value={docAmount} onChange={e=>setDocAmount(e.target.value)} className="border rounded px-2 py-1 text-sm" placeholder="0.00" />
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  <label className="text-xs text-slate-500">Total</label>
+                  <div className="px-2 py-1 text-sm">£{(items.reduce((s,it)=>{const q=Number(it.quantity);const r=Number(it.rate);const line=Number.isFinite(Number(it.amount))?Number(it.amount):(Number.isFinite(q)&&Number.isFinite(r)?q*r:0);return s+(Number.isFinite(line)?line:0);},0)).toFixed(2)}</div>
+                </div>
+              )}
+              <div className="flex flex-col">
+                <label className="text-xs text-slate-500">Valid until</label>
+                <input type="date" value={docDueDate} onChange={e=>setDocDueDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+              </div>
+              <button disabled={creatingDoc} onClick={async ()=>{
+                setCreatingDoc(true);
+                setError('');
+                try{
+                  const client = clients.find(c => String(c.client_id) === String(docClientId));
+                  if (!client) throw new Error('Select a client');
+                  const computed = items.length ? items.reduce((s,it)=>{const qa=Number(it.quantity), ra=Number(it.rate); const ln = Number.isFinite(Number(it.amount))?Number(it.amount):(Number.isFinite(qa)&&Number.isFinite(ra)?qa*ra:0); return s+(Number.isFinite(ln)?ln:0);},0) : null;
+                  const amount = (computed != null && Number.isFinite(computed)) ? computed : Number(docAmount);
+                  if (!Number.isFinite(amount) || amount <= 0) throw new Error('Enter a valid amount or add line items');
+                  const res = await window.api.createMCMSDocument({
+                    business_id: business.id,
+                    doc_type: 'quote',
+                    client_override: {
+                      name: client.name, email: client.email, phone: client.phone,
+                      address1: client.address1 || client.address || '', address2: client.address2 || '', town: client.town || '', postcode: client.postcode || ''
+                    },
+                    total_amount: amount,
+                    line_items: items,
+                    due_date: docDueDate || null
+                  });
+                  setMessage(`Quote #${res?.number ?? ''} generated`);
+                  setTimeout(()=>setMessage(''), 1800);
+                  setDocClientId(''); setDocAmount(''); setDocDueDate(''); setItems([]);
+                  await refreshDocs();
+                }catch(err){ console.error(err); setError(err?.message || 'Unable to generate quote'); }
+                finally{ setCreatingDoc(false); }
+              }} className="text-xs px-3 py-2 border rounded border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">{creatingDoc ? 'Generating…' : 'Generate Quote'}</button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-semibold text-slate-700">Line items</div>
+                <div className="flex gap-2">
+                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setItems(arr=>arr.concat([{ item_type:'gig', description:'Performance fee', quantity:1, unit:'each', rate:0 }]))}>Add gig fee</button>
+                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setItems(arr=>arr.concat([{ item_type:'studio', description:'Studio time', quantity:1, unit:'hours', rate:0 }]))}>Add studio time</button>
+                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>setItems(arr=>arr.concat([{ item_type:'expense', description:'Expense', quantity:1, unit:'item', rate:0 }]))}>Add expense</button>
+                </div>
+              </div>
+              {items.length ? (
+                <div className="border rounded overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="bg-slate-50 text-slate-700">
+                        <th className="px-2 py-1 text-left">Type</th>
+                        <th className="px-2 py-1 text-left">Description</th>
+                        <th className="px-2 py-1 text-right" style={{width:'90px'}}>Qty/Hrs</th>
+                        <th className="px-2 py-1 text-left" style={{width:'80px'}}>Unit</th>
+                        <th className="px-2 py-1 text-right" style={{width:'120px'}}>Rate</th>
+                        <th className="px-2 py-1 text-right" style={{width:'120px'}}>Line total</th>
+                        <th className="px-2 py-1"></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {items.map((it, idx) => {
+                        const qty = Number(it.quantity);
+                        const rate = Number(it.rate);
+                        const line = Number.isFinite(Number(it.amount)) ? Number(it.amount) : (Number.isFinite(qty) && Number.isFinite(rate) ? qty * rate : 0);
+                        return (
+                          <tr key={`qt-${idx}`} className="border-t">
+                            <td className="px-2 py-1">
+                              <select value={it.item_type||''} onChange={e=>setItems(arr=>{const next=[...arr]; next[idx] = { ...next[idx], item_type: e.target.value }; return next; })} className="border rounded px-1 py-0.5 text-xs">
+                                <option value="gig">Gig</option>
+                                <option value="studio">Studio</option>
+                                <option value="expense">Expense</option>
+                                <option value="custom">Custom</option>
+                              </select>
+                            </td>
+                            <td className="px-2 py-1"><input value={it.description||''} onChange={e=>setItems(arr=>{const next=[...arr]; next[idx] = { ...next[idx], description: e.target.value }; return next; })} className="w-full border rounded px-2 py-1 text-xs" placeholder="Description" /></td>
+                            <td className="px-2 py-1 text-right"><input type="number" step="0.01" value={Number.isFinite(qty)?qty:''} onChange={e=>setItems(arr=>{const next=[...arr]; next[idx] = { ...next[idx], quantity: e.target.value }; return next; })} className="w-20 border rounded px-2 py-1 text-xs text-right" /></td>
+                            <td className="px-2 py-1"><input value={it.unit||''} onChange={e=>setItems(arr=>{const next=[...arr]; next[idx] = { ...next[idx], unit: e.target.value }; return next; })} className="w-20 border rounded px-2 py-1 text-xs" /></td>
+                            <td className="px-2 py-1 text-right"><input type="number" step="0.01" value={Number.isFinite(rate)?rate:''} onChange={e=>setItems(arr=>{const next=[...arr]; next[idx] = { ...next[idx], rate: e.target.value }; return next; })} className="w-28 border rounded px-2 py-1 text-xs text-right" /></td>
+                            <td className="px-2 py-1 text-right">£{Number.isFinite(line)?line.toFixed(2):'0.00'}</td>
+                            <td className="px-2 py-1 text-right"><button className="text-xs px-2 py-1 border rounded border-red-200 text-red-600 hover:bg-red-50" onClick={()=>setItems(arr=>arr.filter((_,i)=>i!==idx))}>Remove</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-3">
+              <div className="text-sm font-semibold text-slate-700">Recent quotes</div>
+              <div className="divide-y divide-slate-100">
+                {docs
+                  .filter(d => String(d.doc_type || '').toLowerCase() === 'quote')
+                  .map(d => (
+                    <div key={`q-${d.document_id}`} className="py-2 text-sm flex items-center justify-between">
+                      <div>
+                        <div className="font-medium text-slate-700">Quote #{d.number != null ? d.number : ''} — {d.display_client_name || d.client_name || ''}</div>
+                        <div className="text-xs text-slate-500 break-all">{d.file_path || 'No file yet'}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>window.api.openPath(d.file_path)}>Open</button>
+                        <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={()=>window.api.showItemInFolder(d.file_path)}>Reveal</button>
+                        <button className="text-xs px-2 py-1 border rounded border-red-200 text-red-600 hover:bg-red-50" onClick={async ()=>{ try { await window.api.deleteDocument(d.document_id, { removeFile: true }); setMessage('Quote deleted'); setTimeout(()=>setMessage(''), 1200); refreshDocs(); } catch(err){ setError(err?.message || 'Unable to delete'); } }}>Delete</button>
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          </div>
+        ) : null}
+
+        {workspaceSection === 'invoices' ? (
+          <section className="rounded-lg border border-slate-200 bg-white p-6">
+            <InvoiceLogPanel
+              business={business}
+              onOpenFile={async (filePath) => {
+                if (!filePath) return;
+                try { const res = await window.api.openPath(filePath); if (res && res.ok === false) { throw new Error(res.message || 'Unable to open'); } } catch (err) { setError(err?.message || 'Unable to open file'); }
+              }}
+              onRevealFile={async (filePath) => {
+                if (!filePath) return;
+                try { const res = await window.api.showItemInFolder(filePath); if (res && res.ok === false) { throw new Error(res.message || 'Unable to reveal'); } } catch (err) { setError(err?.message || 'Unable to reveal file'); }
+              }}
+              onDeleteDocument={async (doc) => {
+                if (!doc || !doc.document_id) return;
+                const locked = !!doc.is_locked;
+                if (locked) { window.alert('Unlock the record before deleting.'); return; }
+                const removeFile = window.confirm('Also delete the PDF file from disk?');
+                try { await window.api.deleteDocument(doc.document_id, { removeFile }); setMessage('Invoice deleted'); setTimeout(()=>setMessage(''), 1200); } catch (err) { setError(err?.message || 'Unable to delete'); }
+              }}
+            />
+          </section>
+        ) : null}
+
+        {workspaceSection === 'settings' ? (
+          <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-700">Business settings</h2>
+              <p className="text-sm text-slate-500">Update folders and review business information.</p>
+            </div>
+            <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-slate-700">Documents folder</h3>
+                <p className="text-xs text-slate-500 break-all">{business.save_path || 'Not configured'}</p>
+              </div>
+            </div>
+          </section>
+        ) : null}
+      </main>
+
+      {editorModal}
+      {importModal}
     </div>
   );
 }
@@ -11185,15 +12101,15 @@ function App() {
       try {
         const data = await window.api.businessSettings();
         if (!mounted) return;
-        const businessList = data || [];
-        setBusinesses(businessList);
-
-        const storedId = readLastBusinessId();
-        if (!selectedBusiness && storedId) {
-          const match = businessList.find(biz => String(biz.id) === storedId);
-          if (match) {
-            setSelectedBusiness(match);
-          }
+        const businessList = Array.isArray(data) ? data : [];
+        // Hide MCMS (id=1); prefer AhMen (id=2)
+        const filtered = businessList.filter(biz => biz && biz.id !== 1);
+        setBusinesses(filtered);
+        // Auto-select AhMen when present
+        const preferred = filtered.find(biz => biz.id === 2) || filtered[0] || null;
+        if (preferred) {
+          storeLastBusinessId(preferred.id);
+          setSelectedBusiness(preferred);
         }
       } catch (err) {
         if (!mounted) return;
@@ -11223,19 +12139,15 @@ function App() {
 
   if (!selectedBusiness) {
     return (
-      <BusinessChooser
-        businesses={businesses}
-        loading={loading}
-        error={error}
-        onSelect={handleSelectBusiness}
-      />
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center p-8">
+        <div className="text-slate-600 text-sm">Loading…</div>
+      </div>
     );
   }
 
   return (
     <BusinessWorkspace
       business={selectedBusiness}
-      onSwitch={() => setSelectedBusiness(null)}
       onBusinessUpdate={handleBusinessUpdated}
     />
   );

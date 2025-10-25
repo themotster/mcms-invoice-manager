@@ -303,6 +303,45 @@ function initializeDatabase() {
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
+    // Normalized client contact details for multiple values per client
+    db.run(`CREATE TABLE IF NOT EXISTS client_emails (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      label TEXT,
+      email TEXT NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS client_phones (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      label TEXT,
+      phone TEXT NOT NULL,
+      is_primary INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS client_addresses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id INTEGER NOT NULL,
+      label TEXT,
+      address1 TEXT,
+      address2 TEXT,
+      town TEXT,
+      postcode TEXT,
+      country TEXT,
+      is_primary INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (client_id) REFERENCES clients(client_id) ON DELETE CASCADE
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_client_emails_client ON client_emails (client_id)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_client_phones_client ON client_phones (client_id)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_client_addresses_client ON client_addresses (client_id)');
+
     db.run(`CREATE TABLE IF NOT EXISTS events (
       event_id INTEGER PRIMARY KEY AUTOINCREMENT,
       client_id INTEGER NOT NULL,
@@ -337,6 +376,23 @@ function initializeDatabase() {
       FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id),
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
+
+    // Line items for invoices/quotes
+    db.run(`CREATE TABLE IF NOT EXISTS document_items (
+      item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      document_id INTEGER NOT NULL,
+      item_type TEXT,
+      description TEXT,
+      quantity REAL,
+      unit TEXT,
+      rate REAL,
+      amount REAL,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (document_id) REFERENCES documents(document_id) ON DELETE CASCADE
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_document_items_doc ON document_items (document_id, sort_order)');
 
     // Email log for in-app sending
     db.run(`CREATE TABLE IF NOT EXISTS email_log (
@@ -2859,6 +2915,56 @@ module.exports = {
     });
   },
 
+  getClientByName: (businessId, name) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      const nm = (name || '').toString().trim();
+      if (!Number.isInteger(id) || !nm) { resolve(null); return; }
+      db.get(
+        `SELECT * FROM clients WHERE business_id = ? AND lower(name) = lower(?) LIMIT 1`,
+        [id, nm],
+        (err, row) => {
+          if (err) reject(err); else resolve(row || null);
+        }
+      );
+    });
+  },
+
+  getClient: (clientId) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(clientId);
+      if (!Number.isInteger(id)) { resolve(null); return; }
+      db.get('SELECT * FROM clients WHERE client_id = ? LIMIT 1', [id], (err, row) => {
+        if (err) reject(err); else resolve(row || null);
+      });
+    });
+  },
+
+  getClientDetails: (clientId) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(clientId);
+      if (!Number.isInteger(id)) { resolve({ client: null, emails: [], phones: [], addresses: [] }); return; }
+      const out = { client: null, emails: [], phones: [], addresses: [] };
+      db.get('SELECT * FROM clients WHERE client_id = ? LIMIT 1', [id], (err, row) => {
+        if (err) { reject(err); return; }
+        out.client = row || null;
+        db.all('SELECT * FROM client_emails WHERE client_id = ? ORDER BY is_primary DESC, id', [id], (e1, r1) => {
+          if (e1) { reject(e1); return; }
+          out.emails = Array.isArray(r1) ? r1 : [];
+          db.all('SELECT * FROM client_phones WHERE client_id = ? ORDER BY is_primary DESC, id', [id], (e2, r2) => {
+            if (e2) { reject(e2); return; }
+            out.phones = Array.isArray(r2) ? r2 : [];
+            db.all('SELECT * FROM client_addresses WHERE client_id = ? ORDER BY is_primary DESC, id', [id], (e3, r3) => {
+              if (e3) { reject(e3); return; }
+              out.addresses = Array.isArray(r3) ? r3 : [];
+              resolve(out);
+            });
+          });
+        });
+      });
+    });
+  },
+
   markPaid: (invoiceNumber) => {
     return new Promise((resolve, reject) => {
       db.run(
@@ -2975,6 +3081,103 @@ module.exports = {
           else resolve();
         }
       );
+    });
+  },
+
+  deleteClient: (clientId) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(clientId);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid client id')); return; }
+      db.run('DELETE FROM clients WHERE client_id = ?', [id], function (err) {
+        if (err) reject(err); else resolve(this.changes);
+      });
+    });
+  },
+
+  saveClientDetails: (clientId, details = {}) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(clientId);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid client id')); return; }
+
+      const name = (details?.name || '').toString().trim();
+      const emails = Array.isArray(details?.emails) ? details.emails.filter(e => e && e.email) : [];
+      const phones = Array.isArray(details?.phones) ? details.phones.filter(p => p && p.phone) : [];
+      const addresses = Array.isArray(details?.addresses) ? details.addresses.filter(a => a) : [];
+
+      const normalizePrimary = (arr, key) => {
+        let used = false;
+        return arr.map(item => {
+          const isP = item && (item.is_primary === 1 || item.is_primary === true || item.is_primary === '1');
+          let flag = 0;
+          if (isP && !used) { flag = 1; used = true; }
+          return { ...item, [key]: (item && item[key]) || null, is_primary: flag };
+        }).map((item, idx, list) => {
+          if (!used && idx === 0) return { ...item, is_primary: 1 };
+          return item;
+        });
+      };
+      const emailsN = normalizePrimary(emails, 'email');
+      const phonesN = normalizePrimary(phones, 'phone');
+      const addressesN = (() => {
+        let used = false;
+        const list = addresses.map(a => ({
+          label: (a?.label || '').toString().trim() || null,
+          address1: (a?.address1 || '').toString().trim() || null,
+          address2: (a?.address2 || '').toString().trim() || null,
+          town: (a?.town || '').toString().trim() || null,
+          postcode: (a?.postcode || '').toString().trim() || null,
+          country: (a?.country || '').toString().trim() || null,
+          is_primary: (a?.is_primary === 1 || a?.is_primary === true || a?.is_primary === '1') ? 1 : 0
+        }));
+        const any = list.some(it => it.is_primary === 1);
+        if (!any && list.length) list[0].is_primary = 1;
+        return list;
+      })();
+
+      // Derive base columns from primaries
+      const primaryEmail = emailsN.find(e => e.is_primary === 1)?.email || null;
+      const primaryPhone = phonesN.find(p => p.is_primary === 1)?.phone || null;
+      const primaryAddr = addressesN.find(a => a.is_primary === 1) || {};
+      const addressLine = [primaryAddr.address1, primaryAddr.address2, primaryAddr.town, primaryAddr.postcode, primaryAddr.country].filter(Boolean).join(', ');
+
+      db.serialize(() => {
+        // Update base client record
+        db.run(
+          `UPDATE clients SET name = COALESCE(?, name), email = ?, phone = ?, address = ?, address1 = ?, address2 = ?, town = ?, postcode = ? WHERE client_id = ?`,
+          [name || null, primaryEmail, primaryPhone, addressLine || null, primaryAddr.address1 || null, primaryAddr.address2 || null, primaryAddr.town || null, primaryAddr.postcode || null, id],
+          (err) => {
+            if (err) { reject(err); return; }
+            // Replace emails
+            db.run('DELETE FROM client_emails WHERE client_id = ?', [id], (e1) => {
+              if (e1) { reject(e1); return; }
+              const insertEmail = db.prepare('INSERT INTO client_emails (client_id, label, email, is_primary, created_at, updated_at) VALUES (?, ?, ?, ?, datetime(\'now\'), datetime(\'now\'))');
+              emailsN.forEach(item => insertEmail.run(id, item.label || null, item.email, item.is_primary ? 1 : 0));
+              insertEmail.finalize((e1f) => {
+                if (e1f) { reject(e1f); return; }
+                // Replace phones
+                db.run('DELETE FROM client_phones WHERE client_id = ?', [id], (e2) => {
+                  if (e2) { reject(e2); return; }
+                  const insertPhone = db.prepare('INSERT INTO client_phones (client_id, label, phone, is_primary, created_at, updated_at) VALUES (?, ?, ?, ?, datetime(\'now\'), datetime(\'now\'))');
+                  phonesN.forEach(item => insertPhone.run(id, item.label || null, item.phone, item.is_primary ? 1 : 0));
+                  insertPhone.finalize((e2f) => {
+                    if (e2f) { reject(e2f); return; }
+                    // Replace addresses
+                    db.run('DELETE FROM client_addresses WHERE client_id = ?', [id], (e3) => {
+                      if (e3) { reject(e3); return; }
+                      const insertAddr = db.prepare('INSERT INTO client_addresses (client_id, label, address1, address2, town, postcode, country, is_primary, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime(\'now\'), datetime(\'now\'))');
+                      addressesN.forEach(a => insertAddr.run(id, a.label || null, a.address1, a.address2, a.town, a.postcode, a.country, a.is_primary ? 1 : 0));
+                      insertAddr.finalize((e3f) => {
+                        if (e3f) { reject(e3f); return; }
+                        resolve({ ok: true });
+                      });
+                    });
+                  });
+                });
+              });
+            });
+          }
+        );
+      });
     });
   },
 
@@ -3273,6 +3476,45 @@ module.exports = {
           );
         }
       );
+    });
+  },
+
+  // Replace all line items for a document (simple sync)
+  saveDocumentItems: (documentId, items = []) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(documentId);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid document id')); return; }
+      const list = Array.isArray(items) ? items : [];
+      db.serialize(() => {
+        db.run('DELETE FROM document_items WHERE document_id = ?', [id], (delErr) => {
+          if (delErr) { reject(delErr); return; }
+          if (!list.length) { resolve({ inserted: 0 }); return; }
+          const stmt = db.prepare(`INSERT INTO document_items (document_id, item_type, description, quantity, unit, rate, amount, sort_order, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))`);
+          let count = 0;
+          list.forEach((raw, idx) => {
+            const type = (raw?.item_type || raw?.type || '').toString().trim().toLowerCase() || null;
+            const desc = (raw?.description || '').toString().trim() || null;
+            const qty = Number(raw?.quantity);
+            const unit = (raw?.unit || '').toString().trim() || null;
+            const rate = Number(raw?.rate);
+            const amount = Number.isFinite(Number(raw?.amount)) ? Number(raw?.amount) : (Number.isFinite(qty) && Number.isFinite(rate) ? qty * rate : null);
+            stmt.run(id, type, desc, Number.isFinite(qty) ? qty : null, unit, Number.isFinite(rate) ? rate : null, Number.isFinite(amount) ? amount : null, Number.isInteger(raw?.sort_order) ? Number(raw.sort_order) : idx);
+            count += 1;
+          });
+          stmt.finalize((finErr) => finErr ? reject(finErr) : resolve({ inserted: count }));
+        });
+      });
+    });
+  },
+
+  getDocumentItems: (documentId) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(documentId);
+      if (!Number.isInteger(id)) { resolve([]); return; }
+      db.all('SELECT * FROM document_items WHERE document_id = ? ORDER BY sort_order, item_id', [id], (err, rows) => {
+        if (err) reject(err); else resolve(Array.isArray(rows) ? rows : []);
+      });
     });
   },
 
@@ -3583,6 +3825,22 @@ module.exports = {
       );
     });
   },
+  // Generic max number getter for a doc type (invoice/quote)
+  getMaxNumberForDocType: (businessId, docType) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      const type = (docType || '').toString().toLowerCase();
+      if (!Number.isInteger(id) || !type) { resolve(null); return; }
+      db.get(
+        `SELECT MAX(number) AS maxnum FROM documents WHERE business_id = ? AND lower(doc_type) = ?`,
+        [id, type],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row?.maxnum != null ? Number(row.maxnum) : null);
+        }
+      );
+    });
+  },
   setLastInvoiceNumber: (businessId, nextVal) => {
     return new Promise((resolve, reject) => {
       const id = Number(businessId);
@@ -3591,6 +3849,26 @@ module.exports = {
       if (!Number.isInteger(val) || val < 0) { reject(new Error('Invalid invoice number')); return; }
       db.run(
         `UPDATE business_settings SET last_invoice_number = ? WHERE id = ?`,
+        [val, id],
+        function (err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+  },
+  // Generic setter for last number counter by doc type
+  setLastNumberForDocType: (businessId, docType, nextVal) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      const type = (docType || '').toString().toLowerCase();
+      const val = Number(nextVal);
+      if (!Number.isInteger(id)) { reject(new Error('Invalid business id')); return; }
+      if (!Number.isInteger(val) || val < 0) { reject(new Error('Invalid number')); return; }
+      const column = getCounterColumn(type);
+      if (!column) { reject(new Error('Unsupported document type')); return; }
+      db.run(
+        `UPDATE business_settings SET ${column} = ? WHERE id = ?`,
         [val, id],
         function (err) {
           if (err) reject(err);

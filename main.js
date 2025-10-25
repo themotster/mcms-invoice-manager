@@ -5,6 +5,10 @@ const fs = require('fs');
 const documentService = require('./documentService');
 const db = require('./db');
 
+const isMCMS = (() => {
+  try { return /mcms/i.test(app.getName() || '') || String(process.env.APP_MODE || '').toLowerCase() === 'mcms'; } catch (_) { return String(process.env.APP_MODE || '').toLowerCase() === 'mcms'; }
+})();
+
 const DEFAULT_WINDOW_STATE = {
   width: 1200,
   height: 800
@@ -31,9 +35,13 @@ function getStateStorePath() {
   return path.join(app.getPath('userData'), 'window-state.json');
 }
 
+const PRELOAD_PATH = isMCMS
+  ? path.join(__dirname, 'mcms', 'preload.js')
+  : path.join(__dirname, 'preload.js');
+
 const CHILD_WINDOW_OPTIONS = {
   webPreferences: {
-    preload: path.join(__dirname, 'preload.js'),
+    preload: PRELOAD_PATH,
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: false,
@@ -95,7 +103,7 @@ function createWindow() {
   const browserOptions = {
     ...DEFAULT_WINDOW_STATE,
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: PRELOAD_PATH,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
@@ -147,7 +155,11 @@ function createWindow() {
     }
   });
 
-  win.loadFile('renderer/index.html');
+  if (isMCMS) {
+    win.loadFile(path.join('mcms', 'renderer', 'index.html'));
+  } else {
+    win.loadFile('renderer/index.html');
+  }
 }
 
 function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) {
@@ -250,6 +262,26 @@ app.whenReady().then(() => {
   });
 });
 
+// Email via Microsoft Graph – handle in main process to avoid renderer CORS
+ipcMain.handle('send-mail-via-graph', async (_event, args = {}) => {
+  try {
+    const res = await documentService.sendMailViaGraph(args || {});
+    // Maintain original return shape
+    return { ok: true, ...(res || {}) };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('schedule-mail-via-graph', async (_event, args = {}) => {
+  try {
+    const res = await documentService.scheduleMailViaGraph(args || {});
+    return { ok: true, ...(res || {}) };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
 ipcMain.handle('create-gig-info-pdf', async (event, args = {}) => {
   try {
     const businessId = Number(args.businessId ?? args.business_id);
@@ -280,6 +312,165 @@ ipcMain.handle('create-gig-info-pdf', async (event, args = {}) => {
 
     broadcastDocumentsChange({ type: 'documents-updated', businessId, jobsheetId });
     return { ok: true, file_path: targetPath };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+// Build and export a PDF of upcoming events and required personnel
+ipcMain.handle('create-personnel-log-pdf', async (_event, args = {}) => {
+  try {
+    const businessId = Number(args.businessId ?? args.business_id);
+    if (!Number.isInteger(businessId)) {
+      throw new Error('businessId is required');
+    }
+    const { html, targetPath } = await documentService.buildPersonnelLogHtml({
+      businessId,
+      fromDate: args.fromDate || args.from_date,
+      toDate: args.toDate || args.to_date,
+      includeArchived: args.includeArchived || args.include_archived,
+      columns: Array.isArray(args.columns) ? args.columns : undefined
+    });
+
+    const win = new BrowserWindow({ show: false });
+    await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    const pdfBuffer = await win.webContents.printToPDF({ printBackground: true, pageSize: 'A4', marginsType: 2, landscape: false });
+    await fs.promises.writeFile(targetPath, pdfBuffer);
+    try { if (!win.isDestroyed()) win.close(); } catch (_) {}
+    return { ok: true, file_path: targetPath };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+
+ipcMain.handle('compose-mail-draft', async (_event, args = {}) => {
+  try {
+    const res = await documentService.composeMailDraft(args || {});
+    return { ok: true, ...(res || {}) };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('create-personnel-log-text', async (_event, args = {}) => {
+  try {
+    const businessId = Number(args.businessId ?? args.business_id);
+    if (!Number.isInteger(businessId)) {
+      throw new Error('businessId is required');
+    }
+    const { text } = await documentService.buildPersonnelLogText({
+      businessId,
+      fromDate: args.fromDate || args.from_date,
+      toDate: args.toDate || args.to_date,
+      includeArchived: args.includeArchived || args.include_archived,
+      columns: Array.isArray(args.columns) ? args.columns : undefined,
+      singleLine: args.singleLine !== false,
+      bullet: args.bullet !== false
+    });
+    return { ok: true, text };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err) };
+  }
+});
+
+// List Apple Contacts (JXA) for import UI
+ipcMain.handle('list-apple-contacts', async () => {
+  try {
+    const jxa = `
+      var app = Application('Contacts');
+      app.includeStandardAdditions = true;
+      var people = app.people();
+      function g(x) { try { return (typeof x === 'function') ? x() : x; } catch (e) { return ''; } }
+      var out = [];
+      for (var i = 0; i < people.length; i++) {
+        var p = people[i];
+        var emails = [];
+        try { var es = p.emails(); for (var j = 0; j < es.length; j++) emails.push({ label: g(es[j].label), value: g(es[j].value) }); } catch (_) {}
+        var phones = [];
+        try { var phs = p.phones(); for (var k = 0; k < phs.length; k++) phones.push({ label: g(phs[k].label), value: g(phs[k].value) }); } catch (_) {}
+        var addrs = [];
+        try { var as = p.addresses(); for (var m = 0; m < as.length; m++) addrs.push({ label: g(as[m].label), street: g(as[m].street), city: g(as[m].city), state: g(as[m].state), zip: g(as[m].zip), country: g(as[m].country) }); } catch (_) {}
+        out.push({ id: g(p.id), name: g(p.name), firstName: g(p.firstName), lastName: g(p.lastName), organization: g(p.organization), emails: emails, phones: phones, addresses: addrs });
+      }
+      JSON.stringify(out);
+    `;
+    const args = ['-l', 'JavaScript', '-e', jxa];
+    const json = await new Promise((resolve, reject) => {
+      execFile('osascript', args, { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          const msg = (stderr || stdout || error.message || '').toString();
+          return reject(new Error(msg.trim() || 'Contacts fetch failed'));
+        }
+        resolve((stdout || '').toString());
+      });
+    });
+    let list = [];
+    try { list = JSON.parse(json); } catch (_) { list = []; }
+    if (Array.isArray(list) && list.length > 0) {
+      return { ok: true, contacts: list };
+    }
+
+    // Fallback: AppleScript TSV (name, emailsCSV, phonesCSV)
+    const as = `
+      on join_list(L, d)
+        set {tids, AppleScript's text item delimiters} to {AppleScript's text item delimiters, d}
+        set res to L as text
+        set AppleScript's text item delimiters to tids
+        return res
+      end join_list
+      tell application "Contacts"
+        set thePeople to every person
+        set out to {}
+        repeat with p in thePeople
+          set nm to name of p as text
+          set ems to {}
+          repeat with e in (emails of p)
+            try
+              set end of ems to (value of e as text)
+            end try
+          end repeat
+          set phs to {}
+          repeat with ph in (phones of p)
+            try
+              set end of phs to (value of ph as text)
+            end try
+          end repeat
+          set emText to my join_list(ems, ",")
+          set phText to my join_list(phs, ",")
+          set end of out to (nm & tab & emText & tab & phText)
+        end repeat
+      end tell
+      return out as text
+    `;
+    const tsv = await new Promise((resolve, reject) => {
+      execFile('osascript', ['-e', as], { timeout: 30000, maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+        if (error) {
+          const msg = (stderr || stdout || error.message || '').toString();
+          return reject(new Error(msg.trim() || 'Contacts AppleScript failed'));
+        }
+        resolve((stdout || '').toString());
+      });
+    });
+    const rows = tsv.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const parsed = rows.map(line => {
+      const parts = line.split(/\t/);
+      const name = parts[0] || '';
+      const emails = (parts[1] || '').split(',').map(s => s.trim()).filter(Boolean).map((v,i) => ({ label: i === 0 ? 'Primary' : '', value: v }));
+      const phones = (parts[2] || '').split(',').map(s => s.trim()).filter(Boolean).map((v,i) => ({ label: i === 0 ? 'Mobile' : '', value: v }));
+      return { id: name, name, emails, phones, addresses: [] };
+    });
+    return { ok: true, contacts: parsed };
+  } catch (err) {
+    return { ok: false, message: err?.message || String(err), contacts: [] };
+  }
+});
+
+ipcMain.handle('copy-text-to-clipboard', async (_event, text) => {
+  try {
+    if (typeof text !== 'string' || !text) return { ok: false, message: 'No text to copy' };
+    clipboard.writeText(text);
+    return { ok: true };
   } catch (err) {
     return { ok: false, message: err?.message || String(err) };
   }

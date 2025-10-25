@@ -47,6 +47,15 @@
       }
     },
     {
+      "id": "pool-1759934830204-hsj2o5",
+      "name": "Ben",
+      "fee": 500,
+      "defaultIncluded": false,
+      "availability": "",
+      "comments": "",
+      "serviceFees": {}
+    },
+    {
       "id": "dinner__bremner",
       "name": "Bremner",
       "fee": 500,
@@ -255,15 +264,6 @@
           "defaultIncluded": false
         }
       }
-    },
-    {
-      "id": "pool-1759934830204-hsj2o5",
-      "name": "Ben",
-      "fee": 500,
-      "defaultIncluded": false,
-      "availability": "",
-      "comments": "",
-      "serviceFees": {}
     }
   ]
 }
