@@ -33519,6 +33519,18 @@ __webpack_require__.r(__webpack_exports__);
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0__ = __webpack_require__(/*! react */ "./node_modules/react/index.js");
 /* harmony import */ var react__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var react_dom_client__WEBPACK_IMPORTED_MODULE_1__ = __webpack_require__(/*! react-dom/client */ "./node_modules/react-dom/client.js");
+function _typeof(o) { "@babel/helpers - typeof"; return _typeof = "function" == typeof Symbol && "symbol" == typeof Symbol.iterator ? function (o) { return typeof o; } : function (o) { return o && "function" == typeof Symbol && o.constructor === Symbol && o !== Symbol.prototype ? "symbol" : typeof o; }, _typeof(o); }
+function ownKeys(e, r) { var t = Object.keys(e); if (Object.getOwnPropertySymbols) { var o = Object.getOwnPropertySymbols(e); r && (o = o.filter(function (r) { return Object.getOwnPropertyDescriptor(e, r).enumerable; })), t.push.apply(t, o); } return t; }
+function _objectSpread(e) { for (var r = 1; r < arguments.length; r++) { var t = null != arguments[r] ? arguments[r] : {}; r % 2 ? ownKeys(Object(t), !0).forEach(function (r) { _defineProperty(e, r, t[r]); }) : Object.getOwnPropertyDescriptors ? Object.defineProperties(e, Object.getOwnPropertyDescriptors(t)) : ownKeys(Object(t)).forEach(function (r) { Object.defineProperty(e, r, Object.getOwnPropertyDescriptor(t, r)); }); } return e; }
+function _defineProperty(e, r, t) { return (r = _toPropertyKey(r)) in e ? Object.defineProperty(e, r, { value: t, enumerable: !0, configurable: !0, writable: !0 }) : e[r] = t, e; }
+function _toPropertyKey(t) { var i = _toPrimitive(t, "string"); return "symbol" == _typeof(i) ? i : i + ""; }
+function _toPrimitive(t, r) { if ("object" != _typeof(t) || !t) return t; var e = t[Symbol.toPrimitive]; if (void 0 !== e) { var i = e.call(t, r || "default"); if ("object" != _typeof(i)) return i; throw new TypeError("@@toPrimitive must return a primitive value."); } return ("string" === r ? String : Number)(t); }
+function _toConsumableArray(r) { return _arrayWithoutHoles(r) || _iterableToArray(r) || _unsupportedIterableToArray(r) || _nonIterableSpread(); }
+function _nonIterableSpread() { throw new TypeError("Invalid attempt to spread non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); }
+function _iterableToArray(r) { if ("undefined" != typeof Symbol && null != r[Symbol.iterator] || null != r["@@iterator"]) return Array.from(r); }
+function _arrayWithoutHoles(r) { if (Array.isArray(r)) return _arrayLikeToArray(r); }
+function _regeneratorValues(e) { if (null != e) { var t = e["function" == typeof Symbol && Symbol.iterator || "@@iterator"], r = 0; if (t) return t.call(e); if ("function" == typeof e.next) return e; if (!isNaN(e.length)) return { next: function next() { return e && r >= e.length && (e = void 0), { value: e && e[r++], done: !e }; } }; } throw new TypeError(_typeof(e) + " is not iterable"); }
+function _createForOfIteratorHelper(r, e) { var t = "undefined" != typeof Symbol && r[Symbol.iterator] || r["@@iterator"]; if (!t) { if (Array.isArray(r) || (t = _unsupportedIterableToArray(r)) || e && r && "number" == typeof r.length) { t && (r = t); var _n = 0, F = function F() {}; return { s: F, n: function n() { return _n >= r.length ? { done: !0 } : { done: !1, value: r[_n++] }; }, e: function e(r) { throw r; }, f: F }; } throw new TypeError("Invalid attempt to iterate non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); } var o, a = !0, u = !1; return { s: function s() { t = t.call(r); }, n: function n() { var r = t.next(); return a = r.done, r; }, e: function e(r) { u = !0, o = r; }, f: function f() { try { a || null == t["return"] || t["return"](); } finally { if (u) throw o; } } }; }
 function _regenerator() { /*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/babel/babel/blob/main/packages/babel-helpers/LICENSE */ var e, t, r = "function" == typeof Symbol ? Symbol : {}, n = r.iterator || "@@iterator", o = r.toStringTag || "@@toStringTag"; function i(r, n, o, i) { var c = n && n.prototype instanceof Generator ? n : Generator, u = Object.create(c.prototype); return _regeneratorDefine2(u, "_invoke", function (r, n, o) { var i, c, u, f = 0, p = o || [], y = !1, G = { p: 0, n: 0, v: e, a: d, f: d.bind(e, 4), d: function d(t, r) { return i = t, c = 0, u = e, G.n = r, a; } }; function d(r, n) { for (c = r, u = n, t = 0; !y && f && !o && t < p.length; t++) { var o, i = p[t], d = G.p, l = i[2]; r > 3 ? (o = l === n) && (u = i[(c = i[4]) ? 5 : (c = 3, 3)], i[4] = i[5] = e) : i[0] <= d && ((o = r < 2 && d < i[1]) ? (c = 0, G.v = n, G.n = i[1]) : d < l && (o = r < 3 || i[0] > n || n > l) && (i[4] = r, i[5] = n, G.n = l, c = 0)); } if (o || r > 1) return a; throw y = !0, n; } return function (o, p, l) { if (f > 1) throw TypeError("Generator is already running"); for (y && 1 === p && d(p, l), c = p, u = l; (t = c < 2 ? e : u) || !y;) { i || (c ? c < 3 ? (c > 1 && (G.n = -1), d(c, u)) : G.n = u : G.v = u); try { if (f = 2, i) { if (c || (o = "next"), t = i[o]) { if (!(t = t.call(i, u))) throw TypeError("iterator result is not an object"); if (!t.done) return t; u = t.value, c < 2 && (c = 0); } else 1 === c && (t = i["return"]) && t.call(i), c < 2 && (u = TypeError("The iterator does not provide a '" + o + "' method"), c = 1); i = e; } else if ((t = (y = G.n < 0) ? u : r.call(n, G)) !== a) break; } catch (t) { i = e, c = 1, u = t; } finally { f = 1; } } return { value: t, done: y }; }; }(r, o, i), !0), u; } var a = {}; function Generator() {} function GeneratorFunction() {} function GeneratorFunctionPrototype() {} t = Object.getPrototypeOf; var c = [][n] ? t(t([][n]())) : (_regeneratorDefine2(t = {}, n, function () { return this; }), t), u = GeneratorFunctionPrototype.prototype = Generator.prototype = Object.create(c); function f(e) { return Object.setPrototypeOf ? Object.setPrototypeOf(e, GeneratorFunctionPrototype) : (e.__proto__ = GeneratorFunctionPrototype, _regeneratorDefine2(e, o, "GeneratorFunction")), e.prototype = Object.create(u), e; } return GeneratorFunction.prototype = GeneratorFunctionPrototype, _regeneratorDefine2(u, "constructor", GeneratorFunctionPrototype), _regeneratorDefine2(GeneratorFunctionPrototype, "constructor", GeneratorFunction), GeneratorFunction.displayName = "GeneratorFunction", _regeneratorDefine2(GeneratorFunctionPrototype, o, "GeneratorFunction"), _regeneratorDefine2(u), _regeneratorDefine2(u, o, "Generator"), _regeneratorDefine2(u, n, function () { return this; }), _regeneratorDefine2(u, "toString", function () { return "[object Generator]"; }), (_regenerator = function _regenerator() { return { w: i, m: f }; })(); }
 function _regeneratorDefine2(e, r, n, t) { var i = Object.defineProperty; try { i({}, "", {}); } catch (e) { i = 0; } _regeneratorDefine2 = function _regeneratorDefine(e, r, n, t) { function o(r, n) { _regeneratorDefine2(e, r, function (e) { return this._invoke(r, n, e); }); } r ? i ? i(e, r, { value: n, enumerable: !t, configurable: !t, writable: !t }) : e[r] = n : (o("next", 0), o("throw", 1), o("return", 2)); }, _regeneratorDefine2(e, r, n, t); }
 function asyncGeneratorStep(n, t, e, r, o, a, c) { try { var i = n[a](c), u = i.value; } catch (n) { return void e(n); } i.done ? t(u) : Promise.resolve(u).then(r, o); }
@@ -33555,28 +33567,49 @@ function App() {
     setExcelClientId = _useState0[1];
   var _useState1 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(''),
     _useState10 = _slicedToArray(_useState1, 2),
-    excelAmount = _useState10[0],
-    setExcelAmount = _useState10[1];
+    excelDueDate = _useState10[0],
+    setExcelDueDate = _useState10[1];
   var _useState11 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(''),
     _useState12 = _slicedToArray(_useState11, 2),
-    excelDueDate = _useState12[0],
-    setExcelDueDate = _useState12[1];
-  var _useState13 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(''),
+    excelTemplatePath = _useState12[0],
+    setExcelTemplatePath = _useState12[1];
+  var _useState13 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false),
     _useState14 = _slicedToArray(_useState13, 2),
-    excelTemplatePath = _useState14[0],
-    setExcelTemplatePath = _useState14[1];
-  var _useState15 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false),
+    excelBusy = _useState14[0],
+    setExcelBusy = _useState14[1];
+  var _useState15 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]),
     _useState16 = _slicedToArray(_useState15, 2),
-    excelBusy = _useState16[0],
-    setExcelBusy = _useState16[1];
-  var _useState17 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]),
+    items = _useState16[0],
+    setItems = _useState16[1];
+  var _useState17 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false),
     _useState18 = _slicedToArray(_useState17, 2),
-    docs = _useState18[0],
-    setDocs = _useState18[1];
-  var _useState19 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(true),
+    phOpen = _useState18[0],
+    setPhOpen = _useState18[1];
+  var _useState19 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false),
     _useState20 = _slicedToArray(_useState19, 2),
-    docsLoading = _useState20[0],
-    setDocsLoading = _useState20[1];
+    phLoading = _useState20[0],
+    setPhLoading = _useState20[1];
+  var _useState21 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(''),
+    _useState22 = _slicedToArray(_useState21, 2),
+    phError = _useState22[0],
+    setPhError = _useState22[1];
+  var _useState23 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]),
+    _useState24 = _slicedToArray(_useState23, 2),
+    phList = _useState24[0],
+    setPhList = _useState24[1]; // [{ field_key, label, placeholder }]
+  var _useState25 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(new Map()),
+    _useState26 = _slicedToArray(_useState25, 2),
+    phEdits = _useState26[0],
+    setPhEdits = _useState26[1]; // key -> placeholder
+
+  var _useState27 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)([]),
+    _useState28 = _slicedToArray(_useState27, 2),
+    docs = _useState28[0],
+    setDocs = _useState28[1];
+  var _useState29 = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(true),
+    _useState30 = _slicedToArray(_useState29, 2),
+    docsLoading = _useState30[0],
+    setDocsLoading = _useState30[1];
   var refreshClients = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee() {
     var _window$api, _window$api$getClient, list, filtered, _t;
     return _regenerator().w(function (_context) {
@@ -33609,38 +33642,66 @@ function App() {
     }, _callee, null, [[1, 3, 4, 5]]);
   })), []);
   var refreshDocs = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee2() {
-    var _window$api2, _window$api2$getDocum, items, _t2;
+    var _window$api3, _window$api3$getDocum, _window$api2, _window$api2$cleanOrp, _items, list, filtered, _window$api4, _window$api4$filterDo, _t2, _t3, _t4;
     return _regenerator().w(function (_context2) {
       while (1) switch (_context2.p = _context2.n) {
         case 0:
           setDocsLoading(true);
           setError('');
           _context2.p = 1;
-          _context2.n = 2;
-          return (_window$api2 = window.api) === null || _window$api2 === void 0 || (_window$api2$getDocum = _window$api2.getDocuments) === null || _window$api2$getDocum === void 0 ? void 0 : _window$api2$getDocum.call(_window$api2, {
+          _context2.p = 2;
+          _context2.n = 3;
+          return (_window$api2 = window.api) === null || _window$api2 === void 0 || (_window$api2$cleanOrp = _window$api2.cleanOrphanDocuments) === null || _window$api2$cleanOrp === void 0 ? void 0 : _window$api2$cleanOrp.call(_window$api2, {
+            businessId: BUSINESS_ID
+          });
+        case 3:
+          _context2.n = 5;
+          break;
+        case 4:
+          _context2.p = 4;
+          _t2 = _context2.v;
+        case 5:
+          _context2.n = 6;
+          return (_window$api3 = window.api) === null || _window$api3 === void 0 || (_window$api3$getDocum = _window$api3.getDocuments) === null || _window$api3$getDocum === void 0 ? void 0 : _window$api3$getDocum.call(_window$api3, {
             businessId: BUSINESS_ID,
             docType: 'invoice'
           });
-        case 2:
-          items = _context2.v;
-          setDocs(Array.isArray(items) ? items : []);
-          _context2.n = 4;
+        case 6:
+          _items = _context2.v;
+          list = Array.isArray(_items) ? _items : [];
+          filtered = list;
+          _context2.p = 7;
+          _context2.n = 8;
+          return (_window$api4 = window.api) === null || _window$api4 === void 0 || (_window$api4$filterDo = _window$api4.filterDocumentsByExistingFiles) === null || _window$api4$filterDo === void 0 ? void 0 : _window$api4$filterDo.call(_window$api4, list, {
+            includeMissing: false
+          });
+        case 8:
+          filtered = _context2.v;
+          _context2.n = 10;
           break;
-        case 3:
-          _context2.p = 3;
-          _t2 = _context2.v;
-          setError((_t2 === null || _t2 === void 0 ? void 0 : _t2.message) || 'Unable to load invoices');
-        case 4:
-          _context2.p = 4;
+        case 9:
+          _context2.p = 9;
+          _t3 = _context2.v;
+        case 10:
+          setDocs(Array.isArray(filtered) ? filtered : list);
+          _context2.n = 12;
+          break;
+        case 11:
+          _context2.p = 11;
+          _t4 = _context2.v;
+          setError((_t4 === null || _t4 === void 0 ? void 0 : _t4.message) || 'Unable to load invoices');
+          setDocs([]);
+        case 12:
+          _context2.p = 12;
           setDocsLoading(false);
-          return _context2.f(4);
-        case 5:
+          return _context2.f(12);
+        case 13:
           return _context2.a(2);
       }
-    }, _callee2, null, [[1, 3, 4, 5]]);
+    }, _callee2, null, [[7, 9], [2, 4], [1, 11, 12, 13]]);
   })), []);
   var loadInvoiceDefinition = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee3() {
-    var defs, list, def, _t3;
+    var defs, list, def, _t5;
     return _regenerator().w(function (_context3) {
       while (1) switch (_context3.p = _context3.n) {
         case 0:
@@ -33660,17 +33721,192 @@ function App() {
           break;
         case 2:
           _context3.p = 2;
-          _t3 = _context3.v;
+          _t5 = _context3.v;
         case 3:
           return _context3.a(2);
       }
     }, _callee3, null, [[0, 2]]);
   })), []);
+  var openPlaceholders = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee4() {
+    var _window$api5, _window$api5$getMerge, list, fields, base, specials, seen, combined, _t6;
+    return _regenerator().w(function (_context4) {
+      while (1) switch (_context4.p = _context4.n) {
+        case 0:
+          setPhOpen(true);
+          setPhLoading(true);
+          setPhError('');
+          _context4.p = 1;
+          _context4.n = 2;
+          return (_window$api5 = window.api) === null || _window$api5 === void 0 || (_window$api5$getMerge = _window$api5.getMergeFields) === null || _window$api5$getMerge === void 0 ? void 0 : _window$api5$getMerge.call(_window$api5);
+        case 2:
+          list = _context4.v;
+          fields = Array.isArray(list) ? list : []; // Map to minimal info and include special tokens
+          base = fields.map(function (f) {
+            return {
+              field_key: f.field_key,
+              label: f.label || f.field_key,
+              placeholder: f.placeholder || ''
+            };
+          }); // Add invoice_code and items as special entries
+          specials = [{
+            field_key: 'invoice_code',
+            label: 'Invoice code (e.g., INV-###)',
+            placeholder: 'invoice_code',
+            _special: true
+          }, {
+            field_key: 'items',
+            label: 'Line items anchor (table expand)',
+            placeholder: 'items',
+            _special: true
+          }]; // Combine ensuring no duplicates
+          seen = new Set(base.map(function (x) {
+            return x.field_key;
+          }));
+          combined = base.slice();
+          specials.forEach(function (s) {
+            if (!seen.has(s.field_key)) combined.push(s);
+          });
+          setPhList(combined);
+          setPhEdits(new Map());
+          _context4.n = 4;
+          break;
+        case 3:
+          _context4.p = 3;
+          _t6 = _context4.v;
+          setPhError((_t6 === null || _t6 === void 0 ? void 0 : _t6.message) || 'Unable to load placeholders');
+        case 4:
+          _context4.p = 4;
+          setPhLoading(false);
+          return _context4.f(4);
+        case 5:
+          return _context4.a(2);
+      }
+    }, _callee4, null, [[1, 3, 4, 5]]);
+  })), []);
+  var savePlaceholders = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(/*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee5() {
+    var _iterator, _step, _loop, _ret, _t7, _t8;
+    return _regenerator().w(function (_context6) {
+      while (1) switch (_context6.p = _context6.n) {
+        case 0:
+          if (phEdits.size) {
+            _context6.n = 1;
+            break;
+          }
+          setPhOpen(false);
+          return _context6.a(2);
+        case 1:
+          setPhLoading(true);
+          setPhError('');
+          _context6.p = 2;
+          _iterator = _createForOfIteratorHelper(phEdits.entries());
+          _context6.p = 3;
+          _loop = /*#__PURE__*/_regenerator().m(function _loop() {
+            var _window$api6, _window$api6$saveMerg;
+            var _step$value, key, value, entry;
+            return _regenerator().w(function (_context5) {
+              while (1) switch (_context5.n) {
+                case 0:
+                  _step$value = _slicedToArray(_step.value, 2), key = _step$value[0], value = _step$value[1];
+                  entry = phList.find(function (x) {
+                    return x.field_key === key;
+                  });
+                  if (entry) {
+                    _context5.n = 1;
+                    break;
+                  }
+                  return _context5.a(2, 0);
+                case 1:
+                  if (!entry._special) {
+                    _context5.n = 2;
+                    break;
+                  }
+                  return _context5.a(2, 0);
+                case 2:
+                  _context5.n = 3;
+                  return (_window$api6 = window.api) === null || _window$api6 === void 0 || (_window$api6$saveMerg = _window$api6.saveMergeField) === null || _window$api6$saveMerg === void 0 ? void 0 : _window$api6$saveMerg.call(_window$api6, {
+                    field_key: key,
+                    label: entry.label || key,
+                    placeholder: String(value || '').trim() || null
+                  });
+                case 3:
+                  return _context5.a(2);
+              }
+            }, _loop);
+          });
+          _iterator.s();
+        case 4:
+          if ((_step = _iterator.n()).done) {
+            _context6.n = 7;
+            break;
+          }
+          return _context6.d(_regeneratorValues(_loop()), 5);
+        case 5:
+          _ret = _context6.v;
+          if (!(_ret === 0)) {
+            _context6.n = 6;
+            break;
+          }
+          return _context6.a(3, 6);
+        case 6:
+          _context6.n = 4;
+          break;
+        case 7:
+          _context6.n = 9;
+          break;
+        case 8:
+          _context6.p = 8;
+          _t7 = _context6.v;
+          _iterator.e(_t7);
+        case 9:
+          _context6.p = 9;
+          _iterator.f();
+          return _context6.f(9);
+        case 10:
+          setPhEdits(new Map());
+          _context6.n = 11;
+          return openPlaceholders();
+        case 11:
+          _context6.n = 13;
+          break;
+        case 12:
+          _context6.p = 12;
+          _t8 = _context6.v;
+          setPhError((_t8 === null || _t8 === void 0 ? void 0 : _t8.message) || 'Unable to save placeholders');
+        case 13:
+          _context6.p = 13;
+          setPhLoading(false);
+          return _context6.f(13);
+        case 14:
+          return _context6.a(2);
+      }
+    }, _callee5, null, [[3, 8, 9, 10], [2, 12, 13, 14]]);
+  })), [phEdits, phList, openPlaceholders]);
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(function () {
     refreshClients();
     refreshDocs();
     loadInvoiceDefinition();
   }, [refreshClients, refreshDocs, loadInvoiceDefinition]);
+  // Watch documents folder and auto-refresh
+  (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(function () {
+    var api = window.api;
+    if (!api || !api.watchDocuments || !api.onDocumentsChange) return function () {};
+    api.watchDocuments({
+      businessId: BUSINESS_ID
+    })["catch"](function () {});
+    var unsub = api.onDocumentsChange(function (payload) {
+      if (!payload || payload.businessId !== BUSINESS_ID) return;
+      refreshDocs();
+    });
+    return function () {
+      try {
+        var _api$unwatchDocuments;
+        unsub === null || unsub === void 0 || unsub();
+        (_api$unwatchDocuments = api.unwatchDocuments) === null || _api$unwatchDocuments === void 0 || _api$unwatchDocuments.call(api, {
+          businessId: BUSINESS_ID
+        });
+      } catch (_) {}
+    };
+  }, [refreshDocs]);
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     style: {
       minHeight: '100vh',
@@ -33746,10 +33982,31 @@ function App() {
     }
   }, "Generate from Excel template"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     style: {
-      fontSize: 12,
-      color: '#64748b'
+      display: 'flex',
+      gap: 8,
+      alignItems: 'center'
     }
-  }, excelTemplatePath ? "Template: ".concat(excelTemplatePath) : 'No template set')), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    onClick: openPlaceholders,
+    title: "Show placeholders",
+    style: {
+      fontSize: 12,
+      padding: '6px 10px',
+      border: '1px solid #cbd5e1',
+      borderRadius: 6,
+      color: '#475569',
+      background: '#fff'
+    }
+  }, "Placeholders\u2026"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      fontSize: 12,
+      color: '#64748b',
+      maxWidth: 520,
+      whiteSpace: 'nowrap',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis'
+    }
+  }, excelTemplatePath ? "Template: ".concat(excelTemplatePath) : 'No template set'))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     style: {
       marginTop: 8
     }
@@ -33762,13 +34019,13 @@ function App() {
       color: '#475569',
       background: '#fff'
     },
-    onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee4() {
-      var file, _t4;
-      return _regenerator().w(function (_context4) {
-        while (1) switch (_context4.p = _context4.n) {
+    onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee6() {
+      var file, _t9;
+      return _regenerator().w(function (_context7) {
+        while (1) switch (_context7.p = _context7.n) {
           case 0:
-            _context4.p = 0;
-            _context4.n = 1;
+            _context7.p = 0;
+            _context7.n = 1;
             return window.api.chooseFile({
               title: 'Select invoice template (xlsx)',
               filters: [{
@@ -33777,14 +34034,14 @@ function App() {
               }]
             });
           case 1:
-            file = _context4.v;
+            file = _context7.v;
             if (file) {
-              _context4.n = 2;
+              _context7.n = 2;
               break;
             }
-            return _context4.a(2);
+            return _context7.a(2);
           case 2:
-            _context4.n = 3;
+            _context7.n = 3;
             return window.api.saveDocumentDefinition(BUSINESS_ID, {
               key: 'invoice_balance',
               doc_type: 'invoice',
@@ -33799,16 +34056,16 @@ function App() {
             setTimeout(function () {
               return setMessage('');
             }, 1200);
-            _context4.n = 5;
+            _context7.n = 5;
             break;
           case 4:
-            _context4.p = 4;
-            _t4 = _context4.v;
-            setError((_t4 === null || _t4 === void 0 ? void 0 : _t4.message) || 'Unable to set template');
+            _context7.p = 4;
+            _t9 = _context7.v;
+            setError((_t9 === null || _t9 === void 0 ? void 0 : _t9.message) || 'Unable to set template');
           case 5:
-            return _context4.a(2);
+            return _context7.a(2);
         }
-      }, _callee4, null, [[0, 4]]);
+      }, _callee6, null, [[0, 4]]);
     }))
   }, "Set template\u2026")), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     style: {
@@ -33857,31 +34114,6 @@ function App() {
       fontSize: 12,
       color: '#64748b'
     }
-  }, "Amount"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
-    type: "number",
-    step: "0.01",
-    value: excelAmount,
-    onChange: function onChange(e) {
-      return setExcelAmount(e.target.value);
-    },
-    style: {
-      fontSize: 14,
-      padding: '6px 8px',
-      border: '1px solid #cbd5e1',
-      borderRadius: 6,
-      width: 140
-    },
-    placeholder: "0.00"
-  })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
-    style: {
-      display: 'flex',
-      flexDirection: 'column'
-    }
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("label", {
-    style: {
-      fontSize: 12,
-      color: '#64748b'
-    }
   }, "Due date"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
     type: "date",
     value: excelDueDate,
@@ -33896,34 +34128,38 @@ function App() {
     }
   })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
     disabled: excelBusy,
-    onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee5() {
-      var _res$number, client, amt, res, _t5;
-      return _regenerator().w(function (_context5) {
-        while (1) switch (_context5.p = _context5.n) {
+    onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee7() {
+      var _res$number, client, computed, res, _t0;
+      return _regenerator().w(function (_context8) {
+        while (1) switch (_context8.p = _context8.n) {
           case 0:
             setError('');
             setExcelBusy(true);
-            _context5.p = 1;
+            _context8.p = 1;
             client = clients.find(function (c) {
               return String(c.client_id) === String(excelClientId);
             });
             if (client) {
-              _context5.n = 2;
+              _context8.n = 2;
               break;
             }
             throw new Error('Select a client');
           case 2:
-            amt = Number(excelAmount);
-            if (!(!Number.isFinite(amt) || amt <= 0)) {
-              _context5.n = 3;
+            computed = items.reduce(function (s, it) {
+              var q = Number(it.quantity),
+                r = Number(it.rate);
+              var ln = Number.isFinite(Number(it.amount)) ? Number(it.amount) : Number.isFinite(q) && Number.isFinite(r) ? q * r : 0;
+              return s + (Number.isFinite(ln) ? ln : 0);
+            }, 0);
+            if (!(!items.length || !(computed > 0))) {
+              _context8.n = 3;
               break;
             }
-            throw new Error('Enter a valid amount');
+            throw new Error('Add at least one line with a valid amount');
           case 3:
-            _context5.n = 4;
-            return window.api.createNumberedDocument({
+            _context8.n = 4;
+            return window.api.createMCMSInvoice({
               business_id: BUSINESS_ID,
-              doc_type: 'invoice',
               definition_key: 'invoice_balance',
               client_override: {
                 name: client.name,
@@ -33934,13 +34170,14 @@ function App() {
                 town: client.town || '',
                 postcode: client.postcode || ''
               },
-              total_amount: amt,
+              line_items: items,
+              total_amount: computed,
               due_date: excelDueDate || null
             });
           case 4:
-            res = _context5.v;
+            res = _context8.v;
             if (!(!res || !res.file_path)) {
-              _context5.n = 5;
+              _context8.n = 5;
               break;
             }
             throw new Error('Invoice not created');
@@ -33949,24 +34186,24 @@ function App() {
             setTimeout(function () {
               return setMessage('');
             }, 1500);
-            setExcelAmount('');
+            setItems([]);
             setExcelClientId('');
             setExcelDueDate('');
             refreshDocs();
-            _context5.n = 7;
+            _context8.n = 7;
             break;
           case 6:
-            _context5.p = 6;
-            _t5 = _context5.v;
-            setError((_t5 === null || _t5 === void 0 ? void 0 : _t5.message) || 'Unable to generate invoice');
+            _context8.p = 6;
+            _t0 = _context8.v;
+            setError((_t0 === null || _t0 === void 0 ? void 0 : _t0.message) || 'Unable to generate invoice');
           case 7:
-            _context5.p = 7;
+            _context8.p = 7;
             setExcelBusy(false);
-            return _context5.f(7);
+            return _context8.f(7);
           case 8:
-            return _context5.a(2);
+            return _context8.a(2);
         }
-      }, _callee5, null, [[1, 6, 7, 8]]);
+      }, _callee7, null, [[1, 6, 7, 8]]);
     })),
     style: {
       fontSize: 12,
@@ -33976,7 +34213,237 @@ function App() {
       background: excelBusy ? '#4f46e5AA' : '#4f46e5',
       border: 'none'
     }
-  }, excelBusy ? 'Generating…' : 'Generate Invoice'))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("section", {
+  }, excelBusy ? 'Generating…' : 'Generate Invoice')), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      marginTop: 12
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between'
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      fontSize: 14,
+      fontWeight: 600
+    }
+  }, "Line items"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    onClick: function onClick() {
+      return setItems(function (prev) {
+        return prev.concat([{
+          description: '',
+          quantity: 1,
+          unit: 'each',
+          rate: 0
+        }]);
+      });
+    },
+    style: {
+      fontSize: 12,
+      padding: '6px 8px',
+      border: '1px solid #cbd5e1',
+      borderRadius: 6,
+      background: '#fff',
+      color: '#475569'
+    }
+  }, "Add line"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      overflowX: 'auto',
+      border: '1px solid #e2e8f0',
+      borderRadius: 8,
+      marginTop: 8
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("table", {
+    style: {
+      width: '100%',
+      borderCollapse: 'collapse',
+      fontSize: 14
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("thead", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tr", {
+    style: {
+      background: '#f8fafc'
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'left',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0'
+    }
+  }, "Description"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'right',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0',
+      width: 80
+    }
+  }, "Qty"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'left',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0',
+      width: 80
+    }
+  }, "Unit"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'right',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0',
+      width: 120
+    }
+  }, "Rate"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'right',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0',
+      width: 120
+    }
+  }, "Line Total"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0',
+      width: 80
+    }
+  }))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tbody", null, items.map(function (it, idx) {
+    var q = Number(it.quantity);
+    var r = Number(it.rate);
+    var line = Number.isFinite(Number(it.amount)) ? Number(it.amount) : Number.isFinite(q) && Number.isFinite(r) ? q * r : 0;
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tr", {
+      key: "it-".concat(idx),
+      style: {
+        borderTop: '1px solid #f1f5f9'
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+      value: it.description || '',
+      onChange: function onChange(e) {
+        return setItems(function (arr) {
+          var next = _toConsumableArray(arr);
+          next[idx] = _objectSpread(_objectSpread({}, next[idx]), {}, {
+            description: e.target.value
+          });
+          return next;
+        });
+      },
+      style: {
+        width: '100%',
+        fontSize: 14,
+        padding: '6px 8px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 6
+      },
+      placeholder: "Description"
+    })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8,
+        textAlign: 'right'
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+      type: "number",
+      step: "0.01",
+      value: Number.isFinite(q) ? q : '',
+      onChange: function onChange(e) {
+        return setItems(function (arr) {
+          var next = _toConsumableArray(arr);
+          next[idx] = _objectSpread(_objectSpread({}, next[idx]), {}, {
+            quantity: e.target.value
+          });
+          return next;
+        });
+      },
+      style: {
+        width: 90,
+        fontSize: 14,
+        padding: '6px 8px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 6,
+        textAlign: 'right'
+      }
+    })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+      value: it.unit || '',
+      onChange: function onChange(e) {
+        return setItems(function (arr) {
+          var next = _toConsumableArray(arr);
+          next[idx] = _objectSpread(_objectSpread({}, next[idx]), {}, {
+            unit: e.target.value
+          });
+          return next;
+        });
+      },
+      style: {
+        width: 80,
+        fontSize: 14,
+        padding: '6px 8px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 6
+      }
+    })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8,
+        textAlign: 'right'
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+      type: "number",
+      step: "0.01",
+      value: Number.isFinite(r) ? r : '',
+      onChange: function onChange(e) {
+        return setItems(function (arr) {
+          var next = _toConsumableArray(arr);
+          next[idx] = _objectSpread(_objectSpread({}, next[idx]), {}, {
+            rate: e.target.value
+          });
+          return next;
+        });
+      },
+      style: {
+        width: 120,
+        fontSize: 14,
+        padding: '6px 8px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 6,
+        textAlign: 'right'
+      }
+    })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8,
+        textAlign: 'right'
+      }
+    }, "\xA3", Number.isFinite(line) ? line.toFixed(2) : '0.00'), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8,
+        textAlign: 'right'
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+      onClick: function onClick() {
+        return setItems(function (arr) {
+          return arr.filter(function (_, i) {
+            return i !== idx;
+          });
+        });
+      },
+      style: {
+        fontSize: 12,
+        padding: '6px 8px',
+        border: '1px solid #fecaca',
+        color: '#b91c1c',
+        borderRadius: 6,
+        background: '#fff'
+      }
+    }, "Remove")));
+  }), !items.length ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tr", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+    colSpan: "6",
+    style: {
+      padding: 8,
+      color: '#64748b'
+    }
+  }, "No items yet. Add a line to begin.")) : null))))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("section", {
     style: {
       background: '#fff',
       border: '1px solid #e2e8f0',
@@ -34085,45 +34552,46 @@ function App() {
         borderRadius: 6,
         background: '#fff'
       },
-      onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee6() {
-        var ok, _t6;
-        return _regenerator().w(function (_context6) {
-          while (1) switch (_context6.p = _context6.n) {
+      onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee8() {
+        var ok, removeFile, _t1;
+        return _regenerator().w(function (_context9) {
+          while (1) switch (_context9.p = _context9.n) {
             case 0:
               if (!(!d || !d.document_id)) {
-                _context6.n = 1;
+                _context9.n = 1;
                 break;
               }
-              return _context6.a(2);
+              return _context9.a(2);
             case 1:
-              ok = window.confirm('Delete this record? This removes it from the list.');
+              ok = window.confirm('Delete this record?');
               if (ok) {
-                _context6.n = 2;
+                _context9.n = 2;
                 break;
               }
-              return _context6.a(2);
+              return _context9.a(2);
             case 2:
-              _context6.p = 2;
-              _context6.n = 3;
+              removeFile = d.file_path ? window.confirm('Also delete the PDF file from disk?') : false;
+              _context9.p = 3;
+              _context9.n = 4;
               return window.api.deleteDocument(d.document_id, {
-                removeFile: false
+                removeFile: removeFile
               });
-            case 3:
+            case 4:
               setMessage('Deleted');
               setTimeout(function () {
                 return setMessage('');
               }, 1000);
               refreshDocs();
-              _context6.n = 5;
+              _context9.n = 6;
               break;
-            case 4:
-              _context6.p = 4;
-              _t6 = _context6.v;
-              setError((_t6 === null || _t6 === void 0 ? void 0 : _t6.message) || 'Unable to delete');
             case 5:
-              return _context6.a(2);
+              _context9.p = 5;
+              _t1 = _context9.v;
+              setError((_t1 === null || _t1 === void 0 ? void 0 : _t1.message) || 'Unable to delete');
+            case 6:
+              return _context9.a(2);
           }
-        }, _callee6, null, [[2, 4]]);
+        }, _callee8, null, [[3, 5]]);
       }))
     }, "Delete")));
   }), !docs.length ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tr", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
@@ -34132,7 +34600,257 @@ function App() {
       padding: '8px',
       color: '#64748b'
     }
-  }, "No invoices yet.")) : null)))));
+  }, "No invoices yet.")) : null)))), phOpen ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    role: "dialog",
+    "aria-modal": "true",
+    style: {
+      position: 'fixed',
+      inset: 0,
+      background: 'rgba(15,23,42,0.5)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16
+    },
+    onClick: function onClick(e) {
+      if (e.target === e.currentTarget) setPhOpen(false);
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      width: 'min(900px, 95vw)',
+      maxHeight: '85vh',
+      background: '#fff',
+      border: '1px solid #e2e8f0',
+      borderRadius: 12,
+      boxShadow: '0 10px 30px rgba(0,0,0,0.15)',
+      display: 'flex',
+      flexDirection: 'column'
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      padding: '14px 16px',
+      borderBottom: '1px solid #e2e8f0',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between'
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      fontSize: 16,
+      fontWeight: 600
+    }
+  }, "Placeholders"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      display: 'flex',
+      gap: 8
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee9() {
+      var all, _window$api7, _window$api7$copyText, _t10;
+      return _regenerator().w(function (_context0) {
+        while (1) switch (_context0.p = _context0.n) {
+          case 0:
+            all = phList.map(function (f) {
+              return "{{".concat(f.placeholder || f.field_key, "}}");
+            }).join(', ');
+            _context0.p = 1;
+            _context0.n = 2;
+            return (_window$api7 = window.api) === null || _window$api7 === void 0 || (_window$api7$copyText = _window$api7.copyTextToClipboard) === null || _window$api7$copyText === void 0 ? void 0 : _window$api7$copyText.call(_window$api7, all);
+          case 2:
+            setMessage('Copied all');
+            setTimeout(function () {
+              return setMessage('');
+            }, 1000);
+            _context0.n = 4;
+            break;
+          case 3:
+            _context0.p = 3;
+            _t10 = _context0.v;
+          case 4:
+            return _context0.a(2);
+        }
+      }, _callee9, null, [[1, 3]]);
+    })),
+    style: {
+      fontSize: 12,
+      padding: '6px 10px',
+      border: '1px solid #cbd5e1',
+      borderRadius: 6,
+      background: '#fff',
+      color: '#475569'
+    }
+  }, "Copy all"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    onClick: function onClick() {
+      return setPhOpen(false);
+    },
+    style: {
+      fontSize: 12,
+      padding: '6px 10px',
+      border: '1px solid #cbd5e1',
+      borderRadius: 6,
+      background: '#fff',
+      color: '#475569'
+    }
+  }, "Close"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+    onClick: savePlaceholders,
+    disabled: !phEdits.size || phLoading,
+    style: {
+      fontSize: 12,
+      padding: '6px 10px',
+      borderRadius: 6,
+      background: phEdits.size ? '#4f46e5' : '#4f46e588',
+      color: '#fff',
+      border: 'none'
+    }
+  }, phLoading ? 'Saving…' : 'Save changes'))), phError ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      padding: 12,
+      color: '#b91c1c',
+      background: '#fee2e2',
+      borderBottom: '1px solid #fecaca'
+    }
+  }, phError) : null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      padding: 12,
+      overflow: 'auto'
+    }
+  }, phLoading ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      fontSize: 14,
+      color: '#64748b'
+    }
+  }, "Loading\u2026") : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("table", {
+    style: {
+      width: '100%',
+      borderCollapse: 'collapse',
+      fontSize: 14
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("thead", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tr", {
+    style: {
+      background: '#f8fafc'
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'left',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0'
+    }
+  }, "Field"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'left',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0'
+    }
+  }, "Placeholder"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'left',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0'
+    }
+  }, "Token"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("th", {
+    style: {
+      textAlign: 'right',
+      padding: 8,
+      borderBottom: '1px solid #e2e8f0'
+    }
+  }, "Actions"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tbody", null, phList.map(function (f) {
+    var editable = !f._special;
+    var current = phEdits.has(f.field_key) ? phEdits.get(f.field_key) : f.placeholder || '';
+    var token = "{{".concat(current || f.field_key, "}}");
+    return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("tr", {
+      key: f.field_key,
+      style: {
+        borderTop: '1px solid #f1f5f9'
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      style: {
+        fontWeight: 600
+      }
+    }, f.label || f.field_key), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      style: {
+        fontSize: 12,
+        color: '#64748b'
+      }
+    }, f.field_key)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8
+      }
+    }, editable ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("input", {
+      value: current,
+      onChange: function onChange(e) {
+        return setPhEdits(function (prev) {
+          var m = new Map(prev);
+          m.set(f.field_key, e.target.value);
+          return m;
+        });
+      },
+      placeholder: f.field_key,
+      style: {
+        fontSize: 14,
+        padding: '6px 8px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 6,
+        width: 260
+      }
+    }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+      style: {
+        fontSize: 14,
+        color: '#334155'
+      }
+    }, current || f.field_key)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", {
+      style: {
+        background: '#f8fafc',
+        border: '1px solid #e2e8f0',
+        padding: '2px 6px',
+        borderRadius: 6
+      }
+    }, token)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("td", {
+      style: {
+        padding: 8,
+        textAlign: 'right'
+      }
+    }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("button", {
+      onClick: /*#__PURE__*/_asyncToGenerator(/*#__PURE__*/_regenerator().m(function _callee0() {
+        var _window$api8, _window$api8$copyText, _t11;
+        return _regenerator().w(function (_context1) {
+          while (1) switch (_context1.p = _context1.n) {
+            case 0:
+              _context1.p = 0;
+              _context1.n = 1;
+              return (_window$api8 = window.api) === null || _window$api8 === void 0 || (_window$api8$copyText = _window$api8.copyTextToClipboard) === null || _window$api8$copyText === void 0 ? void 0 : _window$api8$copyText.call(_window$api8, token);
+            case 1:
+              setMessage('Copied');
+              setTimeout(function () {
+                return setMessage('');
+              }, 1000);
+              _context1.n = 3;
+              break;
+            case 2:
+              _context1.p = 2;
+              _t11 = _context1.v;
+            case 3:
+              return _context1.a(2);
+          }
+        }, _callee0, null, [[0, 2]]);
+      })),
+      style: {
+        fontSize: 12,
+        padding: '6px 8px',
+        border: '1px solid #cbd5e1',
+        borderRadius: 6,
+        background: '#fff',
+        color: '#475569'
+      }
+    }, "Copy")));
+  })))))) : null);
 }
 var root = (0,react_dom_client__WEBPACK_IMPORTED_MODULE_1__.createRoot)(document.getElementById('root'));
 root.render(/*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(App, null));

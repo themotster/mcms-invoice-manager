@@ -3925,6 +3925,210 @@ module.exports = {
 
     return { ok: true, file_path: pdfPath, document_id: insert?.id || null, number };
   },
+  // MCMS: Create a numbered invoice from a single Excel template with simple line items
+  // Options: { business_id, definition_key='invoice_balance', client_override, line_items: [{ description, quantity, unit, rate, amount }], total_amount, due_date, document_date }
+  createMCMSInvoice: async (options = {}) => {
+    const businessId = Number(options.business_id ?? options.businessId);
+    if (!Number.isInteger(businessId)) throw new Error('business_id is required');
+    const rawItems = Array.isArray(options.line_items || options.items) ? (options.line_items || options.items) : [];
+    const items = rawItems.map((it, idx) => {
+      const desc = (it?.description || '').toString();
+      const qty = Number(it?.quantity);
+      const unit = (it?.unit || '').toString();
+      const rate = Number(it?.rate);
+      const amount = Number.isFinite(Number(it?.amount)) ? Number(it?.amount) : (Number.isFinite(qty) && Number.isFinite(rate) ? qty * rate : 0);
+      return { description: desc, quantity: Number.isFinite(qty) ? qty : null, unit, rate: Number.isFinite(rate) ? rate : null, amount, sort_order: idx };
+    }).filter(x => x.description || (x.amount != null && Number.isFinite(x.amount)));
+
+    const definitionKey = options.definition_key || 'invoice_balance';
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+
+    const def = await db.getDocumentDefinition(businessId, definitionKey);
+    const templatePath = def?.template_path || options.template_path || options.templatePath;
+    if (!templatePath) throw new Error('Template path is not configured for this document. Set it in Templates.');
+    const resolvedTemplate = path.resolve(templatePath);
+    await ensureFileAccessible(resolvedTemplate);
+
+    // Compose context
+    const payload = {
+      business_id: businessId,
+      client_override: options.client_override || {},
+      total_amount: options.total_amount ?? (items.reduce((s, it) => s + (Number.isFinite(it.amount) ? it.amount : 0), 0) || null),
+      balance_amount: options.total_amount ?? null,
+      balance_due: options.total_amount ?? null,
+      due_date: options.due_date || null,
+      document_date: options.document_date || new Date().toISOString(),
+      definition_key: definitionKey
+    };
+    const context = buildContext(payload, business);
+
+    // Build naming and directories
+    const naming = buildFileName(context, payload, { label: 'Invoice', key: definitionKey });
+    const directory = buildOutputDirectory(business, context, payload, naming.folderName);
+    await ensureDirectoryExists(directory);
+
+    // Build workbook path
+    const workbookPath = path.join(directory, `${naming.fileName}`);
+    if (await pathExists(workbookPath)) throw new Error('Workbook already exists');
+
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.readFile(resolvedTemplate);
+
+    // Prepare placeholder mapping for invoice_code and client tokens
+    const mergeFields = await db.getMergeFields();
+    const placeholderMap = new Map();
+    (mergeFields || []).forEach(f => {
+      const fieldKey = (f.field_key || '').toLowerCase();
+      const placeholder = (f.placeholder || '').toLowerCase();
+      const fieldSlug = normalizeTokenKey(fieldKey);
+      const placeholderSlug = normalizeTokenKey(placeholder);
+      if (fieldKey) placeholderMap.set(fieldKey, f.field_key);
+      if (placeholder) placeholderMap.set(placeholder, f.field_key);
+      if (fieldSlug) placeholderMap.set(fieldSlug, f.field_key);
+      if (placeholderSlug) placeholderMap.set(placeholderSlug, f.field_key);
+    });
+
+    // Also map invoice_code explicitly
+    placeholderMap.set('invoice_code', 'invoice_code');
+
+    const placeholderKeys = collectPlaceholderKeys(workbook);
+    const fieldKeySet = new Set(['invoice_code', ...Array.from(placeholderKeys)]);
+    const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
+    // Inject a contextPath source for invoice_code -> context.invoiceCode
+    valueSources['invoice_code'] = { source_type: 'contextPath', source_path: 'invoiceCode' };
+
+    // Helper to fill the line items at an anchor {{items}}
+    const writeLineItems = () => {
+      let anchor = null;
+      let anchorSheet = null;
+      workbook.eachSheet(ws => {
+        if (anchor) return;
+        ws.eachRow((row, rowNumber) => {
+          if (anchor) return;
+          row.eachCell((cell, colNumber) => {
+            if (anchor) return;
+            const v = cell && typeof cell.value === 'string' ? cell.value.trim() : '';
+            if (/^{{\s*items\s*}}$/i.test(v)) {
+              anchor = { row: rowNumber, col: colNumber };
+              anchorSheet = ws;
+            }
+          });
+        });
+      });
+      if (!anchor || !anchorSheet) return;
+      // Clear the anchor token
+      try { anchorSheet.getCell(anchor.row, anchor.col).value = ''; } catch (_) {}
+
+      // Copy simple style from anchor row if present
+      const styleRow = anchorSheet.getRow(anchor.row);
+
+      items.forEach((it, idx) => {
+        const r = anchor.row + idx;
+        const descCell = anchorSheet.getCell(r, anchor.col);
+        const qtyCell = anchorSheet.getCell(r, anchor.col + 1);
+        const unitCell = anchorSheet.getCell(r, anchor.col + 2);
+        const rateCell = anchorSheet.getCell(r, anchor.col + 3);
+        const amtCell = anchorSheet.getCell(r, anchor.col + 4);
+
+        descCell.value = it.description || '';
+        qtyCell.value = it.quantity != null && Number.isFinite(it.quantity) ? it.quantity : null;
+        unitCell.value = it.unit || '';
+        rateCell.value = it.rate != null && Number.isFinite(it.rate) ? it.rate : null;
+        amtCell.value = it.amount != null && Number.isFinite(it.amount)
+          ? it.amount
+          : ((it.quantity != null && Number.isFinite(it.quantity) && it.rate != null && Number.isFinite(it.rate)) ? (it.quantity * it.rate) : null);
+
+        // Apply number formats
+        try { applyNumberFormat(rateCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
+        try { applyNumberFormat(amtCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
+
+        // Shallow style copy
+        try {
+          const srcDesc = styleRow.getCell(anchor.col);
+          const srcQty = styleRow.getCell(anchor.col + 1);
+          const srcUnit = styleRow.getCell(anchor.col + 2);
+          const srcRate = styleRow.getCell(anchor.col + 3);
+          const srcAmt = styleRow.getCell(anchor.col + 4);
+          if (srcDesc && srcDesc.style) descCell.style = { ...srcDesc.style };
+          if (srcQty && srcQty.style) qtyCell.style = { ...srcQty.style };
+          if (srcUnit && srcUnit.style) unitCell.style = { ...srcUnit.style };
+          if (srcRate && srcRate.style) rateCell.style = { ...srcRate.style };
+          if (srcAmt && srcAmt.style) amtCell.style = { ...srcAmt.style };
+        } catch (_) {}
+      });
+    };
+
+    // Fill placeholders and items
+    const issueDate = new Date();
+    const dueDate = options.due_date || null;
+    const amount = options.total_amount ?? (items.reduce((s, it) => s + (Number.isFinite(it.amount) ? it.amount : 0), 0) || null);
+
+    // Reserve a document number now (invoice counter)
+    const insert = await db.addDocument({
+      business_id: businessId,
+      doc_type: 'invoice',
+      status: 'issued',
+      total_amount: amount,
+      balance_due: amount,
+      due_date: dueDate || null,
+      client_name: context.client?.name || null,
+      event_name: null,
+      event_date: null,
+      document_date: payload.document_date,
+      definition_key: definitionKey
+    });
+    const number = insert?.number != null ? Number(insert.number) : null;
+
+    // Add invoice code to context for placeholder replacement
+    const suffixCode = number != null ? `INV-${number}` : 'INV';
+    const enrichedContext = { ...context, invoiceCode: suffixCode, issueDate, dueDate, totalAmount: amount };
+
+    // Replace placeholders
+    replaceWorkbookPlaceholders(workbook, valueSources, enrichedContext, placeholderMap);
+    // Write items
+    if (items.length) writeLineItems();
+    workbook.calcProperties = workbook.calcProperties || {};
+    workbook.calcProperties.fullCalcOnLoad = true;
+    sanitizeWorkbookValues(workbook);
+    await workbook.xlsx.writeFile(workbookPath);
+
+    // Build PDF file name and export with stamping
+    const baseName = path.basename(workbookPath, '.xlsx');
+    let pdfBase = `${baseName} (INV-${number})`;
+    let pdfPath = path.join(directory, `${pdfBase}.pdf`);
+    let n = 2;
+    while (await pathExists(pdfPath)) {
+      pdfPath = path.join(directory, `${pdfBase} (${n}).pdf`);
+      n += 1;
+      if (n > 1000) break;
+    }
+
+    let stampCell = 'E9';
+    let stampText = suffixCode;
+    try {
+      const prefix = await readInvoicePrefixFromWorkbook(workbookPath);
+      stampText = `${prefix}${number}`;
+    } catch (_) {}
+
+    await saveWorkbookAsPdf(workbookPath, pdfPath, { stampCell, stampText });
+
+    // Update record with final path
+    await db.updateDocumentStatus(insert.id, {
+      file_path: pdfPath,
+      status: 'issued',
+      total_amount: amount,
+      balance_due: amount,
+      due_date: dueDate || null
+    });
+
+    try {
+      const cb = watcherCallbacks.get(businessId);
+      if (typeof cb === 'function') cb({ businessId });
+    } catch (_) {}
+
+    return { ok: true, file_path: pdfPath, document_id: insert?.id || null, number };
+  },
   exportWorkbookPdfs,
   deleteDocument,
   syncJobsheetOutputs,
