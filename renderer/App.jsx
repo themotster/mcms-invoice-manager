@@ -12289,6 +12289,11 @@ function JobsheetEditorWindow({
       return;
     }
     autoSaveTimer.current = setTimeout(async () => {
+      // Capture scroll and focused input before autosave so we can restore if UI shifts
+      const prevY = typeof window !== 'undefined' ? (window.scrollY || 0) : 0;
+      const prevActive = typeof document !== 'undefined' ? document.activeElement : null;
+      const anchor = typeof document !== 'undefined' ? document.getElementById('inline-jobsheet-editor') : null;
+      const wasEditing = prevActive && anchor && anchor.contains(prevActive) && (/^(input|textarea|select)$/i).test(prevActive.tagName);
       setSaving(true);
       try {
         const payload = preparePayload(formState, numericBusinessId);
@@ -12304,6 +12309,22 @@ function JobsheetEditorWindow({
           }
         } catch (_) {}
         setMessage('Saved');
+        // Restore focus and scroll position if the autosave caused layout to move
+        try {
+          if (wasEditing && prevActive && typeof prevActive.focus === 'function') {
+            prevActive.focus();
+            if (prevActive.setSelectionRange && typeof prevActive.value === 'string') {
+              const pos = prevActive.value.length;
+              prevActive.setSelectionRange(pos, pos);
+            }
+          }
+        } catch (_) {}
+        try {
+          const nowY = typeof window !== 'undefined' ? (window.scrollY || 0) : 0;
+          if (Math.abs((nowY) - prevY) > 2) {
+            try { window.scrollTo({ top: prevY, behavior: 'instant' }); } catch (_) { window.scrollTo(0, prevY); }
+          }
+        } catch (_) {}
         window.api?.notifyJobsheetChange?.({
           type: 'jobsheet-updated',
           businessId: numericBusinessId,
