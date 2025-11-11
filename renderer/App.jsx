@@ -7491,6 +7491,7 @@ function JobsheetEditor({
   // When an external action requests a specific section (e.g., 'documents'),
   // honor it by scrolling into view.
   const initialSectionAppliedRef = useRef(false);
+  const lastProgrammaticKeyRef = useRef(null);
   useEffect(() => {
     if (!activeGroupKeyProp) return;
     const key = String(activeGroupKeyProp);
@@ -7501,10 +7502,20 @@ function JobsheetEditor({
       initialSectionAppliedRef.current = true;
       return;
     }
+    // If the requested key hasn't changed, don't scroll again
+    if (lastProgrammaticKeyRef.current === key) {
+      return;
+    }
+    lastProgrammaticKeyRef.current = key;
     if (changeByScrollRef.current) {
       // Skip programmatic scroll when the change came from natural scrolling
       changeByScrollRef.current = false;
     } else {
+      // Skip if user is currently editing any input in the editor
+      const ae = document.activeElement;
+      if (ae && (/^(input|textarea|select)$/i).test(ae.tagName)) {
+        return;
+      }
       // Defer for layout
       setTimeout(() => scrollToGroup(key), 0);
     }
