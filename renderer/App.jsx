@@ -7411,19 +7411,23 @@ function JobsheetEditor({
 
   // When an external action requests a specific section (e.g., 'documents'),
   // honor it by scrolling into view.
+  const initialSectionAppliedRef = useRef(false);
   useEffect(() => {
-    if (activeGroupKeyProp) {
-      const key = String(activeGroupKeyProp);
-      if (resolvedGroups.some(g => g.key === key)) {
-        ensureExpanded(key);
-        if (changeByScrollRef.current) {
-          // Skip programmatic scroll when the change came from natural scrolling
-          changeByScrollRef.current = false;
-        } else {
-          // Defer for layout
-          setTimeout(() => scrollToGroup(key), 0);
-        }
-      }
+    if (!activeGroupKeyProp) return;
+    const key = String(activeGroupKeyProp);
+    if (!resolvedGroups.some(g => g.key === key)) return;
+    ensureExpanded(key);
+    // Suppress the very first auto-scroll on initial mount to avoid jumping the page
+    if (!initialSectionAppliedRef.current) {
+      initialSectionAppliedRef.current = true;
+      return;
+    }
+    if (changeByScrollRef.current) {
+      // Skip programmatic scroll when the change came from natural scrolling
+      changeByScrollRef.current = false;
+    } else {
+      // Defer for layout
+      setTimeout(() => scrollToGroup(key), 0);
     }
   }, [activeGroupKeyProp, resolvedGroups, scrollToGroup, ensureExpanded]);
 
