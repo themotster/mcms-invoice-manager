@@ -7307,6 +7307,83 @@ function JobsheetEditor({
   const [showVenueModal, setShowVenueModal] = useState(false);
   const [venueDraft, setVenueDraft] = useState(() => buildVenueDraft());
   const [venueSearchUrl, setVenueSearchUrl] = useState('');
+  const [addrQuery, setAddrQuery] = useState('');
+  const [addrResults, setAddrResults] = useState([]);
+  const [addrLoading, setAddrLoading] = useState(false);
+  const [addrError, setAddrError] = useState('');
+  const [addrPaste, setAddrPaste] = useState('');
+  const addrTimerRef = useRef(null);
+  const addrLastFetchRef = useRef(0);
+
+  const parsePastedAddress = useCallback((text) => {
+    try {
+      const raw = (text || '').toString().trim();
+      if (!raw) return null;
+      const lines = raw.split(/\n|,/).map(s => s.trim()).filter(Boolean);
+      // UK postcode pattern (also works broadly for UK-like codes)
+      const postcodeMatch = raw.match(/([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})/i);
+      const postcode = postcodeMatch ? postcodeMatch[1].toUpperCase().replace(/\s+/, ' ') : '';
+      // Town: last token without postcode, or second-to-last line
+      let town = '';
+      if (postcode) {
+        const postIndex = lines.findIndex(l => l.toUpperCase().includes(postcode));
+        if (postIndex > 0) {
+          town = lines[postIndex - 1];
+        }
+      }
+      if (!town && lines.length >= 2) {
+        town = lines[lines.length - 2];
+      }
+      const name = lines[0] || '';
+      const address1 = lines.length > 1 ? lines[1] : '';
+      const address2 = lines.length > 2 ? lines[2] : '';
+      const address3 = lines.length > 3 ? lines[3] : '';
+      return { name, address1, address2, address3, town, postcode };
+    } catch (_) {
+      return null;
+    }
+  }, []);
+
+  const mapNominatimToVenue = useCallback((res) => {
+    if (!res) return null;
+    const addr = res.address || {};
+    const name = res.name || addr.amenity || addr.building || addr.place || '';
+    const address1 = [addr.house_number, addr.road].filter(Boolean).join(' ');
+    const address2 = addr.suburb || addr.neighbourhood || addr.village || addr.district || '';
+    const address3 = addr.county || addr.state_district || addr.state || '';
+    const town = addr.city || addr.town || addr.village || addr.hamlet || addr.municipality || addr.suburb || '';
+    const postcode = addr.postcode || '';
+    return { name, address1, address2, address3, town, postcode };
+  }, []);
+
+  // Debounced/throttled address search via Nominatim (respecting usage policies: low volume, debounced)
+  useEffect(() => {
+    if (!showVenueModal) return; // only when modal visible
+    const q = (addrQuery || '').trim();
+    if (addrTimerRef.current) { clearTimeout(addrTimerRef.current); addrTimerRef.current = null; }
+    if (q.length < 3) { setAddrResults([]); setAddrError(''); setAddrLoading(false); return; }
+    addrTimerRef.current = setTimeout(async () => {
+      try {
+        const now = Date.now();
+        const since = now - (addrLastFetchRef.current || 0);
+        const wait = since < 1100 ? (1100 - since) : 0; // ~1 req/sec
+        setAddrLoading(true);
+        setAddrError('');
+        await new Promise(r => setTimeout(r, wait));
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=8&addressdetails=1&q=${encodeURIComponent(q)}`;
+        const res = await fetch(url, { headers: { 'Accept-Language': 'en' } });
+        addrLastFetchRef.current = Date.now();
+        if (!res.ok) throw new Error(`Search failed (${res.status})`);
+        const data = await res.json();
+        setAddrResults(Array.isArray(data) ? data : []);
+      } catch (err) {
+        setAddrError(err?.message || 'Search failed');
+      } finally {
+        setAddrLoading(false);
+      }
+    }, 450);
+    return () => { if (addrTimerRef.current) { clearTimeout(addrTimerRef.current); addrTimerRef.current = null; } };
+  }, [addrQuery, showVenueModal]);
 
   // Local override for definition lock state so the inline UI updates immediately after toggle
   const [definitionLocks, setDefinitionLocks] = useState({});
@@ -7829,6 +7906,108 @@ function JobsheetEditor({
                 >
                   Search Maps
                 </button>
+              </div>
+
+              {/* Quick address finder (OpenStreetMap Nominatim) */}
+              <div className="mt-3 rounded border border-slate-200 p-3">
+                <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Quick address finder</div>
+                <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                  <input
+                    type="search"
+                    placeholder="Type part of an address…"
+                    className="w-full md:max-w-md rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    value={addrQuery}
+                    onChange={e => setAddrQuery(e.target.value)}
+                  />
+                  <div className="text-xs text-slate-500 md:ml-2">Powered by OpenStreetMap</div>
+                </div>
+                {addrError ? (
+                  <div className="mt-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{addrError}</div>
+                ) : null}
+                <div className="mt-2 max-h-64 overflow-auto">
+                  {addrLoading ? (
+                    <div className="px-2 py-1 text-xs text-slate-500">Searching…</div>
+                  ) : (addrResults || []).length ? (
+                    (addrResults || []).map((res, idx) => {
+                      const addr = res.address || {};
+                      const line1 = [addr.house_number, addr.road].filter(Boolean).join(' ');
+                      const town = addr.city || addr.town || addr.village || addr.hamlet || addr.municipality || addr.suburb || '';
+                      const postcode = addr.postcode || '';
+                      const title = res.display_name || line1 || res.name || 'Address';
+                      return (
+                        <div key={res.place_id || idx} className="flex items-start justify-between gap-3 border-b border-slate-100 px-2 py-2 last:border-b-0">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium text-slate-800" title={title}>{title}</div>
+                            <div className="text-xs text-slate-500">{line1 || res.name || '—'}{town ? ` · ${town}` : ''}{postcode ? ` · ${postcode}` : ''}</div>
+                          </div>
+                          <div className="flex flex-shrink-0 gap-2">
+                            <button
+                              type="button"
+                              className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                              onClick={() => {
+                                const mapped = mapNominatimToVenue(res);
+                                if (mapped) setVenueDraft(prev => buildVenueDraft({ ...prev, ...mapped }));
+                              }}
+                            >
+                              Use
+                            </button>
+                            <button
+                              type="button"
+                              className="rounded border border-slate-300 px-2 py-1 text-xs text-slate-700 hover:bg-slate-50"
+                              onClick={() => {
+                                const mapped = mapNominatimToVenue(res);
+                                const lines = [
+                                  mapped.name,
+                                  mapped.address1,
+                                  mapped.address2,
+                                  mapped.address3,
+                                  [mapped.town, mapped.postcode].filter(Boolean).join(' ')
+                                ].filter(Boolean);
+                                const text = lines.join('\n');
+                                try { window.api?.copyTextToClipboard?.(text); } catch (_) {}
+                              }}
+                            >
+                              Copy
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="px-2 py-1 text-xs text-slate-400">Enter at least 3 characters to search.</div>
+                  )}
+                </div>
+              </div>
+
+              {/* Paste address to auto-split */}
+              <div className="mt-3 rounded border border-slate-200 p-3">
+                <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Paste address</div>
+                <textarea
+                  rows={3}
+                  className="w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  placeholder="Paste a full address here…"
+                  value={addrPaste}
+                  onChange={e => setAddrPaste(e.target.value)}
+                />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    className="rounded bg-slate-800 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-700"
+                    onClick={() => {
+                      const mapped = parsePastedAddress(addrPaste || '');
+                      if (mapped) setVenueDraft(prev => buildVenueDraft({ ...prev, ...mapped }));
+                    }}
+                  >
+                    Fill fields
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+                    onClick={() => setAddrPaste('')}
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
               {venueSearchUrl ? (
                 <div className="mt-2 overflow-hidden rounded border border-slate-200 h-[82vh] md:h-[86vh]"
