@@ -9606,6 +9606,18 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setInlineEditorTargetId(Number(newId));
       setInlineEditorVisible(true);
       setInlineEditorSession(prev => prev + 1);
+      // After the editor mounts, scroll it into view once
+      setTimeout(() => {
+        try {
+          const anchor = document.getElementById('inline-jobsheet-editor');
+          if (!anchor) return;
+          const sticky = document.getElementById('jobsheet-sticky-header');
+          const stickyHeight = sticky ? (sticky.getBoundingClientRect().height || 0) : 120;
+          const extraGap = 12;
+          const top = anchor.getBoundingClientRect().top + window.scrollY - (stickyHeight + extraGap);
+          try { window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' }); } catch (_) { window.scrollTo(0, Math.max(top, 0)); }
+        } catch (_) {}
+      }, 300);
     } catch (err) {
       console.error('Create new jobsheet failed', err);
       setNewJobsheetError(err?.message || 'Unable to create jobsheet');
