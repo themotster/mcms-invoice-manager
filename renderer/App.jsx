@@ -9667,8 +9667,18 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorTargetId(numericId);
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => (numericId !== inlineEditorTargetId ? prev + 1 : prev));
-    // Scroll to inline editor after it mounts
-    setTimeout(() => scrollInlineEditorIntoView(), 250);
+    // Force-scroll to inline editor after it mounts (do not skip when "mostly visible")
+    setTimeout(() => {
+      try {
+        const anchor = document.getElementById('inline-jobsheet-editor');
+        if (!anchor) return;
+        const sticky = document.getElementById('jobsheet-sticky-header');
+        const stickyHeight = sticky ? (sticky.getBoundingClientRect().height || 0) : 120;
+        const extraGap = 12;
+        const top = anchor.getBoundingClientRect().top + window.scrollY - (stickyHeight + extraGap);
+        try { window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' }); } catch (_) { window.scrollTo(0, Math.max(top, 0)); }
+      } catch (_) {}
+    }, 250);
   }, [inlineEditorTargetId, scrollInlineEditorIntoView]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
