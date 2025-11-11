@@ -9559,8 +9559,15 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       if (ae && anchor.contains(ae) && (/^(input|textarea|select)$/i).test(ae.tagName)) {
         return;
       }
+      // If the editor is already within view (account for sticky header), skip scrolling
       const sticky = document.getElementById('jobsheet-sticky-header');
       const stickyHeight = sticky ? (sticky.getBoundingClientRect().height || 0) : 120;
+      const viewTop = stickyHeight + 8;
+      const viewBottom = window.innerHeight || document.documentElement.clientHeight || 0;
+      const rect = anchor.getBoundingClientRect();
+      const topAfterHeader = rect.top - viewTop;
+      const isMostlyVisible = topAfterHeader >= -80 && rect.top < viewBottom * 0.75;
+      if (isMostlyVisible) return;
       const extraGap = 12;
       const top = anchor.getBoundingClientRect().top + window.scrollY - (stickyHeight + extraGap);
       try {
