@@ -3377,7 +3377,7 @@ function JobsheetList({
         ) : !sortedJobsheets.length ? (
           <div className="p-6 text-center text-slate-500">{hasActiveFilters ? 'No jobsheets match your filters yet. Adjust the search or status filter to see more results.' : 'No jobsheets yet. Create your first one!'}</div>
         ) : (
-          <div className="overflow-y-auto overflow-x-auto">
+          <div className="overflow-y-auto overflow-x-auto max-h-[55vh]">
             <table className="min-w-full text-sm border-separate border-spacing-y-2">
               <thead>
                 <tr className="bg-slate-50">
@@ -7500,6 +7500,8 @@ function JobsheetEditor({
     // Suppress the very first auto-scroll on initial mount to avoid jumping the page
     if (!initialSectionAppliedRef.current) {
       initialSectionAppliedRef.current = true;
+      // Remember the first key so a subsequent identical programmatic set doesn't trigger scroll
+      lastProgrammaticKeyRef.current = key;
       return;
     }
     // If the requested key hasn't changed, don't scroll again
