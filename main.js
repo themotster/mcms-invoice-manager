@@ -10,7 +10,8 @@ const isMCMS = (() => {
 })();
 
 const isDev = !app.isPackaged || String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
-const FORCE_DEVTOOLS = isDev || String(process.env.DEVTOOLS || '') === '1';
+// Only force devtools when explicitly requested (DEVTOOLS=1)
+const FORCE_DEVTOOLS = String(process.env.DEVTOOLS || '') === '1';
 
 // Mitigate “white screen” on some GPUs
 if (String(process.env.ELECTRON_DISABLE_GPU || '') === '1') {
