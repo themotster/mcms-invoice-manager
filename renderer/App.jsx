@@ -7304,6 +7304,7 @@ function JobsheetEditor({
 
   const [showVenueModal, setShowVenueModal] = useState(false);
   const [venueDraft, setVenueDraft] = useState(() => buildVenueDraft());
+  const [venueSearchUrl, setVenueSearchUrl] = useState('');
 
   // Local override for definition lock state so the inline UI updates immediately after toggle
   const [definitionLocks, setDefinitionLocks] = useState({});
@@ -7324,6 +7325,7 @@ function JobsheetEditor({
       }));
     }
     setShowVenueModal(true);
+    setVenueSearchUrl('');
   };
 
   const closeVenueModal = () => {
@@ -7797,7 +7799,7 @@ function JobsheetEditor({
                       .join(' ');
                     const q = queryParts || fallbackParts || 'venue address';
                     const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
-                    window.api?.openExternal?.(url) || window.open(url, '_blank');
+                    setVenueSearchUrl(url);
                   }}
                 >
                   Search Google
@@ -7814,12 +7816,22 @@ function JobsheetEditor({
                       .join(' ');
                     const q = queryParts || fallbackParts || 'venue address';
                     const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
-                    window.api?.openExternal?.(url) || window.open(url, '_blank');
+                    setVenueSearchUrl(url);
                   }}
                 >
                   Search Maps
                 </button>
               </div>
+              {venueSearchUrl ? (
+                <div className="mt-2 h-96 overflow-hidden rounded border border-slate-200">
+                  {/* Electron webview renders external content inside the modal */}
+                  <webview
+                    src={venueSearchUrl}
+                    allowpopups="false"
+                    style={{ width: '100%', height: '100%' }}
+                  />
+                </div>
+              ) : null}
               <label className="block text-sm font-medium text-slate-600">
                 Address line 1
                 <input

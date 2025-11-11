@@ -56,7 +56,8 @@ const CHILD_WINDOW_OPTIONS = {
     enableRemoteModule: false,
     nativeWindowOpen: true,
     webSecurity: true,
-    allowRunningInsecureContent: false
+    allowRunningInsecureContent: false,
+    webviewTag: true
   }
 };
 
@@ -118,7 +119,8 @@ function createWindow() {
       enableRemoteModule: false,
       nativeWindowOpen: true,
       webSecurity: true,
-      allowRunningInsecureContent: false
+      allowRunningInsecureContent: false,
+      webviewTag: true
     }
   };
 
@@ -314,10 +316,37 @@ app.whenReady().then(() => {
     }
   });
 
-  // Security: open external links in default browser; block in‑app navigation to remote content
+  // Security: open external links in default browser for windows; allow webviews to navigate to permitted hosts
   app.on('web-contents-created', (_event, contents) => {
+    const type = (typeof contents.getType === 'function') ? contents.getType() : 'window';
+    if (type === 'webview') {
+      // Block popups from webviews; keep navigation within the webview itself
+      contents.setWindowOpenHandler(({ url }) => {
+        try {
+          const u = new URL(url);
+          const isHttp = u.protocol === 'http:' || u.protocol === 'https:';
+          if (!isHttp) return { action: 'deny' };
+          // Allow Google hosts to remain in the webview; deny creating new windows
+          const host = (u.host || '').toLowerCase();
+          const isGoogle = host.includes('google.');
+          return { action: isGoogle ? 'deny' : 'deny' };
+        } catch (_) {
+          return { action: 'deny' };
+        }
+      });
+      // Do NOT redirect webview navigation to external browser; keep it in the webview
+      return;
+    }
+
+    // Default behavior for normal BrowserWindow/webContents
     contents.setWindowOpenHandler(({ url }) => {
-      try { const u = new URL(url); if (u.protocol === 'http:' || u.protocol === 'https:') { shell.openExternal(url); return { action: 'deny' }; } } catch (_) {}
+      try {
+        const u = new URL(url);
+        if (u.protocol === 'http:' || u.protocol === 'https:') {
+          shell.openExternal(url);
+          return { action: 'deny' };
+        }
+      } catch (_) {}
       return { action: 'deny' };
     });
     contents.on('will-navigate', (e, url) => {
