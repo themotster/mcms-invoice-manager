@@ -12294,6 +12294,11 @@ function JobsheetEditorWindow({
       const prevActive = typeof document !== 'undefined' ? document.activeElement : null;
       const anchor = typeof document !== 'undefined' ? document.getElementById('inline-jobsheet-editor') : null;
       const wasEditing = prevActive && anchor && anchor.contains(prevActive) && (/^(input|textarea|select)$/i).test(prevActive.tagName);
+      // If user is actively editing the client name field, skip this autosave cycle to avoid UI movement
+      const editingName = wasEditing && prevActive && (prevActive.getAttribute('name') === 'client_name');
+      if (editingName) {
+        return; // next keystroke or blur will schedule/save again
+      }
       setSaving(true);
       try {
         const payload = preparePayload(formState, numericBusinessId);
@@ -12338,7 +12343,7 @@ function JobsheetEditorWindow({
       } finally {
         setSaving(false);
       }
-    }, 600);
+    }, 1500);
     return () => clearTimeout(autoSaveTimer.current);
   }, [formState, jobsheetId, numericBusinessId, loading]);
 
