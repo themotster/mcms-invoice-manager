@@ -163,6 +163,8 @@ const WORKSPACE_SECTIONS = [
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
 // Global kill-switch for all programmatic scrolling. When false, no auto-scrolls will run.
 const SCROLL_BEHAVIOR_ENABLED = false;
+// Global kill-switch for autosave while we diagnose jump behavior.
+const AUTOSAVE_ENABLED = false;
 const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
 const DOCUMENT_TREE_COLLAPSE_KEY = 'invoiceMaster:documentTreeCollapsed';
 const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => {
@@ -12277,6 +12279,7 @@ function JobsheetEditorWindow({
   }, [formState.pricing_production_total]);
 
   useEffect(() => {
+    if (!AUTOSAVE_ENABLED) return () => {};
     if (loading || !jobsheetId) return;
     if (initialLoadRef.current) {
       initialLoadRef.current = false;
