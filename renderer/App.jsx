@@ -9593,7 +9593,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       if (!api || !api.addAhmenJobsheet) { setNewJobsheetError('API unavailable'); setCreatingInline(false); return; }
       const payload = {
         business_id: business.id,
-        status: 'contracting',
+        status: 'enquiry',
         client_name: name
       };
       const newId = await api.addAhmenJobsheet(payload);
