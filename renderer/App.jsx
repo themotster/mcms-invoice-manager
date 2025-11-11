@@ -9570,6 +9570,50 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     });
   }, [business.id, business.business_name]);
 
+  // New Jobsheet modal state
+  const [newJobsheetOpen, setNewJobsheetOpen] = useState(false);
+  const [newJobsheetName, setNewJobsheetName] = useState('');
+  const [newJobsheetError, setNewJobsheetError] = useState('');
+  const [creatingInline, setCreatingInline] = useState(false);
+
+  const openNewJobsheetModal = useCallback(() => {
+    setNewJobsheetName('');
+    setNewJobsheetError('');
+    setNewJobsheetOpen(true);
+  }, []);
+
+  const confirmCreateNewJobsheet = useCallback(async () => {
+    if (creatingInline) return;
+    const name = (newJobsheetName || '').trim();
+    if (!name || name.length < 2) { setNewJobsheetError('Please enter a client name'); return; }
+    try {
+      setCreatingInline(true);
+      setNewJobsheetError('');
+      const api = window.api;
+      if (!api || !api.addAhmenJobsheet) { setNewJobsheetError('API unavailable'); setCreatingInline(false); return; }
+      const payload = {
+        business_id: business.id,
+        status: 'contracting',
+        client_name: name
+      };
+      const newId = await api.addAhmenJobsheet(payload);
+      if (!newId) { setNewJobsheetError('Unable to create jobsheet'); setCreatingInline(false); return; }
+      // Notify and refresh list
+      try { window.api?.notifyJobsheetChange?.({ type: 'jobsheet-created', businessId: business.id, jobsheetId: newId }); } catch (_) {}
+      await refreshJobsheets();
+      setNewJobsheetOpen(false);
+      setActiveJobsheetId(Number(newId));
+      setInlineEditorTargetId(Number(newId));
+      setInlineEditorVisible(true);
+      setInlineEditorSession(prev => prev + 1);
+    } catch (err) {
+      console.error('Create new jobsheet failed', err);
+      setNewJobsheetError(err?.message || 'Unable to create jobsheet');
+    } finally {
+      setCreatingInline(false);
+    }
+  }, [newJobsheetName, business.id, refreshJobsheets]);
+
   const scrollInlineEditorIntoView = useCallback(() => {
     if (!SCROLL_BEHAVIOR_ENABLED) return;
     try {
@@ -9600,12 +9644,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   }, []);
 
   const handleNew = useCallback(() => {
-    setActiveJobsheetId(null);
-    setInlineEditorTargetId(null);
-    setInlineEditorVisible(true);
-    setInlineEditorSession(prev => prev + 1);
-    // Auto-scroll disabled by global switch
-  }, [scrollInlineEditorIntoView]);
+    // Show modal to capture the client name first; avoids typing in the editor before creation
+    openNewJobsheetModal();
+  }, [openNewJobsheetModal]);
 
   const handleOpenExisting = useCallback((jobsheetId) => {
     if (!jobsheetId) return;
@@ -9799,14 +9840,49 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                 />
                 <div id="inline-jobsheet-editor">
                   <InlineJobsheetEditorPanel
-                  business={business}
-                  visible={inlineEditorVisible}
-                  jobsheetId={inlineEditorTargetId}
-                  sessionKey={inlineEditorKey}
-                  onClose={handleCloseInlineEditor}
-                  onOpenInWindow={handlePopoutEditor}
+                    business={business}
+                    visible={inlineEditorVisible}
+                    jobsheetId={inlineEditorTargetId}
+                    sessionKey={inlineEditorKey}
+                    onClose={handleCloseInlineEditor}
+                    onOpenInWindow={handlePopoutEditor}
                   />
                 </div>
+
+                {newJobsheetOpen ? (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+                    <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
+                      <div className="flex items-start justify-between border-b border-slate-200 pb-3">
+                        <div>
+                          <h3 className="text-lg font-semibold text-slate-800">New jobsheet</h3>
+                          <p className="text-sm text-slate-500">Enter the client name to create the job.</p>
+                        </div>
+                        <button type="button" onClick={() => setNewJobsheetOpen(false)} className="text-slate-400 hover:text-slate-600" aria-label="Close new jobsheet modal">✕</button>
+                      </div>
+                      <div className="mt-4 space-y-3">
+                        {newJobsheetError ? (
+                          <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{newJobsheetError}</div>
+                        ) : null}
+                        <label className="block text-sm font-medium text-slate-600">
+                          Client name
+                          <input
+                            name="new_jobsheet_client_name"
+                            type="text"
+                            className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                            value={newJobsheetName}
+                            onChange={e => setNewJobsheetName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirmCreateNewJobsheet(); } }}
+                            autoFocus
+                          />
+                        </label>
+                      </div>
+                      <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-200 pt-3">
+                        <button type="button" onClick={() => setNewJobsheetOpen(false)} className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50">Cancel</button>
+                        <button type="button" disabled={creatingInline} onClick={confirmCreateNewJobsheet} className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-500 disabled:opacity-60">{creatingInline ? 'Creating…' : 'Create'}</button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
