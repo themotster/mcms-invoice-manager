@@ -7760,7 +7760,7 @@ function JobsheetEditor({
 
       {showVenueModal ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
-          <div className="w-full max-w-5xl rounded-lg bg-white p-6 shadow-xl">
+          <div className="w-full max-w-5xl max-h-[90vh] rounded-lg bg-white p-6 shadow-xl flex flex-col">
             <div className="flex items-start justify-between">
               <div>
                 <h3 className="text-lg font-semibold text-slate-800">Add new venue</h3>
@@ -7831,8 +7831,7 @@ function JobsheetEditor({
                 </button>
               </div>
               {venueSearchUrl ? (
-                <div className="mt-2 overflow-hidden rounded border border-slate-200"
-                  style={{ height: '70vh' }}
+                <div className="mt-2 overflow-hidden rounded border border-slate-200 h-[82vh] md:h-[86vh]"
                 >
                   {/* Electron webview renders external content inside the modal */}
                   <webview
