@@ -6927,14 +6927,16 @@ function ProductionPanel({ formState, onChange, totals }) {
   );
 }
 
-function Field({ label, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options }) {
+function Field({ label, name, type = 'text', value, onChange, readOnly, hint, rows = 3, step, component, options, autoFocus }) {
   const common = {
     className: 'mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500',
     value: value ?? '',
     onChange: (event) => onChange(event.target.value),
     readOnly,
     disabled: readOnly,
-    step
+    step,
+    name,
+    autoFocus
   };
 
   let input;
@@ -7724,6 +7726,7 @@ function JobsheetEditor({
                        <Field
                          key={field.name}
                          label={field.label}
+                         name={field.name}
                          type={field.type || 'text'}
                          step={field.step}
                          rows={field.rows}
@@ -7731,6 +7734,7 @@ function JobsheetEditor({
                          readOnly={field.name === 'venue_name' ? Boolean(formState.venue_same_as_client) : field.readOnly}
                          component={field.component}
                          options={field.options}
+                         autoFocus={(!hasExisting && field.name === 'client_name') ? true : undefined}
                          value={resolvedValue}
                          onChange={value => handleFieldChange(
                            field.name,
@@ -9370,6 +9374,11 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     try {
       const anchor = document.getElementById('inline-jobsheet-editor');
       if (!anchor) return;
+      // If user is already typing inside the editor, avoid interrupting focus
+      const ae = document.activeElement;
+      if (ae && anchor.contains(ae) && (/^(input|textarea|select)$/i).test(ae.tagName)) {
+        return;
+      }
       const sticky = document.getElementById('jobsheet-sticky-header');
       const stickyHeight = sticky ? (sticky.getBoundingClientRect().height || 0) : 120;
       const extraGap = 12;
@@ -9388,7 +9397,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => prev + 1);
     // Scroll to inline editor after it mounts
-    setTimeout(() => scrollInlineEditorIntoView(), 100);
+    setTimeout(() => scrollInlineEditorIntoView(), 250);
   }, [scrollInlineEditorIntoView]);
 
   const handleOpenExisting = useCallback((jobsheetId) => {
@@ -9399,7 +9408,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => (numericId !== inlineEditorTargetId ? prev + 1 : prev));
     // Scroll to inline editor after it mounts
-    setTimeout(() => scrollInlineEditorIntoView(), 100);
+    setTimeout(() => scrollInlineEditorIntoView(), 250);
   }, [inlineEditorTargetId, scrollInlineEditorIntoView]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
