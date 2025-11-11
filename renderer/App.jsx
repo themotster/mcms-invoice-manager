@@ -11268,6 +11268,7 @@ function JobsheetEditorWindow({
   const autoSaveTimer = useRef(null);
   const initialLoadRef = useRef(true);
   const creatingRef = useRef(false);
+  const createDraftTimerRef = useRef(null);
   const previousJobsheetIdRef = useRef(initialResolvedJobsheetId);
   const nameDateRef = useRef({ name: '', date: '' });
 
@@ -12711,17 +12712,20 @@ function JobsheetEditorWindow({
   }, [lastOutputPath]);
 
   useEffect(() => {
-    if (loading) return;
-    if (jobsheetId) return;
-    if (!formState.client_name?.trim()) return;
-    if (creatingRef.current) return;
-    creatingRef.current = true;
-    (async () => {
+    if (loading) return () => {};
+    if (jobsheetId) return () => {};
+    const name = String(formState.client_name || '').trim();
+    // Wait until user typed at least 2 chars and stopped typing briefly
+    if (name.length < 2) { if (createDraftTimerRef.current) { clearTimeout(createDraftTimerRef.current); createDraftTimerRef.current = null; } return () => {}; }
+    if (createDraftTimerRef.current) { clearTimeout(createDraftTimerRef.current); createDraftTimerRef.current = null; }
+    createDraftTimerRef.current = setTimeout(async () => {
+      if (creatingRef.current || jobsheetId) return;
+      creatingRef.current = true;
       const api = window.api;
-      if (!api || !api.addAhmenJobsheet) return;
+      if (!api || !api.addAhmenJobsheet) { creatingRef.current = false; return; }
       try {
         setSaving(true);
-        const payload = preparePayload(formState, numericBusinessId);
+        const payload = preparePayload(formStateRef.current || formState, numericBusinessId);
         const newId = await api.addAhmenJobsheet(payload);
         setJobsheetId(newId);
         if (!isInline) {
@@ -12733,10 +12737,22 @@ function JobsheetEditorWindow({
           type: 'jobsheet-created',
           businessId: numericBusinessId,
           jobsheetId: newId,
-          snapshot: buildSnapshot({ ...formState, jobsheet_id: newId }, newId)
+          snapshot: buildSnapshot({ ...(formStateRef.current || formState), jobsheet_id: newId }, newId)
         });
         setMessage('Draft created');
         setTimeout(() => setMessage(''), 1500);
+        // Restore focus to client_name if user was typing
+        setTimeout(() => {
+          try {
+            const el = document.querySelector('input[name="client_name"]');
+            if (el) {
+              const v = el.value || '';
+              el.focus();
+              const pos = v.length;
+              if (el.setSelectionRange) el.setSelectionRange(pos, pos);
+            }
+          } catch (_) {}
+        }, 50);
         initialLoadRef.current = true;
       } catch (err) {
         console.error('Failed to create jobsheet', err);
@@ -12745,7 +12761,8 @@ function JobsheetEditorWindow({
         creatingRef.current = false;
         setSaving(false);
       }
-    })();
+    }, 650);
+    return () => { if (createDraftTimerRef.current) { clearTimeout(createDraftTimerRef.current); createDraftTimerRef.current = null; } };
   }, [loading, jobsheetId, numericBusinessId, formState, isInline]);
 
   const handleSaveVenue = useCallback(async (overrideVenue) => {
