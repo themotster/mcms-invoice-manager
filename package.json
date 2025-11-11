@@ -20,6 +20,9 @@
     "open:mcms": "open -n \"./release/MCMS Invoice Manager-darwin-*/MCMS Invoice Manager.app\"",
     "pack:mac": "npm run build && electron-packager . 'AhMen Booking Manager' --platform=darwin --arch=$(node -p \"process.arch\") --out=release --overwrite",
     "open:mac": "open -n \"./release/AhMen Booking Manager-darwin-*/AhMen Booking Manager.app\"",
+    "clean:release": "rm -rf release/*",
+    "pack:mac:clean": "npm run clean:release && npm run pack:mac",
+    "pack:mcms:clean": "npm run clean:release && npm run pack:mcms",
     "migrate:import-jobsheets": "node scripts/import_jobsheets.js --dry-run",
     "test": "jest"
   },

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, globalShortcut } = require('electron');
 const { execFile, spawn } = require('child_process');
 const path = require('path');
 const fs = require('fs');
@@ -8,6 +8,14 @@ const db = require('./db');
 const isMCMS = (() => {
   try { return /mcms/i.test(app.getName() || '') || String(process.env.APP_MODE || '').toLowerCase() === 'mcms'; } catch (_) { return String(process.env.APP_MODE || '').toLowerCase() === 'mcms'; }
 })();
+
+const isDev = !app.isPackaged || String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
+const FORCE_DEVTOOLS = isDev || String(process.env.DEVTOOLS || '') === '1';
+
+// Mitigate “white screen” on some GPUs
+if (String(process.env.ELECTRON_DISABLE_GPU || '') === '1') {
+  app.disableHardwareAcceleration();
+}
 
 const DEFAULT_WINDOW_STATE = {
   width: 1200,
@@ -124,6 +132,40 @@ function createWindow() {
   const win = new BrowserWindow(browserOptions);
   mainWindow = win;
 
+  // Developer tools and crash diagnostics
+  const attachDiagnostics = (bw) => {
+    if (!bw || bw.isDestroyed()) return;
+    const wc = bw.webContents;
+    wc.on('did-fail-load', (_e, code, desc, _url, isMainFrame) => {
+      console.error('[electron] did-fail-load', { code, desc, isMainFrame });
+      if (FORCE_DEVTOOLS) { try { wc.openDevTools({ mode: 'detach' }); } catch (_) {} }
+    });
+    // Avoid intrusive modals; log and optionally auto-reload
+    let lastCrashAt = 0;
+    wc.on('render-process-gone', (_e, details) => {
+      console.error('[electron] render-process-gone', details);
+      if (!bw || bw.isDestroyed()) return;
+      const now = Date.now();
+      // Simple cooldown to avoid reload loops
+      if (now - lastCrashAt > 3000) {
+        lastCrashAt = now;
+        try { bw.reload(); } catch (_) {}
+      }
+      if (FORCE_DEVTOOLS) { try { wc.openDevTools({ mode: 'detach' }); } catch (_) {} }
+    });
+    wc.on('unresponsive', () => {
+      console.error('[electron] window unresponsive');
+      // No modal; try to open devtools for diagnostics
+      if (FORCE_DEVTOOLS) { try { wc.openDevTools({ mode: 'detach' }); } catch (_) {} }
+    });
+    wc.on('dom-ready', () => {
+      if (FORCE_DEVTOOLS) {
+        try { wc.openDevTools({ mode: 'detach' }); } catch (_) {}
+      }
+    });
+  };
+  attachDiagnostics(win);
+
   if (state.isMaximized) {
     win.maximize();
   }
@@ -162,6 +204,32 @@ function createWindow() {
   }
 }
 
+app.whenReady().then(() => {
+  // Global shortcuts to aid diagnostics even on a white screen
+  try {
+    globalShortcut.register('CommandOrControl+Alt+I', () => {
+      const bw = BrowserWindow.getFocusedWindow() || mainWindow || jobsheetWindow;
+      if (bw && !bw.isDestroyed()) {
+        try { bw.webContents.openDevTools({ mode: 'detach' }); } catch (_) {}
+      }
+    });
+    globalShortcut.register('CommandOrControl+R', () => {
+      const bw = BrowserWindow.getFocusedWindow() || mainWindow;
+      if (bw && !bw.isDestroyed()) { try { bw.reload(); } catch (_) {} }
+    });
+    globalShortcut.register('F12', () => {
+      const bw = BrowserWindow.getFocusedWindow() || mainWindow || jobsheetWindow;
+      if (bw && !bw.isDestroyed()) { try { bw.webContents.openDevTools({ mode: 'detach' }); } catch (_) {} }
+    });
+  } catch (err) {
+    console.warn('Failed to register global shortcuts', err);
+  }
+});
+
+app.on('will-quit', () => {
+  try { globalShortcut.unregisterAll(); } catch (_) {}
+});
+
 function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) {
   const savedState = restoreJobsheetWindowState();
   const childOptions = {
@@ -178,6 +246,8 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
 
   const child = new BrowserWindow(childOptions);
   jobsheetWindow = child;
+  // Attach diagnostics and devtools to child windows too
+  try { if (child && !child.isDestroyed()) { const wc = child.webContents; wc.on('dom-ready', () => { if (FORCE_DEVTOOLS) { try { wc.openDevTools({ mode: 'detach' }); } catch (_) {} } }); } } catch (_) {}
   child.__jobsheetBusinessId = businessId != null ? Number(businessId) : null;
   child.__jobsheetId = jobsheetId != null ? Number(jobsheetId) : null;
 
@@ -617,11 +687,16 @@ ipcMain.handle('quick-look-path', async (_event, targetPath) => {
     const abs = path.resolve(targetPath);
     try { await fs.promises.access(abs, fs.constants.R_OK); } catch (_) { return { ok: false, message: 'File not found' }; }
     if (process.platform === 'darwin') {
-      // Preferred: trigger Finder-style Quick Look (spacebar) via AppleScript
-      const esc = abs.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-      const script = `
+      // Prefer qlmanage to avoid opening the Finder window
+      try {
+        const child = spawn('qlmanage', ['-p', abs], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { ok: true, mode: 'qlmanage' };
+      } catch (_qmErr) {
+        // Fallback: Finder-based Quick Look via AppleScript
+        const esc = abs.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+        const script = `
 tell application "Finder"
-  activate
   try
     set theItem to POSIX file "${esc}"
     reveal theItem
@@ -631,21 +706,15 @@ end tell
 tell application "System Events"
   keystroke space
 end tell`;
-      try {
-        await new Promise((resolve, reject) => {
-          execFile('osascript', ['-e', script], (err) => {
-            if (err) reject(err); else resolve();
-          });
-        });
-        return { ok: true, mode: 'finder-quicklook' };
-      } catch (_err) {
-        // Fallback: qlmanage (debug preview). May show [DEBUG] title on some macOS versions
         try {
-          const child = spawn('qlmanage', ['-p', abs], { detached: true, stdio: 'ignore' });
-          child.unref();
-          return { ok: true, mode: 'qlmanage' };
+          await new Promise((resolve, reject) => {
+            execFile('osascript', ['-e', script], (err) => {
+              if (err) reject(err); else resolve();
+            });
+          });
+          return { ok: true, mode: 'finder-quicklook' };
         } catch (err) {
-          // Final fallback: default handler (e.g., Preview for PDFs)
+          // Final fallback: default handler (e.g., Preview)
           try {
             const res = await shell.openPath(abs);
             if (res) return { ok: false, message: res };

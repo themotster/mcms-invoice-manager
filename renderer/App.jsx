@@ -1074,6 +1074,65 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
   const [filter, setFilter] = useState('all'); // all | unpaid | overdue | duesoon | paid
   const [search, setSearch] = useState('');
   const [importing, setImporting] = useState(false);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState(null);
+  // More inline edit state
+  const [editingAmountId, setEditingAmountId] = useState(null);
+  const [amountDraft, setAmountDraft] = useState('');
+  const [savingAmountId, setSavingAmountId] = useState(null);
+  const [editingClientId, setEditingClientId] = useState(null);
+  const [clientDraft, setClientDraft] = useState('');
+  const [eventNameDraft, setEventNameDraft] = useState('');
+  const [eventDateDraft, setEventDateDraft] = useState('');
+  const [savingClientId, setSavingClientId] = useState(null);
+  const [editingStatusId, setEditingStatusId] = useState(null);
+  const [statusDraft, setStatusDraft] = useState('Issued');
+  const [savingStatusId, setSavingStatusId] = useState(null);
+  // Rebuild preview state
+  const [rebuildOpen, setRebuildOpen] = useState(false);
+  const [rebuildDoc, setRebuildDoc] = useState(null);
+  const [rebuildPreview, setRebuildPreview] = useState(null);
+  const [rebuildLoading, setRebuildLoading] = useState(false);
+  // Relink to jobsheet state
+  const [relinkOpen, setRelinkOpen] = useState(false);
+  const [relinkDoc, setRelinkDoc] = useState(null);
+  const [relinkLoading, setRelinkLoading] = useState(false);
+  const [relinkJobsheets, setRelinkJobsheets] = useState([]);
+  const [relinkSearch, setRelinkSearch] = useState('');
+  const [relinkSelectedId, setRelinkSelectedId] = useState(null);
+  const [relinkPreview, setRelinkPreview] = useState(null);
+  // Inline edit state
+  const [editingNumberId, setEditingNumberId] = useState(null);
+  const [numberDraft, setNumberDraft] = useState('');
+  const [savingNumberId, setSavingNumberId] = useState(null);
+  const [editingDueId, setEditingDueId] = useState(null);
+  const [dueDraft, setDueDraft] = useState('');
+  const [savingDueId, setSavingDueId] = useState(null);
+  const [editingRemId, setEditingRemId] = useState(null);
+  const [remDraft, setRemDraft] = useState('');
+  const [savingRemId, setSavingRemId] = useState(null);
+  const [sortKey, setSortKey] = useState('due'); // number | client | amount | due | reminder | status
+  const [sortDir, setSortDir] = useState('desc'); // asc | desc
+
+  const toggleSort = useCallback((key) => {
+    setSortKey(prevKey => {
+      if (prevKey !== key) {
+        // default directions per column
+        setSortDir((key === 'client' || key === 'status') ? 'asc' : 'desc');
+        return key;
+      }
+      setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'));
+      return key;
+    });
+  }, []);
+
+  const renderSortIndicator = useCallback((key) => {
+    if (sortKey !== key) return null;
+    return (
+      <span className="ml-1 inline-block text-slate-400">{sortDir === 'asc' ? '▲' : '▼'}</span>
+    );
+  }, [sortKey, sortDir]);
+
+  
 
   const refresh = useCallback(async () => {
     if (!businessId) return;
@@ -1175,6 +1234,13 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Keep selection valid when list changes
+  useEffect(() => {
+    if (selectedInvoiceId == null) return;
+    const exists = (Array.isArray(list) ? list : []).some(d => d && d.document_id === selectedInvoiceId);
+    if (!exists) setSelectedInvoiceId(null);
+  }, [list, selectedInvoiceId]);
+
   const handleImportHistoric = useCallback(async () => {
     if (!businessId || !window.api || typeof window.api.indexInvoicesFromFilenames !== 'function') return;
     try {
@@ -1262,20 +1328,16 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     if (requested === '') requested = null;
 
     try {
+      if (requested == null) return; // cancelled
+      const digits = String(requested).replace(/[^0-9]/g, '');
+      if (!digits) return;
+      const val = Number(digits);
+      if (!Number.isInteger(val) || val < 1) return;
+
       if (isInvoice) {
-        if (requested == null) {
-          // Auto: set to next by syncing last_invoice_number to max(existing)
-          await refresh();
-          window.alert('This is already an invoice record. Use manual number to change, or re-export to keep.');
-        } else {
-          const val = Number(requested);
-          if (!Number.isInteger(val) || val < 1) throw new Error('Please enter a valid positive integer');
-          await window.api?.setDocumentNumber?.(doc.document_id, val);
-        }
+        await window.api?.setDocumentNumber?.(doc.document_id, val);
       } else {
-        const val = requested != null ? Number(requested) : null;
-        const promoteOpts = val != null && Number.isInteger(val) ? { number: val } : {};
-        await window.api?.promotePdfToInvoice?.(doc.document_id, promoteOpts);
+        await window.api?.promotePdfToInvoice?.(doc.document_id, { number: val });
       }
       refresh();
       try {
@@ -1288,9 +1350,158 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
       } catch (_) {}
     } catch (err) {
       console.error('Failed to apply invoice number', err);
-      window.alert(err?.message || 'Unable to apply invoice number');
+      setError(err?.message || 'Unable to apply invoice number');
     }
   }, [refresh]);
+
+  // Helpers for inline editing
+  const ensureUnlocked = useCallback(async (doc) => {
+    if (!doc?.is_locked) return true;
+    const proceed = window.confirm('This record is locked. Unlock to edit?');
+    if (!proceed) return false;
+    try { await window.api?.setDocumentLock?.(doc.document_id, false); return true; } catch (_) { return false; }
+  }, []);
+
+  const beginEditNumber = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    if (!(await ensureUnlocked(doc))) return;
+    setEditingNumberId(doc.document_id);
+    setNumberDraft(doc.number != null ? String(doc.number) : '');
+  }, [ensureUnlocked]);
+
+  const commitEditNumber = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const raw = String(numberDraft || '').trim();
+    const digits = raw.replace(/[^0-9]/g, '');
+    const isInvoice = String(doc.doc_type || '').toLowerCase() === 'invoice';
+    if (!digits) { return; }
+    const val = Number(digits);
+    if (!Number.isInteger(val) || val < 1) { return; }
+    try {
+      setSavingNumberId(doc.document_id);
+      if (isInvoice) {
+        await window.api?.setDocumentNumber?.(doc.document_id, val);
+      } else {
+        await window.api?.promotePdfToInvoice?.(doc.document_id, { number: val });
+      }
+      await refresh();
+      setEditingNumberId(null);
+    } catch (err) {
+      // Non-blocking error; keep editing so the user can retry
+    } finally { setSavingNumberId(null); }
+  }, [numberDraft, refresh]);
+
+  const cancelEditNumber = useCallback(() => { setEditingNumberId(null); setNumberDraft(''); }, []);
+
+  const toInputDate = useCallback((v) => {
+    if (!v) return '';
+    const d = new Date(v);
+    return Number.isNaN(d.valueOf()) ? '' : d.toISOString().slice(0,10);
+  }, []);
+
+  const beginEditDue = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    if (!(await ensureUnlocked(doc))) return;
+    setEditingDueId(doc.document_id);
+    setDueDraft(toInputDate(doc.due_date));
+  }, [ensureUnlocked, toInputDate]);
+  const beginEditRem = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    if (!(await ensureUnlocked(doc))) return;
+    setEditingRemId(doc.document_id);
+    setRemDraft(toInputDate(doc.reminder_date));
+  }, [ensureUnlocked, toInputDate]);
+
+  const commitEditDue = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const payload = { due_date: dueDraft ? dueDraft : null };
+    try { setSavingDueId(doc.document_id); await window.api?.updateDocumentStatus?.(doc.document_id, payload); await refresh(); setEditingDueId(null); } catch (err) { window.alert(err?.message || 'Unable to set due date'); } finally { setSavingDueId(null); }
+  }, [dueDraft, refresh]);
+  const cancelEditDue = useCallback(() => { setEditingDueId(null); setDueDraft(''); }, []);
+
+  const commitEditRem = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const payload = { reminder_date: remDraft ? remDraft : null };
+    try { setSavingRemId(doc.document_id); await window.api?.updateDocumentStatus?.(doc.document_id, payload); await refresh(); setEditingRemId(null); } catch (err) { window.alert(err?.message || 'Unable to set reminder date'); } finally { setSavingRemId(null); }
+  }, [remDraft, refresh]);
+  const cancelEditRem = useCallback(() => { setEditingRemId(null); setRemDraft(''); }, []);
+
+  const beginEditAmount = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    if (!(await ensureUnlocked(doc))) return;
+    setEditingAmountId(doc.document_id);
+    const base = (doc.total_amount ?? doc.balance_due);
+    setAmountDraft(base != null ? String(base) : '');
+  }, [ensureUnlocked]);
+
+  const commitEditAmount = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const raw = String(amountDraft || '').trim();
+    if (!raw) { setEditingAmountId(null); return; }
+    // Allow decimals but normalize to 2dp
+    const val = Number(raw);
+    if (!Number.isFinite(val) || val < 0) { setEditingAmountId(null); return; }
+    try {
+      setSavingAmountId(doc.document_id);
+      const rounded = Math.round(val * 100) / 100;
+      await window.api?.updateDocumentStatus?.(doc.document_id, { total_amount: rounded, balance_due: rounded });
+      await refresh();
+      setEditingAmountId(null);
+    } catch (err) {
+      // keep silent
+    } finally { setSavingAmountId(null); }
+  }, [amountDraft, refresh]);
+  const cancelEditAmount = useCallback(() => { setEditingAmountId(null); setAmountDraft(''); }, []);
+
+  const beginEditClient = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    if (!(await ensureUnlocked(doc))) return;
+    setEditingClientId(doc.document_id);
+    setClientDraft(doc.client_name || doc.display_client_name || '');
+    setEventNameDraft(doc.event_name || doc.display_event_name || '');
+    setEventDateDraft(toInputDate(doc.display_event_date || doc.event_date || ''));
+  }, [ensureUnlocked, toInputDate]);
+
+  const commitEditClient = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const payload = {
+      client_name: (clientDraft || '').trim(),
+      event_name: (eventNameDraft || '').trim(),
+      event_date: (eventDateDraft || '').trim() || null
+    };
+    try {
+      setSavingClientId(doc.document_id);
+      await window.api?.updateDocumentStatus?.(doc.document_id, payload);
+      await refresh();
+      setEditingClientId(null);
+    } catch (err) {
+      // ignore
+    } finally { setSavingClientId(null); }
+  }, [clientDraft, eventNameDraft, eventDateDraft, refresh]);
+  const cancelEditClient = useCallback(() => { setEditingClientId(null); setClientDraft(''); setEventNameDraft(''); setEventDateDraft(''); }, []);
+
+  const beginEditStatus = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    if (!(await ensureUnlocked(doc))) return;
+    setEditingStatusId(doc.document_id);
+    const curr = String(doc.status || '').toLowerCase() === 'paid' ? 'Paid' : 'Issued';
+    setStatusDraft(curr);
+  }, [ensureUnlocked]);
+
+  const commitEditStatus = useCallback(async (doc) => {
+    if (!doc?.document_id) return;
+    const v = String(statusDraft || 'Issued');
+    const payload = v === 'Paid' ? { status: 'Paid', paid_at: new Date().toISOString() } : { status: 'Issued', paid_at: null };
+    try {
+      setSavingStatusId(doc.document_id);
+      await window.api?.updateDocumentStatus?.(doc.document_id, payload);
+      await refresh();
+      setEditingStatusId(null);
+    } catch (err) {
+      // ignore
+    } finally { setSavingStatusId(null); }
+  }, [statusDraft, refresh]);
+  const cancelEditStatus = useCallback(() => { setEditingStatusId(null); setStatusDraft('Issued'); }, []);
 
   const handleOpen = useCallback(async (doc) => {
     const filePath = doc?.file_path || '';
@@ -1317,6 +1528,45 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
       setError(err?.message || 'Unable to reveal file');
     }
   }, []);
+
+  const quickLookSelected = useCallback(async () => {
+    const id = selectedInvoiceId != null ? Number(selectedInvoiceId) : null;
+    if (!id) return;
+    const doc = computed.find(d => d && Number(d.document_id) === id);
+    const filePath = doc?.file_path || '';
+    if (!filePath) return;
+    try {
+      await window.api?.quickLookPath?.(filePath);
+    } catch (_err) {
+      try { await window.api?.openPath?.(filePath); } catch (_) {}
+    }
+  }, [selectedInvoiceId, computed]);
+
+  const panelRef = useRef(null);
+
+  // Persist sort
+  const SORT_STORAGE_KEY = useMemo(() => `ui:${businessId || 0}:invoiceLogSort`, [businessId]);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(SORT_STORAGE_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p === 'object') {
+          if (p.key) setSortKey(p.key);
+          if (p.dir) setSortDir(p.dir === 'asc' ? 'asc' : 'desc');
+        }
+      }
+    } catch (_) {}
+    // load once per business
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [SORT_STORAGE_KEY]);
+  useEffect(() => {
+    try {
+      const persist = window.localStorage.getItem('app:persistUiState') === 'true';
+      if (!persist) return;
+      window.localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify({ key: sortKey, dir: sortDir }));
+    } catch (_) {}
+  }, [SORT_STORAGE_KEY, sortKey, sortDir]);
 
   const computed = useMemo(() => {
     const today = new Date();
@@ -1361,8 +1611,90 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
         return hay.includes(s);
       });
     }
-    return filtered;
-  }, [list, filter, search]);
+    // Sorting
+    const cmp = (a, b) => {
+      const dirMul = sortDir === 'asc' ? 1 : -1;
+      const safeStr = (v) => (v || '').toString().toLowerCase();
+      const asDate = (v) => {
+        if (!v) return null;
+        const d = new Date(v);
+        return Number.isNaN(d.valueOf()) ? null : d.valueOf();
+      };
+      if (sortKey === 'number') {
+        const av = Number(a.number);
+        const bv = Number(b.number);
+        const aValid = Number.isFinite(av);
+        const bValid = Number.isFinite(bv);
+        if (aValid && bValid) return (av - bv) * dirMul;
+        if (aValid) return -1 * dirMul; // numbers first
+        if (bValid) return 1 * dirMul;
+        return 0;
+      }
+      if (sortKey === 'client') {
+        const av = safeStr(a.display_client_name || a.client_name);
+        const bv = safeStr(b.display_client_name || b.client_name);
+        if (av !== bv) return av.localeCompare(bv) * dirMul;
+        // tiebreaker: event date
+        const ad = asDate(a.display_event_date || a.event_date);
+        const bd = asDate(b.display_event_date || b.event_date);
+        if (ad != null && bd != null) return (ad - bd) * dirMul;
+        return 0;
+      }
+      if (sortKey === 'amount') {
+        const av = Number(a.total_amount ?? a.balance_due);
+        const bv = Number(b.total_amount ?? b.balance_due);
+        return ((Number.isFinite(av) ? av : -Infinity) - (Number.isFinite(bv) ? bv : -Infinity)) * dirMul;
+      }
+      if (sortKey === 'due') {
+        const av = asDate(a.due_date);
+        const bv = asDate(b.due_date);
+        if (av != null && bv != null) return (av - bv) * dirMul;
+        if (av != null) return -1 * dirMul;
+        if (bv != null) return 1 * dirMul;
+        return 0;
+      }
+      if (sortKey === 'reminder') {
+        const av = asDate(a.reminder_date);
+        const bv = asDate(b.reminder_date);
+        if (av != null && bv != null) return (av - bv) * dirMul;
+        if (av != null) return -1 * dirMul;
+        if (bv != null) return 1 * dirMul;
+        return 0;
+      }
+      if (sortKey === 'status') {
+        const order = { paid: 3, 'due soon': 2, overdue: 1, issued: 0 };
+        const av = order[(a.derived_status || '').toLowerCase()] ?? -1;
+        const bv = order[(b.derived_status || '').toLowerCase()] ?? -1;
+        if (av !== bv) return (av - bv) * dirMul;
+        return 0;
+      }
+      return 0;
+    };
+    return filtered.slice().sort(cmp);
+  }, [list, filter, search, sortKey, sortDir]);
+
+  // Bulk lock all visible (based on current filter/search)
+  const canLockAll = useMemo(() => {
+    const rows = Array.isArray(computed) ? computed : [];
+    return rows.some(d => d?.document_id != null && !d?.is_locked);
+  }, [computed]);
+
+  const handleLockAll = useCallback(async () => {
+    try {
+      const rows = Array.isArray(computed) ? computed : [];
+      const ids = rows.filter(d => d?.document_id != null && !d?.is_locked).map(d => d.document_id);
+      if (!ids.length) return;
+      const ok = window.confirm(`Lock ${ids.length} invoice${ids.length === 1 ? '' : 's'}?`);
+      if (!ok) return;
+      for (const id of ids) {
+        // eslint-disable-next-line no-await-in-loop
+        await window.api?.setDocumentLock?.(id, true);
+      }
+      await refresh();
+    } catch (err) {
+      window.alert(err?.message || 'Unable to lock invoices');
+    }
+  }, [computed, refresh]);
 
   const formatDate = (val) => {
     if (!val) return '';
@@ -1440,47 +1772,91 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     return () => document.removeEventListener('keydown', onKey);
   }, [menuOpenId, closeMenus]);
 
-  return (
+  return (<>
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-700">Invoice Log</h2>
           <p className="text-sm text-slate-500">Manage issued invoices and reminders.</p>
         </div>
-        <div className="flex items-center gap-2 text-sm">
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search by #, client, or event…"
-            className="w-64 rounded border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-          />
-          <select value={filter} onChange={e => setFilter(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-sm">
-            <option value="all">All</option>
-            <option value="unpaid">Unpaid</option>
-            <option value="overdue">Overdue</option>
-            <option value="duesoon">Due soon</option>
-            <option value="paid">Paid</option>
-          </select>
-          <button type="button" onClick={handleImportHistoric} disabled={importing} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">{importing ? 'Importing…' : 'Import from filenames'}</button>
-          <button type="button" onClick={refresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-        </div>
+          <div className="flex items-center gap-2 text-sm">
+            <input
+              type="text"
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by #, client, or event…"
+              className="w-64 rounded border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+            />
+            <select value={filter} onChange={e => setFilter(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-sm">
+              <option value="all">All</option>
+              <option value="unpaid">Unpaid</option>
+              <option value="overdue">Overdue</option>
+              <option value="duesoon">Due soon</option>
+              <option value="paid">Paid</option>
+            </select>
+            <button type="button" onClick={handleImportHistoric} disabled={importing} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">{importing ? 'Importing…' : 'Import from filenames'}</button>
+            <button type="button" onClick={refresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
+            <button
+              type="button"
+              onClick={handleLockAll}
+              disabled={!canLockAll}
+              className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+              title="Lock all visible invoices"
+            >
+              Lock all
+            </button>
+          </div>
       </div>
 
       {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
       {loading ? <div className="text-sm text-slate-500">Loading…</div> : null}
 
-      <div className="rounded border border-slate-200 overflow-visible">
+      <div
+        className="rounded border border-slate-200 overflow-x-auto"
+        tabIndex={0}
+        ref={panelRef}
+        onMouseDown={(e) => {
+          // Only focus container if clicking outside form fields
+          const t = e.target;
+          const tag = t && t.tagName ? t.tagName.toLowerCase() : '';
+          const isForm = tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable);
+          if (isForm) return;
+          try { panelRef.current?.focus({ preventScroll: true }); } catch (_) {}
+        }}
+        onKeyDown={(e) => {
+          // Quick Look selected invoice with Spacebar (not while editing)
+          if ((e.key === ' ' || e.code === 'Space') && !rebuildOpen) {
+            const t = e.target;
+            const tag = t && t.tagName ? t.tagName.toLowerCase() : '';
+            const isForm = tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable);
+            if (isForm) return; // let form fields handle space
+            e.preventDefault();
+            quickLookSelected();
+          }
+        }}
+      >
         <div
           className="grid items-center px-3 py-3 text-xs font-semibold text-slate-600"
           style={{ gridTemplateColumns: GRID_COLS, textAlign: 'left' }}
         >
-          <div>Invoice #</div>
-          <div>Client / Event</div>
-          <div>Amount</div>
-          <div>Due</div>
-          <div>Reminder</div>
-          <div style={{ textAlign: 'center' }}>Status</div>
+          <button type="button" onClick={() => toggleSort('number')} className="text-left hover:text-indigo-600">
+            Invoice # {renderSortIndicator('number')}
+          </button>
+          <button type="button" onClick={() => toggleSort('client')} className="text-left hover:text-indigo-600">
+            Client / Event {renderSortIndicator('client')}
+          </button>
+          <button type="button" onClick={() => toggleSort('amount')} className="text-left hover:text-indigo-600">
+            Amount {renderSortIndicator('amount')}
+          </button>
+          <button type="button" onClick={() => toggleSort('due')} className="text-left hover:text-indigo-600">
+            Due {renderSortIndicator('due')}
+          </button>
+          <button type="button" onClick={() => toggleSort('reminder')} className="text-left hover:text-indigo-600">
+            Reminder {renderSortIndicator('reminder')}
+          </button>
+          <button type="button" onClick={() => toggleSort('status')} className="text-center hover:text-indigo-600">
+            Status {renderSortIndicator('status')}
+          </button>
           <div style={{ textAlign: 'center' }}>Actions</div>
         </div>
         <div className="divide-y divide-slate-200">
@@ -1509,18 +1885,181 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
               if (statusKey === 'due soon') return '#fffbeb';
               return 'transparent';
             })();
+            const isSelected = selectedInvoiceId != null && Number(selectedInvoiceId) === Number(doc.document_id);
             return (
               <div
                 key={doc.document_id}
-                className="grid items-center px-3 py-3 text-sm relative"
+                className={`grid items-center px-3 py-3 text-sm relative ${isSelected ? 'ring-2 ring-indigo-300 rounded-md' : ''}`}
                 style={{ gridTemplateColumns: GRID_COLS, backgroundColor: rowBg, textAlign: 'left' }}
+                role="row"
+                aria-selected={isSelected}
+                onClick={() => setSelectedInvoiceId(doc.document_id)}
               >
-                <div className="truncate" title={title}>{numberLabel}</div>
-                <div className="truncate" title={clientEvent}>{clientEvent}</div>
-                <div>{toCurrency(doc.total_amount ?? doc.balance_due)}</div>
-                <div className="whitespace-nowrap">{formatDate(doc.due_date)}</div>
-                <div className="whitespace-nowrap">{formatDate(doc.reminder_date)}</div>
-                <div style={{ textAlign: 'center' }}>{statusPill(status)}</div>
+                <div className="whitespace-normal break-words" title={title}>
+                  <div className="inline-flex items-center gap-1 max-w-full">
+                    {doc.is_locked ? (
+                      <span className="text-slate-500" aria-label="Locked" title="Locked">🔒</span>
+                    ) : null}
+                    {editingNumberId === doc.document_id ? (
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={numberDraft}
+                        disabled={savingNumberId === doc.document_id}
+                        onChange={(e) => setNumberDraft(String(e.target.value || '').replace(/[^0-9]/g, ''))}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditNumber(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditNumber(); } }}
+                        onBlur={() => commitEditNumber(doc)}
+                        autoFocus
+                        className="w-24 rounded border border-slate-300 px-2 py-0.5 text-sm"
+                      />
+                    ) : (
+                      <button
+                        type="button"
+                        className={`rounded px-1 py-0.5 truncate ${doc.number == null ? 'text-indigo-600 hover:bg-indigo-50 underline' : 'text-slate-700 hover:bg-slate-50'}`}
+                        onClick={() => beginEditNumber(doc)}
+                        title={doc.number == null ? 'Set invoice number' : 'Edit invoice number'}
+                      >
+                        {numberLabel}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="truncate" title={clientEvent}>
+                  {editingClientId === doc.document_id ? (
+                    <div className="flex flex-col gap-1">
+                      <input
+                        type="text"
+                        value={clientDraft}
+                        disabled={savingClientId === doc.document_id}
+                        onChange={(e) => setClientDraft(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditClient(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditClient(); } }}
+                        className="w-full rounded border border-slate-300 px-2 py-0.5 text-sm"
+                        placeholder="Client name"
+                        autoFocus
+                      />
+                      <div className="grid grid-cols-1 md:grid-cols-[1fr,auto] gap-1 items-center">
+                        <input
+                          type="text"
+                          value={eventNameDraft}
+                          disabled={savingClientId === doc.document_id}
+                          onChange={(e) => setEventNameDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditClient(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditClient(); } }}
+                          className="w-full rounded border border-slate-300 px-2 py-0.5 text-sm"
+                          placeholder="Event name"
+                        />
+                        <input
+                          type="date"
+                          value={eventDateDraft}
+                          disabled={savingClientId === doc.document_id}
+                          onChange={(e) => setEventDateDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditClient(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditClient(); } }}
+                          className="rounded border border-slate-300 px-2 py-0.5 text-sm"
+                          placeholder="Event date"
+                        />
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button type="button" className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50" onClick={() => commitEditClient(doc)}>Save</button>
+                        <button type="button" className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50" onClick={cancelEditClient}>Cancel</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50 w-full text-left"
+                      onClick={() => beginEditClient(doc)}
+                      title="Edit client/event"
+                    >
+                      {clientEvent}
+                    </button>
+                  )}
+                </div>
+                <div>
+                  {editingAmountId === doc.document_id ? (
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={amountDraft}
+                      disabled={savingAmountId === doc.document_id}
+                      onChange={(e) => setAmountDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditAmount(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditAmount(); } }}
+                      onBlur={() => commitEditAmount(doc)}
+                      autoFocus
+                      className="w-28 rounded border border-slate-300 px-2 py-0.5 text-sm text-right"
+                    />
+                  ) : (
+                    <button type="button" className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50 w-full text-right" onClick={() => beginEditAmount(doc)} title="Edit amount">
+                      {toCurrency(doc.total_amount ?? doc.balance_due)}
+                    </button>
+                  )}
+                </div>
+                <div className="whitespace-nowrap">
+                  {editingDueId === doc.document_id ? (
+                    <input
+                      type="date"
+                      value={dueDraft}
+                      disabled={savingDueId === doc.document_id}
+                      onChange={(e) => setDueDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditDue(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditDue(); } }}
+                      onBlur={() => commitEditDue(doc)}
+                      autoFocus
+                      className="rounded border border-slate-300 px-2 py-0.5 text-sm"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50"
+                      onClick={() => beginEditDue(doc)}
+                      title="Edit due date"
+                    >
+                      {formatDate(doc.due_date) || '—'}
+                    </button>
+                  )}
+                </div>
+                <div className="whitespace-nowrap">
+                  {editingRemId === doc.document_id ? (
+                    <input
+                      type="date"
+                      value={remDraft}
+                      disabled={savingRemId === doc.document_id}
+                      onChange={(e) => setRemDraft(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditRem(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditRem(); } }}
+                      onBlur={() => commitEditRem(doc)}
+                      autoFocus
+                      className="rounded border border-slate-300 px-2 py-0.5 text-sm"
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50"
+                      onClick={() => beginEditRem(doc)}
+                      title="Edit reminder date"
+                    >
+                      {formatDate(doc.reminder_date) || '—'}
+                    </button>
+                  )}
+                </div>
+                <div style={{ textAlign: 'center' }}>
+                  {editingStatusId === doc.document_id ? (
+                    <select
+                      value={statusDraft}
+                      disabled={savingStatusId === doc.document_id}
+                      onChange={(e) => setStatusDraft(e.target.value)}
+                      onBlur={() => commitEditStatus(doc)}
+                      className="rounded border border-slate-300 px-2 py-1 text-xs"
+                      autoFocus
+                    >
+                      <option value="Issued">Issued</option>
+                      <option value="Paid">Paid</option>
+                    </select>
+                  ) : (
+                    <button type="button" className="rounded px-2 py-0.5 text-slate-700 hover:bg-slate-50" onClick={() => beginEditStatus(doc)} title="Edit status">
+                      {statusPill(status)}
+                    </button>
+                  )}
+                </div>
                 <div className="flex items-center justify-center gap-2 relative" data-kebab-for={doc.document_id}>
                   <IconButton size="md" label="Actions" className="bg-white" onClick={(e) => { e.stopPropagation(); setMenuOpenId(prev => prev === doc.document_id ? null : doc.document_id); }}>
                     <span aria-hidden>⋮</span>
@@ -1532,18 +2071,54 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
                       </button>
                       <button type="button" onClick={() => { handleSetNumber(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set number…</button>
                       <button type="button" onClick={async () => {
+                        closeMenus();
+                        setRebuildDoc(doc);
+                        setRebuildLoading(true);
+                        setRebuildPreview(null);
+                        setRebuildOpen(true);
+                        try {
+                          const res = await window.api?.rebuildInvoiceFromFilename?.({ businessId, documentId: doc.document_id, preview: true });
+                          setRebuildPreview(res || null);
+                        } catch (err) {
+                          setRebuildPreview({ ok: false, message: err?.message || 'Unable to preview rebuild' });
+                        } finally {
+                          setRebuildLoading(false);
+                        }
+                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Rebuild from filename…</button>
+                      <button type="button" onClick={async () => {
+                        closeMenus();
+                        setRelinkDoc(doc);
+                        setRelinkOpen(true);
+                        setRelinkLoading(true);
+                        setRelinkJobsheets([]);
+                        setRelinkSelectedId(null);
+                        setRelinkPreview(null);
+                        try {
+                          const list = await window.api?.getAhmenJobsheets?.({ businessId, includeArchived: true });
+                          setRelinkJobsheets(Array.isArray(list) ? list : []);
+                        } catch (_) {}
+                        setRelinkLoading(false);
+                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Relink to jobsheet…</button>
+                      <button type="button" onClick={async () => {
                         const current = doc?.due_date ? String(doc.due_date).slice(0,10) : '';
                         const next = window.prompt('Set due date (YYYY-MM-DD)', current);
                         if (next == null) { closeMenus(); return; }
                         try { await window.api?.updateDocumentStatus?.(doc.document_id, { due_date: next }); refresh(); } catch (err) { window.alert(err?.message || 'Unable to set due date'); }
                         closeMenus();
                       }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set due date…</button>
+                      <button type="button" onClick={async () => {
+                        const current = doc?.reminder_date ? String(doc.reminder_date).slice(0,10) : '';
+                        const next = window.prompt('Set reminder date (YYYY-MM-DD)', current);
+                        if (next == null) { closeMenus(); return; }
+                        try { await window.api?.updateDocumentStatus?.(doc.document_id, { reminder_date: next }); refresh(); } catch (err) { window.alert(err?.message || 'Unable to set reminder date'); }
+                        closeMenus();
+                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set reminder…</button>
                       <button type="button" onClick={() => { handleOpen(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Open</button>
                       <button type="button" onClick={() => { handleReveal(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Reveal in Finder</button>
                       <button type="button" onClick={() => { handleMarkPaidToggle(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
                         {String(status).toLowerCase() === 'paid' ? 'Mark unpaid' : 'Mark paid'}
                       </button>
-                      <button type="button" onClick={() => { onDeleteDocument?.(doc); closeMenus(); }} disabled={locked || !doc?.document_id} className="w-full text-left rounded px-2 py-1 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60">Delete</button>
+                      <button type="button" onClick={() => { onDeleteDocument?.(doc); closeMenus(); }} disabled={!doc?.document_id} className="w-full text-left rounded px-2 py-1 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60">Delete</button>
                     </div>
                   ) : null}
                 </div>
@@ -1556,7 +2131,205 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
         </div>
       </div>
     </div>
-  );
+    {rebuildOpen ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+        <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+            <div>
+              <h3 className="text-base font-semibold text-slate-800">Rebuild from filename</h3>
+              <p className="text-xs text-slate-500">Review proposed changes before applying.</p>
+            </div>
+            <button className="text-slate-400 hover:text-slate-600" onClick={() => setRebuildOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="p-4 space-y-3">
+            {rebuildLoading ? (
+              <div className="text-sm text-slate-500">Analysing filename…</div>
+            ) : rebuildPreview && rebuildPreview.ok ? (
+              <div className="space-y-3">
+                <div className="rounded border border-slate-200">
+                  <div className="grid grid-cols-3 gap-2 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                    <div>Field</div>
+                    <div>Current</div>
+                    <div>Proposed</div>
+                  </div>
+                  {(() => {
+                    const rows = [];
+                    const current = rebuildDoc || {};
+                    const proposed = (rebuildPreview && rebuildPreview.proposed) || {};
+                    const add = (label, curVal, nextVal, fmt) => {
+                      const format = (v) => (fmt ? fmt(v) : (v == null || v === '' ? '—' : String(v)));
+                      const cur = format(curVal);
+                      const next = format(nextVal);
+                      const changed = cur !== next;
+                      rows.push(
+                        <div key={label} className="grid grid-cols-3 gap-2 px-3 py-2 text-sm border-t border-slate-100">
+                          <div className="text-slate-600">{label}</div>
+                          <div className="text-slate-700">{cur}</div>
+                          <div className={changed ? 'text-indigo-700 font-medium' : 'text-slate-700'}>{next}</div>
+                        </div>
+                      );
+                    };
+                    add('Invoice #', current.number, proposed.number, v => (v == null ? '—' : `INV-${v}`));
+                    add('Client', current.client_name || current.display_client_name, proposed.client_name);
+                    add('Event name', current.event_name || current.display_event_name, proposed.event_name);
+                    add('Event date', current.event_date || current.display_event_date, proposed.event_date);
+                    add('Variant', current.invoice_variant, proposed.invoice_variant);
+                    add('Amount', current.total_amount ?? current.balance_due, proposed.total_amount, v => v == null ? '—' : toCurrency(v));
+                    add('Balance due', current.balance_due, proposed.balance_due, v => v == null ? '—' : toCurrency(v));
+                    add('Due date', current.due_date, proposed.due_date);
+                    return rows;
+                  })()}
+                </div>
+                {rebuildPreview.matched_jobsheet_id ? (
+                  <div className="text-xs text-slate-500">Matched jobsheet ID: {rebuildPreview.matched_jobsheet_id}</div>
+                ) : (
+                  <div className="text-xs text-slate-500">No strict jobsheet match (using filename tokens only).</div>
+                )}
+              </div>
+            ) : (
+              <div className="text-sm text-red-600">{(rebuildPreview && rebuildPreview.message) || 'Unable to preview changes.'}</div>
+            )}
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+            <button type="button" className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setRebuildOpen(false)}>Cancel</button>
+            <button
+              type="button"
+              disabled={!rebuildPreview || !rebuildPreview.ok || rebuildLoading}
+              className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60"
+              onClick={async () => {
+                try {
+                  setRebuildLoading(true);
+                  await window.api?.rebuildInvoiceFromFilename?.({ businessId, documentId: rebuildDoc?.document_id, preview: false });
+                  setRebuildOpen(false);
+                  setRebuildPreview(null);
+                  setRebuildDoc(null);
+                  await refresh();
+                } catch (err) {
+                  window.alert(err?.message || 'Unable to apply rebuild');
+                } finally {
+                  setRebuildLoading(false);
+                }
+              }}
+            >
+              Apply changes
+            </button>
+          </div>
+        </div>
+      </div>
+    ) : null}
+    {relinkOpen ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+        <div className="w-full max-w-4xl rounded-lg bg-white shadow-xl">
+          <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+            <div>
+              <h3 className="text-base font-semibold text-slate-800">Relink to jobsheet</h3>
+              <p className="text-xs text-slate-500">Choose a jobsheet to link this invoice to, then apply the proposed updates.</p>
+            </div>
+            <button className="text-slate-400 hover:text-slate-600" onClick={() => setRelinkOpen(false)} aria-label="Close">✕</button>
+          </div>
+          <div className="p-4 grid gap-4 md:grid-cols-2">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <input type="search" value={relinkSearch} onChange={e=>setRelinkSearch(e.target.value)} placeholder="Search jobsheets" className="w-full rounded border border-slate-300 px-2 py-1 text-sm" />
+              </div>
+              <div className="rounded border border-slate-200 max-h-80 overflow-auto divide-y divide-slate-100">
+                {relinkLoading ? (
+                  <div className="px-3 py-2 text-sm text-slate-500">Loading…</div>
+                ) : (
+                  (relinkJobsheets || [])
+                    .filter(js => {
+                      const q = relinkSearch.trim().toLowerCase();
+                      if (!q) return true;
+                      const hay = [js.client_name, js.event_type, js.event_date, js.venue_name].join(' ').toLowerCase();
+                      return hay.includes(q);
+                    })
+                    .map(js => {
+                      const id = Number(js.jobsheet_id);
+                      const selected = relinkSelectedId != null && Number(relinkSelectedId) === id;
+                      return (
+                        <button key={id} type="button" onClick={async () => {
+                          setRelinkSelectedId(id);
+                          setRelinkPreview(null);
+                          try {
+                            const res = await window.api?.relinkInvoiceToJobsheet?.({ businessId, documentId: relinkDoc?.document_id, jobsheetId: id, preview: true });
+                            setRelinkPreview(res || null);
+                          } catch (err) {
+                            setRelinkPreview({ ok: false, message: err?.message || 'Unable to preview relink' });
+                          }
+                        }} className={`w-full text-left px-3 py-2 text-sm ${selected ? 'bg-indigo-50' : 'bg-white'} hover:bg-slate-50`}>
+                          <div className="font-medium text-slate-800">{js.client_name || 'Untitled'} — {js.event_type || 'Event'}</div>
+                          <div className="text-xs text-slate-500">{formatDate(js.event_date)} · {js.venue_name || js.venue_town || ''}</div>
+                        </button>
+                      );
+                    })
+                )}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <div className="text-sm font-semibold text-slate-700">Proposed updates</div>
+              <div className="rounded border border-slate-200 min-h-[6rem]">
+                {!relinkPreview ? (
+                  <div className="px-3 py-2 text-sm text-slate-500">Select a jobsheet to preview changes.</div>
+                ) : relinkPreview.ok ? (
+                  <div>
+                    <div className="grid grid-cols-3 gap-2 bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-600">
+                      <div>Field</div>
+                      <div>Current</div>
+                      <div>Proposed</div>
+                    </div>
+                    {(() => {
+                      const rows = [];
+                      const current = relinkDoc || {};
+                      const proposed = (relinkPreview && relinkPreview.proposed) || {};
+                      const add = (label, curVal, nextVal, fmt) => {
+                        const format = (v) => (fmt ? fmt(v) : (v == null || v === '' ? '—' : String(v)));
+                        const cur = format(curVal);
+                        const next = format(nextVal);
+                        const changed = cur !== next;
+                        rows.push(
+                          <div key={label} className="grid grid-cols-3 gap-2 px-3 py-2 text-sm border-t border-slate-100">
+                            <div className="text-slate-600">{label}</div>
+                            <div className="text-slate-700">{cur}</div>
+                            <div className={changed ? 'text-indigo-700 font-medium' : 'text-slate-700'}>{next}</div>
+                          </div>
+                        );
+                      };
+                      add('Jobsheet ID', current.jobsheet_id, relinkSelectedId, v => v == null ? '—' : String(v));
+                      add('Client', current.client_name || current.display_client_name, proposed.client_name);
+                      add('Event name', current.event_name || current.display_event_name, proposed.event_name);
+                      add('Event date', current.event_date || current.display_event_date, proposed.event_date);
+                      add('Variant', current.invoice_variant, proposed.invoice_variant);
+                      add('Amount', current.total_amount ?? current.balance_due, proposed.total_amount, v => v == null ? '—' : toCurrency(v));
+                      add('Due date', current.due_date, proposed.due_date);
+                      return rows;
+                    })()}
+                  </div>
+                ) : (
+                  <div className="px-3 py-2 text-sm text-red-600">{relinkPreview.message || 'Unable to preview changes.'}</div>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center justify-end gap-2 border-t border-slate-200 px-4 py-3">
+            <button type="button" className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-50" onClick={() => setRelinkOpen(false)}>Cancel</button>
+            <button type="button" disabled={!relinkSelectedId || !relinkPreview || !relinkPreview.ok || relinkLoading} className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-60" onClick={async () => {
+              try {
+                setRelinkLoading(true);
+                await window.api?.relinkInvoiceToJobsheet?.({ businessId, documentId: relinkDoc?.document_id, jobsheetId: relinkSelectedId, preview: false });
+                setRelinkOpen(false);
+                setRelinkDoc(null);
+                setRelinkSelectedId(null);
+                setRelinkPreview(null);
+                await refresh();
+              } catch (err) {
+                window.alert(err?.message || 'Unable to relink invoice');
+              } finally { setRelinkLoading(false); }
+            }}>Apply relink</button>
+          </div>
+        </div>
+      </div>
+    ) : null}
+  </>);
 }
 
 function OpenIcon({ className = 'h-4 w-4' }) {
@@ -2392,9 +3165,9 @@ function JobsheetList({
         className={`cursor-pointer ${isArchived ? 'opacity-70' : ''}`}
       >
         <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} ${firstCellExtras}`}>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             {isActive ? <span className="h-8 w-1 rounded-full bg-indigo-600" /> : null}
-            <span className="font-medium text-slate-800 whitespace-nowrap">{sheet.client_name || 'Untitled booking'}</span>
+            <span className="font-medium text-slate-800 whitespace-normal break-words">{sheet.client_name || 'Untitled booking'}</span>
           </div>
         </td>
         <td className={`${rowBackground} ${baseCellClass} ${verticalBorder}`}>
@@ -2403,8 +3176,10 @@ function JobsheetList({
         <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} whitespace-nowrap`}>
           {formatDateDisplay(sheet.event_date)}
         </td>
-        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder} truncate`}>
-          {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
+        <td className={`${rowBackground} ${baseCellClass} ${verticalBorder}`}>
+          <div className="min-w-0 whitespace-normal break-words">
+            {sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}
+          </div>
         </td>
         <td className={`${rowBackground} ${baseCellClass} ${verticalBorder}`}>
           <div className="flex justify-center">
@@ -2459,12 +3234,12 @@ function JobsheetList({
   return (
     <div className="flex flex-col h-full">
       <div className="mb-4 space-y-3">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-slate-700">Jobsheets</h2>
             <p className="text-sm text-slate-500">{summaryLabel}</p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <ImportJobsheetButton business={business} onCreated={(id) => onOpen?.(id)} />
             <div className="relative inline-block">
               <button
@@ -2527,7 +3302,7 @@ function JobsheetList({
             </button>
           </div>
         </div>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-3 md:flex-row md:flex-wrap md:items-center md:justify-between">
               <div className="relative w-full md:max-w-xs">
                 <input
                   type="search"
@@ -2602,7 +3377,7 @@ function JobsheetList({
         ) : !sortedJobsheets.length ? (
           <div className="p-6 text-center text-slate-500">{hasActiveFilters ? 'No jobsheets match your filters yet. Adjust the search or status filter to see more results.' : 'No jobsheets yet. Create your first one!'}</div>
         ) : (
-          <div className="overflow-y-auto">
+          <div className="overflow-y-auto overflow-x-auto">
             <table className="min-w-full text-sm border-separate border-spacing-y-2">
               <thead>
                 <tr className="bg-slate-50">
@@ -2664,17 +3439,28 @@ function JobsheetList({
                         const common = `${rowBackground} ${baseCellClass} ${verticalBorder} ${extra}`;
                         switch (col.key) {
                           case 'client_name':
-                            return (<td key={col.key} className={`${common} ${alignClass}`}><div className="flex items-center gap-3">{isActive ? <span className="h-8 w-1 rounded-full bg-indigo-600" /> : null}<span className="font-medium text-slate-800 whitespace-nowrap">{sheet.client_name || 'Untitled booking'}</span></div></td>);
+                            return (
+                              <td key={col.key} className={`${common} ${alignClass}`}>
+                                <div className="flex items-center gap-3 min-w-0">
+                                  {isActive ? <span className="h-8 w-1 rounded-full bg-indigo-600" /> : null}
+                                  <span className="font-medium text-slate-800 whitespace-normal break-words">{sheet.client_name || 'Untitled booking'}</span>
+                                </div>
+                              </td>
+                            );
                           case 'event_type':
                             return (<td key={col.key} className={`${common} ${alignClass}`}>{sheet.event_type || '—'}</td>);
                           case 'event_date':
                             return (<td key={col.key} className={`${common} ${alignClass} whitespace-nowrap`}>{formatDateDisplay(sheet.event_date)}</td>);
                           case 'venue_name':
-                            return (<td key={col.key} className={`${common} ${alignClass} truncate`}>{sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}</td>);
+                            return (
+                              <td key={col.key} className={`${common} ${alignClass}`}>
+                                <div className="min-w-0 whitespace-normal break-words">{sheet.venue_name || sheet.venue_town || sheet.venue_address1 || '—'}</div>
+                              </td>
+                            );
                           case 'status':
                             return (
                               <td key={col.key} className={`${common} ${alignClass}`}>
-                                <div className="flex justify-center">
+                                <div className="flex flex-wrap justify-center">
                                   <select
                                     value={statusKey}
                                     disabled={statusDisabled}
@@ -2700,7 +3486,7 @@ function JobsheetList({
                           case 'actions':
                             return (
                               <td key={col.key} className={`${common} ${alignClass}`}>
-                                <div className="flex justify-end gap-2">
+                                <div className="flex flex-wrap justify-end gap-2">
                                   <button type="button" onClick={(event) => { event.stopPropagation(); onArchiveToggle?.(sheet.jobsheet_id, !isArchived); }} className={`rounded border px-2 py-1 text-xs font-medium ${isArchived ? 'border-slate-200 text-slate-600 hover:bg-slate-50' : 'border-amber-200 text-amber-700 hover:bg-amber-50'}`}>{isArchived ? 'Unarchive' : 'Archive'}</button>
                                   <button type="button" disabled={deletingId === sheet.jobsheet_id} onClick={(event) => { event.stopPropagation(); onDelete(sheet.jobsheet_id); }} className="rounded border border-red-200 px-2 py-1 text-xs font-medium text-red-600 hover:bg-red-50 disabled:opacity-60">Delete</button>
                                 </div>
@@ -5467,7 +6253,7 @@ function DocumentsInlinePanel({
           <IconButton
             label="Delete workbook"
             onClick={() => onDelete?.(workbookDoc)}
-            disabled={workbookLocked || workbookDoc?.document_id == null}
+            disabled={workbookDoc?.document_id == null}
             size="md"
             className="border-red-200 text-red-600 hover:bg-red-50"
           >
@@ -5514,7 +6300,7 @@ function DocumentsInlinePanel({
           key="delete"
           label="Delete PDF"
           onClick={() => onDelete?.(pdfDoc)}
-          disabled={pdfLocked || pdfDoc?.document_id == null}
+          disabled={pdfDoc?.document_id == null}
           size="md"
           className="border-red-200 text-red-600 hover:bg-red-50"
         >
@@ -6401,6 +7187,113 @@ function JobsheetEditor({
     Array.isArray(groups) && groups.length ? groups : FALLBACK_JOBSHEET_GROUPS
   ), [groups]);
 
+  // Keep refs to each rendered section to support scroll-to-section behavior
+  const sectionRefs = useRef({});
+  // Dynamic offset for sidebar sticky position and scroll alignment
+  const [stickyTop, setStickyTop] = useState(120);
+  // Per-section collapse state
+  const collapsedStorageKey = useMemo(() => (
+    `jobsheetEditor:collapsed:${Number(businessId) || 0}:${Number(jobsheetId) || 0}`
+  ), [businessId, jobsheetId]);
+  const [collapsedMap, setCollapsedMap] = useState(() => {
+    try {
+      const raw = typeof window !== 'undefined'
+        ? (window.sessionStorage.getItem(collapsedStorageKey) || window.localStorage.getItem(collapsedStorageKey) || '')
+        : '';
+      const parsed = raw ? JSON.parse(raw) : {};
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  });
+  const isGroupCollapsed = useCallback((key) => Boolean(collapsedMap?.[key]), [collapsedMap]);
+  const toggleGroup = useCallback((key) => {
+    setCollapsedMap(prev => ({ ...prev, [key]: !prev?.[key] }));
+  }, []);
+  const ensureExpanded = useCallback((key) => {
+    setCollapsedMap(prev => (prev?.[key] ? { ...prev, [key]: false } : prev));
+  }, []);
+  useEffect(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem(collapsedStorageKey, JSON.stringify(collapsedMap || {}));
+        if (window.localStorage.getItem('app:persistUiState') === 'true') {
+          window.localStorage.setItem(collapsedStorageKey, JSON.stringify(collapsedMap || {}));
+        }
+      }
+    } catch (_) {}
+  }, [collapsedStorageKey, collapsedMap]);
+  // Keep collapse map aligned with available groups
+  useEffect(() => {
+    setCollapsedMap(prev => {
+      const allowed = new Set(resolvedGroups.map(g => g.key));
+      const next = {};
+      Object.keys(prev || {}).forEach(k => { if (allowed.has(k)) next[k] = prev[k]; });
+      return next;
+    });
+  }, [resolvedGroups]);
+  useEffect(() => {
+    const measure = () => {
+      try {
+        const el = document.getElementById('jobsheet-sticky-header');
+        const h = el ? (el.getBoundingClientRect().height || 0) : 0;
+        setStickyTop(Math.max(0, Math.round(h + 16)));
+      } catch (_) {
+        setStickyTop(120);
+      }
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('orientationchange', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('orientationchange', measure);
+    };
+  }, []);
+
+  // Highlight sidebar entry based on scroll position
+  const scrollRafRef = useRef(null);
+  const changeByScrollRef = useRef(false);
+  const detectActiveGroup = useCallback(() => {
+    if (!resolvedGroups.length) return null;
+    let bestKey = null;
+    let bestAbs = Infinity;
+    const offset = stickyTop + 8; // ensure some breathing space under sticky header
+    for (const group of resolvedGroups) {
+      const el = sectionRefs.current?.[group.key];
+      if (!el) continue;
+      const y = (el.getBoundingClientRect().top || 0) - offset;
+      const score = Math.abs(y);
+      if (score < bestAbs) {
+        bestAbs = score;
+        bestKey = group.key;
+      }
+    }
+    return bestKey;
+  }, [resolvedGroups, stickyTop]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      if (scrollRafRef.current != null) return;
+      scrollRafRef.current = window.requestAnimationFrame(() => {
+        scrollRafRef.current = null;
+        const nextKey = detectActiveGroup();
+        if (nextKey && nextKey !== activeGroupKeyProp) {
+          changeByScrollRef.current = true;
+          onActiveGroupChange?.(nextKey);
+        }
+      });
+    };
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      window.removeEventListener('scroll', onScroll);
+      if (scrollRafRef.current != null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
+  }, [detectActiveGroup, activeGroupKeyProp, onActiveGroupChange]);
+
   const [savedVenueId, setSavedVenueId] = useState(() => (
     formState.venue_id ? String(formState.venue_id) : ''
   ));
@@ -6490,41 +7383,47 @@ function JobsheetEditor({
     }
   }, [businessId, onRefreshDocuments]);
 
-  const [activeGroupKey, setActiveGroupKey] = useState(() => {
-    if (activeGroupKeyProp) return activeGroupKeyProp;
-    const defaultGroup = resolvedGroups.find(group => group.defaultOpen) || resolvedGroups[0];
-    return defaultGroup ? defaultGroup.key : null;
-  });
-
-  useEffect(() => {
-    if (activeGroupKeyProp) {
-      setActiveGroupKey(activeGroupKeyProp);
-      return;
+  // Scroll to a group section and propagate selection upstream
+  const scrollToGroup = useCallback((key) => {
+    const el = sectionRefs.current?.[key];
+    if (!el) return;
+    const sticky = document.getElementById('jobsheet-sticky-header');
+    const stickyHeight = sticky ? (sticky.getBoundingClientRect().height || 0) : stickyTop;
+    const extraGap = 12;
+    const top = el.getBoundingClientRect().top + window.scrollY - (stickyHeight + extraGap);
+    try {
+      window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+    } catch (_) {
+      window.scrollTo(0, Math.max(top, 0));
     }
-    setActiveGroupKey(prev => {
-      if (prev && resolvedGroups.some(group => group.key === prev)) return prev;
-      const fallbackGroup = resolvedGroups.find(group => group.defaultOpen) || resolvedGroups[0] || null;
-      return fallbackGroup ? fallbackGroup.key : null;
-    });
-  }, [resolvedGroups, activeGroupKeyProp]);
+  }, [stickyTop]);
 
   const setGroupKey = useCallback((nextKey) => {
     if (!nextKey) return;
     if (!resolvedGroups.some(group => group.key === nextKey)) return;
-    setActiveGroupKey(nextKey);
     onActiveGroupChange?.(nextKey);
-  }, [resolvedGroups, onActiveGroupChange]);
+    ensureExpanded(nextKey);
+    // Defer to ensure refs exist
+    setTimeout(() => scrollToGroup(nextKey), 0);
+  }, [resolvedGroups, onActiveGroupChange, scrollToGroup, ensureExpanded]);
 
-  const activeGroup = useMemo(() => (
-    resolvedGroups.find(group => group.key === activeGroupKey) || null
-  ), [resolvedGroups, activeGroupKey]);
-
+  // When an external action requests a specific section (e.g., 'documents'),
+  // honor it by scrolling into view.
   useEffect(() => {
-    if (!activeGroup && resolvedGroups.length) {
-      const fallbackGroup = resolvedGroups.find(group => group.defaultOpen) || resolvedGroups[0] || null;
-      if (fallbackGroup) setGroupKey(fallbackGroup.key);
+    if (activeGroupKeyProp) {
+      const key = String(activeGroupKeyProp);
+      if (resolvedGroups.some(g => g.key === key)) {
+        ensureExpanded(key);
+        if (changeByScrollRef.current) {
+          // Skip programmatic scroll when the change came from natural scrolling
+          changeByScrollRef.current = false;
+        } else {
+          // Defer for layout
+          setTimeout(() => scrollToGroup(key), 0);
+        }
+      }
     }
-  }, [activeGroup, resolvedGroups, setGroupKey]);
+  }, [activeGroupKeyProp, resolvedGroups, scrollToGroup, ensureExpanded]);
 
   const handleSelectSavedVenue = (venueIdValue) => {
     const value = venueIdValue || '';
@@ -6640,18 +7539,17 @@ function JobsheetEditor({
         </div>
 
       <div className="flex flex-col gap-6 lg:flex-row">
-        <nav className="lg:w-64 flex-shrink-0 lg:sticky lg:top-4 self-start">
-          <div className="space-y-2" role="tablist" aria-orientation="vertical">
+        <nav className="lg:w-64 flex-shrink-0 lg:sticky self-start" style={{ top: stickyTop }}>
+          <div className="space-y-2" role="navigation" aria-orientation="vertical" aria-label="Jump to section">
             {resolvedGroups.map(group => {
-              const isActive = activeGroup?.key === group.key;
+              const isActive = activeGroupKeyProp && group.key === activeGroupKeyProp;
               const icon = group.icon ?? getGroupIcon(group.key);
               return (
                 <button
                   key={group.key}
                   type="button"
-                  role="tab"
-                  aria-selected={isActive}
                   onClick={() => setGroupKey(group.key)}
+                  aria-current={isActive ? 'page' : undefined}
                   className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
                 >
                   <span className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-lg transition ${isActive ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200 group-hover:text-slate-700'}`}>
@@ -6670,154 +7568,177 @@ function JobsheetEditor({
         </nav>
 
         <div className="flex-1">
-          {activeGroup ? (
-            <section className="bg-white border border-slate-200 rounded-lg p-5 space-y-5">
-              <div>
-                <div className="flex items-center gap-2">
-                  <h3 className="text-lg font-semibold text-slate-700">{activeGroup.title}</h3>
-                  {activeGroup.key === 'documents' ? (
-                    <>
+          {resolvedGroups.length ? (
+            resolvedGroups.map(group => (
+              <section
+                key={group.key}
+                id={`jobsheet-section-${group.key}`}
+                ref={el => { if (el) sectionRefs.current[group.key] = el; }}
+                className="bg-white border border-slate-200 rounded-lg p-5 space-y-5"
+                style={{ scrollMarginTop: stickyTop + 8 }}
+              >
+                <div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-semibold text-slate-700">{group.title}</h3>
+                      {group.key === 'documents' ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              try {
+                                const res = await window.api?.ensureJobsheetFolder?.({ businessId, jobsheetId, jobsheetSnapshot: formState });
+                                const folderPath = res?.folder_path || res?.path || '';
+                                if (!folderPath) throw new Error('Unable to resolve folder path');
+                                const open = await window.api?.openPath?.(folderPath);
+                                if (open && open.ok === false) throw new Error(open.message || 'Unable to open folder');
+                                await onRefreshDocuments?.();
+                              } catch (err) {
+                                window.alert(err?.message || 'Unable to open job folder');
+                              }
+                            }}
+                            className="inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          >
+                            <span aria-hidden>📂</span>
+                            <span>Open job folder</span>
+                          </button>
+                        </>
+                      ) : null}
+                    </div>
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={async () => {
-                          try {
-                            const res = await window.api?.ensureJobsheetFolder?.({ businessId, jobsheetId, jobsheetSnapshot: formState });
-                            const folderPath = res?.folder_path || res?.path || '';
-                            if (!folderPath) throw new Error('Unable to resolve folder path');
-                            const open = await window.api?.openPath?.(folderPath);
-                            if (open && open.ok === false) throw new Error(open.message || 'Unable to open folder');
-                            await onRefreshDocuments?.();
-                          } catch (err) {
-                            window.alert(err?.message || 'Unable to open job folder');
-                          }
-                        }}
-                        className="inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        aria-expanded={!isGroupCollapsed(group.key)}
+                        aria-controls={`jobsheet-section-${group.key}`}
+                        onClick={() => toggleGroup(group.key)}
+                        className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        title={isGroupCollapsed(group.key) ? 'Expand section' : 'Collapse section'}
                       >
-                        <span aria-hidden>📂</span>
-                        <span>Open job folder</span>
+                        <span aria-hidden>{isGroupCollapsed(group.key) ? '▸' : '▾'}</span>
+                        <span className="hidden sm:inline">{isGroupCollapsed(group.key) ? 'Expand' : 'Collapse'}</span>
                       </button>
-                    </>
+                    </div>
+                  </div>
+                  {group.description && !isGroupCollapsed(group.key) ? (
+                    <p className="mt-1 text-sm text-slate-500">{group.description}</p>
                   ) : null}
                 </div>
-                {activeGroup.description ? (
-                  <p className="mt-1 text-sm text-slate-500">{activeGroup.description}</p>
-                ) : null}
-              </div>
-              <div className="space-y-4">
-                {activeGroup.fields.map(field => {
-                  if (field.component === 'pricingPanel') {
-                    return pricingConfig ? (
-                      <PricingPanel
-                        key={field.name}
-                        pricingConfig={pricingConfig}
-                        pricingTotals={pricingTotals}
-                        formState={formState}
-                        onChange={handleFieldChange}
-                        hasExisting={hasExisting}
-                        onUpdateSingerPool={onUpdateSingerPool}
+                {!isGroupCollapsed(group.key) ? (
+                  <div className="space-y-4">
+                    {group.fields.map(field => {
+                      if (field.component === 'pricingPanel') {
+                        return pricingConfig ? (
+                          <PricingPanel
+                            key={field.name}
+                          pricingConfig={pricingConfig}
+                          pricingTotals={pricingTotals}
+                          formState={formState}
+                          onChange={handleFieldChange}
+                          hasExisting={hasExisting}
+                          onUpdateSingerPool={onUpdateSingerPool}
                         onFocusPricingPanel={() => setGroupKey('pricing')}
-                      />
-                    ) : (
-                      <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
-                        Loading pricing configuration…
-                      </div>
-                    );
-                  }
-                  if (field.component === 'gigInfoPanel') {
-                    return (
-                      <GigInfoPanel
-                        key="gigInfoPanel"
-                        formState={formState}
-                        onChange={handleFieldChange}
-                        businessId={Number(businessId) || 0}
-                        jobsheetId={jobsheetId}
-                      />
-                    );
-                  }
-                  if (field.component === 'productionPanel') {
-                    return (
-                      <ProductionPanel
-                        key={field.name}
-                        formState={formState}
-                        onChange={handleFieldChange}
-                        totals={pricingTotals}
-                      />
-                    );
-                  }
-                  if (field.component === 'documentsPanel') {
-                    return (
-                      <DocumentsInlinePanel
-                        key="documentsPanel"
-                        jobsheetId={jobsheetId}
-                        jobsheetStatus={formState.status}
-                        documentDefinitions={documentDefinitions}
-                        documents={documents}
-                        loading={documentsLoading}
-                        definitionsLoading={definitionsLoading}
-                        error={documentsError}
-                        onRefresh={onRefreshDocuments}
-                        onGenerate={onGenerateDocument}
-                        onExportPdf={onExportPdf}
-                        onToggleLock={handleToggleDefinitionLockInline}
-                        locksOverride={definitionLocks}
-                        onOpenFile={onOpenDocumentFile}
-                        onRevealFile={onRevealDocument}
-                        onDelete={onDeleteDocument}
-                        documentFolder={documentFolder}
-                        businessId={businessId}
-                        lastInvoiceNumber={business?.last_invoice_number}
-                        jobsheetSnapshot={formState}
-                      />
-                    );
-                  }
-                  if (field.component === 'savedVenueSelector') {
-                    return (
-                      <SavedVenueSelector
-                        key={field.name}
-                        label={field.label}
-                        value={savedVenueId}
-                        venues={venues}
-                        onSelect={handleSelectSavedVenue}
-                        onSaveCurrent={() => onSaveVenue()}
-                        onCreateNew={() => openVenueModal()}
-                        onEdit={handleEditSavedVenue}
-                        onDelete={handleDeleteSavedVenue}
-                        saving={venueSaving}
-                      />
-                    );
-                  }
+                        />
+                      ) : (
+                        <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                          Loading pricing configuration…
+                        </div>
+                      );
+                    }
+                    if (field.component === 'gigInfoPanel') {
+                      return (
+                        <GigInfoPanel
+                          key="gigInfoPanel"
+                          formState={formState}
+                          onChange={handleFieldChange}
+                          businessId={Number(businessId) || 0}
+                          jobsheetId={jobsheetId}
+                        />
+                      );
+                    }
+                    if (field.component === 'productionPanel') {
+                      return (
+                        <ProductionPanel
+                          key={field.name}
+                          formState={formState}
+                          onChange={handleFieldChange}
+                          totals={pricingTotals}
+                        />
+                      );
+                    }
+                    if (field.component === 'documentsPanel') {
+                      return (
+                        <DocumentsInlinePanel
+                          key="documentsPanel"
+                          jobsheetId={jobsheetId}
+                          jobsheetStatus={formState.status}
+                          documentDefinitions={documentDefinitions}
+                          documents={documents}
+                          loading={documentsLoading}
+                          definitionsLoading={definitionsLoading}
+                          error={documentsError}
+                          onRefresh={onRefreshDocuments}
+                          onGenerate={onGenerateDocument}
+                          onExportPdf={onExportPdf}
+                          onToggleLock={handleToggleDefinitionLockInline}
+                          locksOverride={definitionLocks}
+                          onOpenFile={onOpenDocumentFile}
+                          onRevealFile={onRevealDocument}
+                          onDelete={onDeleteDocument}
+                          documentFolder={documentFolder}
+                          businessId={businessId}
+                          lastInvoiceNumber={business?.last_invoice_number}
+                          jobsheetSnapshot={formState}
+                        />
+                      );
+                    }
+                    if (field.component === 'savedVenueSelector') {
+                      return (
+                        <SavedVenueSelector
+                          key={field.name}
+                          label={field.label}
+                          value={savedVenueId}
+                          venues={venues}
+                          onSelect={handleSelectSavedVenue}
+                          onSaveCurrent={() => onSaveVenue()}
+                          onCreateNew={() => openVenueModal()}
+                          onEdit={handleEditSavedVenue}
+                          onDelete={handleDeleteSavedVenue}
+                          saving={venueSaving}
+                        />
+                      );
+                    }
 
-                  const resolvedValue = field.name === 'status'
-                    ? (formState.status || 'enquiry')
-                    : field.type === 'checkbox'
-                      ? Boolean(formState[field.name])
-                      : formState[field.name] ?? '';
+                    const resolvedValue = field.name === 'status'
+                      ? (formState.status || 'enquiry')
+                      : field.type === 'checkbox'
+                        ? Boolean(formState[field.name])
+                        : formState[field.name] ?? '';
 
-                  return (
-                    <Field
-                      key={field.name}
-                      label={field.label}
-                      type={field.type || 'text'}
-                      step={field.step}
-                      rows={field.rows}
-                      hint={field.hint}
-                      readOnly={field.name === 'venue_name' ? Boolean(formState.venue_same_as_client) : field.readOnly}
-                      component={field.component}
-                      options={field.options}
-                      value={resolvedValue}
-                      onChange={value => handleFieldChange(
-                        field.name,
-                        field.type === 'checkbox' ? Boolean(value) : value
-                      )}
-                    />
-                  );
-                })}
-              </div>
-            </section>
+                     return (
+                       <Field
+                         key={field.name}
+                         label={field.label}
+                         type={field.type || 'text'}
+                         step={field.step}
+                         rows={field.rows}
+                         hint={field.hint}
+                         readOnly={field.name === 'venue_name' ? Boolean(formState.venue_same_as_client) : field.readOnly}
+                         component={field.component}
+                         options={field.options}
+                         value={resolvedValue}
+                         onChange={value => handleFieldChange(
+                           field.name,
+                           field.type === 'checkbox' ? Boolean(value) : value
+                         )}
+                       />
+                     );
+                  })}
+                  </div>
+                ) : null}
+              </section>
+            ))
           ) : (
-            <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-500">
-              No sections available.
-            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-500">No sections available.</div>
           )}
         </div>
       </div>
@@ -7033,6 +7954,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     try {
       const persist = window.localStorage.getItem('app:persistUiState') === 'true';
       if (!persist) return null;
+      const visibleKey = `ui:${business.id}:inlineVisible`;
+      const isVisible = window.localStorage.getItem(visibleKey) === 'true';
+      if (!isVisible) return null;
       const key = `ui:${business.id}:activeJobsheetId`;
       const raw = window.localStorage.getItem(key);
       const num = raw != null && raw !== '' ? Number(raw) : null;
@@ -7112,6 +8036,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   });
 
   const applyStoredScroll = useCallback(() => {
+    // Keep available for targeted restores, but do not auto-apply on tab switch.
     if (!persistUi || typeof window === 'undefined') return;
     try {
       const y = Number(window.localStorage.getItem(`${PERSIST_PREFIX}scrollY`) || '0');
@@ -7174,7 +8099,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     return () => { if (timer) clearTimeout(timer); };
   }, [documentsLoading]);
 
-  // Restore UI state on mount
+  // Restore UI state on mount (without auto-scrolling)
   useEffect(() => {
     if (!persistUi || typeof window === 'undefined') return;
     try {
@@ -7188,28 +8113,17 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         const idNum = Number(storedJob);
         if (Number.isFinite(idNum)) {
           setActiveJobsheetId(idNum);
-          setInlineEditorTargetId(idNum);
-          setInlineEditorVisible(storedVisible || true);
+          if (storedVisible) {
+            setInlineEditorTargetId(idNum);
+          } else {
+            setInlineEditorTargetId(null);
+          }
+          setInlineEditorVisible(storedVisible);
         }
       }
-      applyStoredScroll();
     } catch (_err) {}
   }, [persistUi, applyStoredScroll]);
-
-  // Re-apply scroll when returning to Jobsheets or when inline editor is shown
-  useEffect(() => {
-    if (!persistUi) return;
-    if (workspaceSection === 'jobsheets') {
-      setTimeout(() => applyStoredScroll(), 60);
-    }
-  }, [persistUi, workspaceSection, applyStoredScroll]);
-
-  useEffect(() => {
-    if (!persistUi) return;
-    if (inlineEditorVisible) {
-      setTimeout(() => applyStoredScroll(), 80);
-    }
-  }, [persistUi, inlineEditorVisible, applyStoredScroll]);
+  // Stop auto-scroll on tab switch; scroll only on explicit actions (open/create)
 
   useEffect(() => {
     if (!DOCUMENT_FEATURES_ENABLED) return () => {};
@@ -7272,8 +8186,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         const exists = mapped.some(job => job?.jobsheet_id != null && Number(job.jobsheet_id) === currentActive);
         if (exists) {
           setActiveJobsheetId(currentActive);
-          setInlineEditorTargetId(currentActive);
-          setInlineEditorVisible(true);
+          // Preserve current visibility; only retarget when already visible
+          setInlineEditorTargetId(prev => (inlineEditorVisible ? currentActive : prev));
+          // Do not force visibility true here; keep user’s last state
         }
       }
     } catch (err) {
@@ -7282,7 +8197,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     } finally {
       setListLoading(false);
     }
-  }, [business.id, normalizeJobsheet, showArchived]);
+  }, [business.id, normalizeJobsheet, showArchived, inlineEditorVisible]);
 
   const loadDocumentTree = useCallback(async () => {
     if (!DOCUMENT_FEATURES_ENABLED) {
@@ -7532,6 +8447,11 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
 
     try {
       setError('');
+      if (doc.is_locked) {
+        const unlock = window.confirm('This document is locked. Unlock and delete it now?');
+        if (!unlock) return;
+        try { await window.api?.setDocumentLock?.(doc.document_id, false); } catch (_) {}
+      }
       await window.api?.deleteDocument?.(doc.document_id, { removeFile });
       setMessage('Document deleted');
       await refreshDocuments();
@@ -7800,6 +8720,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   const handleDeleteSelected = useCallback(async () => {
     if (!selectedDocuments.size) return;
     const ids = Array.from(selectedDocuments);
+    const lockedIds = (normalizedDocuments || [])
+      .filter(doc => ids.includes(doc.document_id) && doc.is_locked)
+      .map(doc => doc.document_id);
     const confirmMessage = ids.length === 1
       ? 'Delete the selected document?'
       : `Delete ${ids.length} selected documents?`;
@@ -7813,6 +8736,11 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
 
     try {
       setError('');
+      if (lockedIds.length) {
+        const doUnlock = window.confirm(`${lockedIds.length} selected document(s) are locked. Unlock and delete all?`);
+        if (!doUnlock) return;
+        await Promise.all(lockedIds.map(id => window.api?.setDocumentLock?.(id, false)));
+      }
       await Promise.all(ids.map(id => window.api?.deleteDocument?.(id, { removeFile: removeFiles })));
       setMessage(ids.length === 1 ? 'Document deleted' : 'Selected documents deleted');
       await refreshDocuments();
@@ -7845,6 +8773,28 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setError(err?.message || 'Unable to delete selected documents');
     }
   }, [selectedDocuments, normalizedDocuments, refreshDocuments, business.id]);
+
+  const handleUnlockSelected = useCallback(async () => {
+    if (!selectedDocuments.size) return;
+    const ids = Array.from(selectedDocuments);
+    const lockedIds = (normalizedDocuments || [])
+      .filter(doc => ids.includes(doc.document_id) && doc.is_locked)
+      .map(doc => doc.document_id);
+    if (!lockedIds.length) return;
+    const confirmMessage = lockedIds.length === 1
+      ? 'Unlock the selected document?'
+      : `Unlock ${lockedIds.length} selected documents?`;
+    if (!window.confirm(confirmMessage)) return;
+    try {
+      await Promise.all(lockedIds.map(id => window.api?.setDocumentLock?.(id, false)));
+      setMessage(lockedIds.length === 1 ? 'Document unlocked' : 'Selected documents unlocked');
+      await refreshDocuments();
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to unlock selected documents', err);
+      setError(err?.message || 'Unable to unlock selected documents');
+    }
+  }, [selectedDocuments, normalizedDocuments, refreshDocuments]);
 
   const normalizedDocuments = useMemo(() => {
     return (documents || []).map(doc => {
@@ -8034,6 +8984,12 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   ), [documentColumnsState]);
 
   const canDeleteSelected = selectedCount > 0 && !documentsLoading;
+  const hasLockedSelected = useMemo(() => {
+    if (!selectedCount) return false;
+    const ids = new Set(Array.from(selectedDocuments));
+    return (normalizedDocuments || []).some(doc => ids.has(doc.document_id) && doc.is_locked);
+  }, [selectedCount, selectedDocuments, normalizedDocuments]);
+  const canUnlockSelected = selectedCount > 0 && hasLockedSelected && !documentsLoading;
 
   const documentsGroupLabel = DOCUMENT_GROUP_OPTIONS.find(option => option.value === documentsGroup)?.label || 'All Documents';
   const headerSubtitle = documentsGroup === 'none'
@@ -8221,7 +9177,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                           <IconButton
                             label="Delete document"
                             onClick={() => handleDeleteDocumentRecord(doc)}
-                            disabled={doc?.document_id == null || isLocked}
+                            disabled={doc?.document_id == null}
                             className="border-red-200 text-red-600 hover:bg-red-50"
                           >
                             <DeleteIcon />
@@ -8305,7 +9261,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                   <div className="flex items-center gap-1.5">
                     <IconButton label="Open" onClick={() => handleOpenDocumentFile(doc.file_path)} disabled={!generated}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
                     <IconButton label="Reveal in Finder" onClick={() => handleRevealDocument(doc.file_path)} disabled={!generated}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
-                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!generated || doc?.document_id == null || locked} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!generated || doc?.document_id == null} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
                   </div>
                 </div>
               </div>
@@ -8355,7 +9311,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                   <div className="flex items-center gap-1.5">
                     <IconButton label="Open" onClick={() => handleOpenDocumentFile(doc.file_path)} disabled={!exported}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
                     <IconButton label="Reveal in Finder" onClick={() => handleRevealDocument(doc.file_path)} disabled={!exported}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
-                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!exported || doc?.document_id == null || locked} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
+                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!exported || doc?.document_id == null} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
                   </div>
                 </div>
               </div>
@@ -8394,12 +9350,30 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     });
   }, [business.id, business.business_name]);
 
+  const scrollInlineEditorIntoView = useCallback(() => {
+    try {
+      const anchor = document.getElementById('inline-jobsheet-editor');
+      if (!anchor) return;
+      const sticky = document.getElementById('jobsheet-sticky-header');
+      const stickyHeight = sticky ? (sticky.getBoundingClientRect().height || 0) : 120;
+      const extraGap = 12;
+      const top = anchor.getBoundingClientRect().top + window.scrollY - (stickyHeight + extraGap);
+      try {
+        window.scrollTo({ top: Math.max(top, 0), behavior: 'smooth' });
+      } catch (_err) {
+        window.scrollTo(0, Math.max(top, 0));
+      }
+    } catch (_err) {}
+  }, []);
+
   const handleNew = useCallback(() => {
     setActiveJobsheetId(null);
     setInlineEditorTargetId(null);
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => prev + 1);
-  }, []);
+    // Scroll to inline editor after it mounts
+    setTimeout(() => scrollInlineEditorIntoView(), 100);
+  }, [scrollInlineEditorIntoView]);
 
   const handleOpenExisting = useCallback((jobsheetId) => {
     if (!jobsheetId) return;
@@ -8408,7 +9382,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorTargetId(numericId);
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => (numericId !== inlineEditorTargetId ? prev + 1 : prev));
-  }, [inlineEditorTargetId]);
+    // Scroll to inline editor after it mounts
+    setTimeout(() => scrollInlineEditorIntoView(), 100);
+  }, [inlineEditorTargetId, scrollInlineEditorIntoView]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
     if (!jobsheetId) return;
@@ -8531,7 +9507,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     <div className="min-h-screen bg-slate-100">
       <ToastOverlay notices={workspaceToasts} />
       <header className="bg-white border-b border-slate-200">
-        <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+        <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
             <p className="text-sm text-slate-500">Manage jobsheets, documents, and templates in one workspace.</p>
@@ -8540,10 +9516,10 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
+      <main className="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
 
         <div className="flex flex-col gap-6 lg:flex-row">
-          <nav className="sticky top-4 z-30 flex-shrink-0 self-start lg:w-64">
+          <nav className="sticky top-4 z-30 flex-shrink-0 self-start md:w-56 lg:w-64">
             <div className="space-y-2" role="tablist" aria-orientation="vertical">
               {WORKSPACE_SECTIONS.map(section => {
                 const isActive = workspaceSection === section.key;
@@ -8590,14 +9566,16 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                   onSort={handleSort}
                   activeJobsheetId={activeJobsheetId}
                 />
-                <InlineJobsheetEditorPanel
+                <div id="inline-jobsheet-editor">
+                  <InlineJobsheetEditorPanel
                   business={business}
                   visible={inlineEditorVisible}
                   jobsheetId={inlineEditorTargetId}
                   sessionKey={inlineEditorKey}
                   onClose={handleCloseInlineEditor}
                   onOpenInWindow={handlePopoutEditor}
-                />
+                  />
+                </div>
               </section>
             ) : null}
 
@@ -8649,6 +9627,14 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                             className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
                           >
                             Open folder
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleUnlockSelected}
+                            disabled={!canUnlockSelected}
+                            className="inline-flex items-center rounded border border-green-200 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            Unlock selected
                           </button>
                           <button
                             type="button"
@@ -10078,6 +11064,7 @@ function JobsheetEditorWindow({
   const initialLoadRef = useRef(true);
   const creatingRef = useRef(false);
   const previousJobsheetIdRef = useRef(initialResolvedJobsheetId);
+  const nameDateRef = useRef({ name: '', date: '' });
 
   const storagePrefix = useMemo(() => (
     `jobsheetEditor:${isInline ? 'inline' : 'window'}:${numericBusinessId}:`
@@ -10124,6 +11111,13 @@ function JobsheetEditorWindow({
     if (!sectionRestoredRef.current) return;
     storeSection(id, activeEditorSection);
   }, [jobsheetId, activeEditorSection, storeSection]);
+
+  // Track client name/date for folder and filenames; initialize on load
+  useEffect(() => {
+    const nm = String(formState?.client_name || '');
+    const dt = String(formState?.event_date || '');
+    nameDateRef.current = { name: nm, date: dt };
+  }, [jobsheetId]);
 
   // Note: restoration of the active editor section is handled on mount
   // via getStoredSection when a jobsheet is loaded; no dependency on
@@ -10424,6 +11418,11 @@ function JobsheetEditorWindow({
 
     try {
       setJobsheetDocumentsError('');
+      if (doc.is_locked) {
+        const proceed = window.confirm('This document is locked. Unlock and delete it (including the file on disk)?');
+        if (!proceed) return;
+        try { await window.api?.setDocumentLock?.(doc.document_id, false); } catch (_) {}
+      }
       await window.api?.deleteDocument?.(doc.document_id, { removeFile });
       setMessage('Document deleted');
       await refreshJobsheetDocuments();
@@ -11068,6 +12067,16 @@ function JobsheetEditorWindow({
       try {
         const payload = preparePayload(formState, numericBusinessId);
         await api.updateAhmenJobsheet(jobsheetId, payload);
+        // If name or date changed, rename folder and filenames
+        try {
+          const prev = nameDateRef.current || { name: '', date: '' };
+          const currentName = String(formState?.client_name || '');
+          const currentDate = String(formState?.event_date || '');
+          if (prev.name !== currentName || prev.date !== currentDate) {
+            await window.api?.renameJobsheetArtifacts?.({ businessId: numericBusinessId, jobsheetId });
+            nameDateRef.current = { name: currentName, date: currentDate };
+          }
+        } catch (_) {}
         setMessage('Saved');
         window.api?.notifyJobsheetChange?.({
           type: 'jobsheet-updated',
@@ -11100,6 +12109,15 @@ function JobsheetEditorWindow({
     try {
       const payload = preparePayload(currentState, numericBusinessId);
       await api.updateAhmenJobsheet(jobsheetId, payload);
+      try {
+        const prev = nameDateRef.current || { name: '', date: '' };
+        const currentName = String(currentState?.client_name || '');
+        const currentDate = String(currentState?.event_date || '');
+        if (prev.name !== currentName || prev.date !== currentDate) {
+          await window.api?.renameJobsheetArtifacts?.({ businessId: numericBusinessId, jobsheetId });
+          nameDateRef.current = { name: currentName, date: currentDate };
+        }
+      } catch (_) {}
       window.api?.notifyJobsheetChange?.({
         type: 'jobsheet-updated',
         businessId: numericBusinessId,
@@ -11732,11 +12750,11 @@ function JobsheetEditorWindow({
     <>
       {isInline ? (
         // Make the summary sticky in inline variant too
-        <div className="sticky top-0 z-20 py-2 bg-slate-100/95 backdrop-blur">
+        <div id="jobsheet-sticky-header" className="sticky top-0 z-20 py-2 bg-slate-100/95 backdrop-blur">
           {summaryCard}
         </div>
       ) : (
-        <div className="sticky top-0 z-20 -mx-6 px-6 pt-2 pb-4 bg-slate-100/95 backdrop-blur">
+        <div id="jobsheet-sticky-header" className="sticky top-0 z-20 -mx-6 px-6 pt-2 pb-4 bg-slate-100/95 backdrop-blur">
           {summaryCard}
         </div>
       )}

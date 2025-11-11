@@ -3557,6 +3557,28 @@ module.exports = {
         updates.push('file_path = ?');
         params.push(data.file_path);
       }
+      if (data.jobsheet_id !== undefined) {
+        const jid = data.jobsheet_id == null ? null : Number(data.jobsheet_id);
+        updates.push('jobsheet_id = ?');
+        params.push(Number.isInteger(jid) ? jid : null);
+      }
+      if (data.invoice_variant !== undefined) {
+        updates.push('invoice_variant = ?');
+        params.push(data.invoice_variant);
+      }
+      // Allow editing identity fields visible in UI
+      if (data.client_name !== undefined) {
+        updates.push('client_name = ?');
+        params.push(data.client_name);
+      }
+      if (data.event_name !== undefined) {
+        updates.push('event_name = ?');
+        params.push(data.event_name);
+      }
+      if (data.event_date !== undefined) {
+        updates.push('event_date = ?');
+        params.push(data.event_date);
+      }
 
       if (!updates.length) {
         resolve();
@@ -3841,6 +3863,51 @@ module.exports = {
       );
     });
   },
+  getDocumentsByNumber: (businessId, docType, number) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      const type = (docType || '').toString().toLowerCase();
+      const num = Number(number);
+      if (!Number.isInteger(id) || !type || !Number.isInteger(num)) { resolve([]); return; }
+      db.all(
+        `SELECT * FROM documents WHERE business_id = ? AND lower(doc_type) = ? AND number = ?`,
+        [id, type, num],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(Array.isArray(rows) ? rows : []);
+        }
+      );
+    });
+  },
+  documentNumberExists: (businessId, docType, number) => {
+    return new Promise((resolve, reject) => {
+      const id = Number(businessId);
+      const type = (docType || '').toString().toLowerCase();
+      const num = Number(number);
+      if (!Number.isInteger(id) || !type || !Number.isInteger(num)) { resolve(false); return; }
+      db.all(
+        `SELECT document_id, file_path FROM documents WHERE business_id = ? AND lower(doc_type) = ? AND number = ?`,
+        [id, type, num],
+        async (err, rows) => {
+          if (err) { reject(err); return; }
+          const list = Array.isArray(rows) ? rows : [];
+          if (!list.length) { resolve(false); return; }
+          try {
+            // If any has an existing file, it's taken. Otherwise, purge orphans and report available.
+            const exists = list.some(r => r && r.file_path && fs.existsSync(r.file_path));
+            if (exists) { resolve(true); return; }
+            // Clean up phantom rows (no existing file)
+            await Promise.all(list.map(r => new Promise((res) => {
+              db.run(`DELETE FROM documents WHERE document_id = ?`, [r.document_id], () => res());
+            })));
+            resolve(false);
+          } catch (e) {
+            resolve(false);
+          }
+        }
+      );
+    });
+  },
   setLastInvoiceNumber: (businessId, nextVal) => {
     return new Promise((resolve, reject) => {
       const id = Number(businessId);
@@ -3973,13 +4040,27 @@ module.exports = {
 
           try {
             const inserted = await module.exports.addDocument(payload);
-            // Update reminder_date/payed if needed
             if (reminderDate != null) {
               try { await module.exports.updateDocumentStatus(inserted.id, { reminder_date: reminderDate }); } catch(_){}
             }
             resolve({ id: inserted.id, number: inserted.number });
           } catch (e) {
-            reject(e);
+            // Fallback: if requested number collides, insert without a number and then set it explicitly
+            try {
+              const fallback = { ...payload };
+              delete fallback.number;
+              const ins2 = await module.exports.addDocument(fallback);
+              // Assign requested number, allowing duplicates per relaxed rule
+              if (requestedNumber != null && Number.isInteger(requestedNumber)) {
+                try { await module.exports.setDocumentNumber(ins2.id, requestedNumber); } catch (_) {}
+              }
+              if (reminderDate != null) {
+                try { await module.exports.updateDocumentStatus(ins2.id, { reminder_date: reminderDate }); } catch(_){}
+              }
+              resolve({ id: ins2.id, number: requestedNumber != null ? requestedNumber : ins2.number });
+            } catch (ex2) {
+              reject(e);
+            }
           }
         } catch (ex) {
           reject(ex);
@@ -4007,32 +4088,23 @@ module.exports = {
           const businessId = row.business_id;
           if (!Number.isInteger(businessId)) { reject(new Error('Invalid business id for document')); return; }
 
-          // Ensure uniqueness within this business/type
-          db.get(
-            `SELECT document_id FROM documents WHERE business_id = ? AND lower(doc_type) = 'invoice' AND number = ? AND document_id <> ? LIMIT 1`,
-            [businessId, num, id],
-            (dupErr, existing) => {
-              if (dupErr) { reject(dupErr); return; }
-              if (existing) { reject(new Error('Invoice number already exists')); return; }
-
-              db.run(
-                `UPDATE documents SET number = ?, updated_at = datetime('now') WHERE document_id = ?`,
-                [num, id],
-                function (updateErr) {
-                  if (updateErr) { reject(updateErr); return; }
-                  // Sync the last_invoice_number to the current max for safety
-                  db.get(
-                    `SELECT MAX(number) AS maxnum FROM documents WHERE business_id = ? AND lower(doc_type) = 'invoice'`,
-                    [businessId],
-                    (maxErr, maxRow) => {
-                      if (maxErr) { /* ignore sync error */ resolve(); return; }
-                      const maxNum = maxRow?.maxnum != null ? Number(maxRow.maxnum) : 0;
-                      db.run(
-                        `UPDATE business_settings SET last_invoice_number = ? WHERE id = ?`,
-                        [maxNum, businessId],
-                        function (_syncErr) { resolve(); }
-                      );
-                    }
+          // Allow duplicate numbers for historical cases; update directly and keep counter in sync
+          db.run(
+            `UPDATE documents SET number = ?, updated_at = datetime('now') WHERE document_id = ?`,
+            [num, id],
+            function (updateErr) {
+              if (updateErr) { reject(updateErr); return; }
+              // Sync the last_invoice_number to the current max for safety
+              db.get(
+                `SELECT MAX(number) AS maxnum FROM documents WHERE business_id = ? AND lower(doc_type) = 'invoice'`,
+                [businessId],
+                (maxErr, maxRow) => {
+                  if (maxErr) { /* ignore sync error */ resolve(); return; }
+                  const maxNum = maxRow?.maxnum != null ? Number(maxRow.maxnum) : 0;
+                  db.run(
+                    `UPDATE business_settings SET last_invoice_number = ? WHERE id = ?`,
+                    [maxNum, businessId],
+                    function (_syncErr) { resolve(); }
                   );
                 }
               );

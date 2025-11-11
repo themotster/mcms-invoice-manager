@@ -888,6 +888,9 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
               if (dt) {
                 cell.value = dt;
                 applyNumberFormat(cell, { data_type: 'date' });
+              } else if (typeof resolved === 'string') {
+                // Allow non-date strings like "On receipt"
+                cell.value = resolved;
               } else {
                 cell.value = formatDateHuman(resolved) || '';
               }
@@ -950,6 +953,8 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
                   if (dt) {
                     cell.value = dt;
                     applyNumberFormat(cell, { data_type: 'date' });
+                  } else if (typeof resolved === 'string') {
+                    cell.value = resolved; // keep plain text like "On receipt"
                   } else {
                     cell.value = formatDateHuman(resolved);
                   }
@@ -974,6 +979,8 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
               if (dt) {
                 cell.value = dt;
                 applyNumberFormat(cell, { data_type: 'date' });
+              } else if (typeof resolved === 'string') {
+                cell.value = resolved;
               } else {
                 cell.value = formatDateHuman(resolved) || '';
               }
@@ -1175,10 +1182,12 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
     '-e', 'end try',
     '-e', 'end repeat',
     '-e', 'if wb is missing value then error "Unable to open workbook"',
+    // Ensure we always have a reference to the active sheet for setup
+    '-e', 'set theSheet to active sheet of wb',
     // If stamping info was provided, update the cell value on the target or active sheet before export
     '-e', 'if stampCell is not missing value and stampText is not missing value then',
     '-e', 'try',
-    '-e', 'set theSheet to active sheet of wb',
+    // theSheet already set; may be reassigned below if a specific sheet is found
     '-e', 'if stampSheetName is not missing value then',
     '-e', 'try',
     '-e', 'set theSheet to worksheet stampSheetName of wb',
@@ -1203,6 +1212,17 @@ async function saveWorkbookAsPdf(sourcePath, targetPath, _options = {}) {
     '-e', 'set value of range stampCell of theSheet to stampText',
     '-e', 'end try',
     '-e', 'end if',
+    // Enforce page setup: one page wide, unlimited tall, and constrain print area to used range
+    '-e', 'try',
+    '-e', 'set ps to page setup object of theSheet',
+    '-e', 'set zoom of ps to false',
+    '-e', 'set fit to pages wide of ps to 1',
+    '-e', 'set fit to pages tall of ps to false',
+    '-e', 'try',
+    '-e', 'set rng to used range of theSheet',
+    '-e', 'set print area of ps to (get address of rng)',
+    '-e', 'end try',
+    '-e', 'end try',
     '-e', 'set wbName to name of wb',
     '-e', 'delay 0.2',
     '-e', 'try',
@@ -3831,6 +3851,19 @@ module.exports = {
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(resolvedTemplate);
+    // Enforce page setup to keep layout to one page wide (prevents horizontal overflow across pages)
+    try {
+      workbook.eachSheet(ws => {
+        try {
+          ws.pageSetup = Object.assign({}, ws.pageSetup || {}, {
+            fitToPage: true,
+            fitToWidth: 1,
+            fitToHeight: 0, // unlimited height (multiple pages tall ok)
+            paperSize: 9 // A4
+          });
+        } catch (_) {}
+      });
+    } catch (_) {}
 
     const bindings = await db.getMergeFieldBindingsByTemplate(TEMPLATE_BINDING_KEY);
     const mergeFields = await db.getMergeFields();
@@ -3950,6 +3983,23 @@ module.exports = {
     const resolvedTemplate = path.resolve(templatePath);
     await ensureFileAccessible(resolvedTemplate);
 
+    // If a manual invoice number is provided, purge phantom DB rows with the same number (no file on disk)
+    if (options.invoice_number != null && Number.isFinite(Number(options.invoice_number))) {
+      try {
+        const dupRows = await db.getDocumentsByNumber(businessId, 'invoice', Number(options.invoice_number));
+        if (Array.isArray(dupRows) && dupRows.length) {
+          for (const r of dupRows) {
+            const p = r && r.file_path ? String(r.file_path) : '';
+            let exists = false;
+            try { if (p) { await fs.promises.access(p, fs.constants.F_OK); exists = true; } } catch (_) { exists = false; }
+            if (!exists) {
+              try { await db.deleteDocument(r.document_id); } catch (_) {}
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
     // Compose context
     const payload = {
       business_id: businessId,
@@ -3963,14 +4013,11 @@ module.exports = {
     };
     const context = buildContext(payload, business);
 
-    // Build naming and directories
-    const naming = buildFileName(context, payload, { label: 'Invoice', key: definitionKey });
-    const directory = buildOutputDirectory(business, context, payload, naming.folderName);
+    // Use flat main folder; defer final naming until number known
+    const directory = path.resolve(business.save_path);
     await ensureDirectoryExists(directory);
-
-    // Build workbook path
-    const workbookPath = path.join(directory, `${naming.fileName}`);
-    if (await pathExists(workbookPath)) throw new Error('Workbook already exists');
+    // Temporary workbook path to avoid collisions; will rename after writing
+    let workbookPath = path.join(directory, `.tmp_mcms_invoice_${Date.now()}_${Math.random().toString(36).slice(2)}.xlsx`);
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(resolvedTemplate);
@@ -3988,14 +4035,13 @@ module.exports = {
       if (fieldSlug) placeholderMap.set(fieldSlug, f.field_key);
       if (placeholderSlug) placeholderMap.set(placeholderSlug, f.field_key);
     });
-
     // Also map invoice_code explicitly
     placeholderMap.set('invoice_code', 'invoice_code');
 
     const placeholderKeys = collectPlaceholderKeys(workbook);
     const mcmsKeys = [
       'client_name','client_email','client_phone','client_address1','client_address2','client_town','client_postcode',
-      'issue_date','due_date','total_amount','invoice_code'
+      'invoice_date','due_date','total_amount','invoice_code'
     ];
     const fieldKeySet = new Set(['invoice_code', ...mcmsKeys, ...Array.from(placeholderKeys)]);
     const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
@@ -4010,9 +4056,252 @@ module.exports = {
     ensure('client_address2', 'client.address2');
     ensure('client_town', 'client.town');
     ensure('client_postcode', 'client.postcode');
+    // Map invoice_date to context.issueDate; keep legacy issue_date mapping for compatibility
+    ensure('invoice_date', 'issueDate');
     ensure('issue_date', 'issueDate');
     ensure('due_date', 'dueDate');
     ensure('total_amount', 'totalAmount');
+
+    // Apply explicit field overrides passed from UI to match template tokens exactly
+    const overrides = (options.field_values || options.placeholders || {});
+    if (overrides && typeof overrides === 'object') {
+      for (const [key, value] of Object.entries(overrides)) {
+        if (!key) continue;
+        const exactKey = String(key);
+        let v = value;
+        if (/date/i.test(exactKey)) {
+          const dt = toExcelDate(value);
+          v = dt || value;
+        } else if (typeof value === 'string' && /amount|total|rate|qty|quantity|hours/i.test(exactKey)) {
+          const cleaned = String(value).replace(/[^0-9.\-]+/g, '');
+          const n = Number(cleaned);
+          v = Number.isFinite(n) ? n : value;
+        }
+        valueSources[exactKey] = { source_type: 'literal', literal_value: v };
+        // Make sure replacement can resolve exact and slug forms to this key
+        placeholderMap.set(exactKey.toLowerCase(), exactKey);
+        placeholderMap.set(exactKey.replace(/[^a-z0-9]+/gi, '_'), exactKey);
+      }
+    }
+
+    // Helper: find a specific token cell (e.g., invoice_code) prior to replacement
+    const findTokenCellAddress = (tokenName) => {
+      const m = String(tokenName || '').toLowerCase();
+      let address = '';
+      workbook.eachSheet(ws => {
+        if (address) return;
+        ws.eachRow(row => {
+          row.eachCell(cell => {
+            if (address) return;
+            const v = cell && cell.value;
+            const scan = (text) => {
+              const re = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g; let mm; re.lastIndex = 0;
+              while ((mm = re.exec(text)) !== null) {
+                const key = (mm[1] || '').toLowerCase();
+                if (key === m) { address = cell.address; break; }
+              }
+            };
+            if (typeof v === 'string') scan(v);
+            else if (v && typeof v === 'object' && Array.isArray(v.richText)) {
+              const text = v.richText.map(f => f && f.text ? f.text : '').join('');
+              scan(text);
+            }
+          });
+        });
+      });
+      return address;
+    };
+
+    // Helper: classify item field name from token
+    const classifyItemField = (name) => {
+      const s = String(name || '').toLowerCase();
+      if (/(desc|description|name)$/.test(s)) return 'description';
+      if (/(qty|quantity|hours)$/.test(s)) return 'quantity';
+      if (/unit$/.test(s)) return 'unit';
+      if (/(rate|price|cost)$/.test(s)) return 'rate';
+      if (/(amount|line[_-]?total|total)$/.test(s)) return 'amount';
+      if (/(date)$/.test(s)) return 'date';
+      return '';
+    };
+
+    // Helper: write repeatable item rows based on a template row (or block) containing item tokens
+    const writeRepeatableItemRows = () => {
+      let targetSheet = null;
+      let templateRowNumber = null;
+      let colToField = new Map(); // col -> field
+      let baseBlockRowCount = 1; // number of contiguous template rows with item tokens
+      const tokenRe = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+      workbook.eachSheet(ws => {
+        if (templateRowNumber != null) return;
+        ws.eachRow((row, r) => {
+          if (templateRowNumber != null) return;
+          const mapping = new Map();
+          row.eachCell((cell, c) => {
+            const v = cell && cell.value;
+            const check = (text) => {
+              let m; tokenRe.lastIndex = 0;
+              while ((m = tokenRe.exec(text)) !== null) {
+                const raw = (m[1] || '').toLowerCase();
+                const norm = raw.replace(/[^a-z0-9]+/g, '_');
+                if (norm.startsWith('item')) {
+                  const field = classifyItemField(norm.replace(/^item[_\.]?/, ''));
+                  if (field) mapping.set(c, field);
+                }
+              }
+            };
+            if (typeof v === 'string') check(v);
+            else if (v && typeof v === 'object' && Array.isArray(v.richText)) {
+              const t = v.richText.map(f => f && f.text ? f.text : '').join('');
+              check(t);
+            }
+          });
+          if (mapping.size > 0) {
+            targetSheet = ws; templateRowNumber = r; colToField = mapping;
+            // Probe subsequent contiguous rows to count how many template item rows exist
+            let rr = r + 1;
+            while (true) {
+              const nextRow = ws.getRow(rr);
+              if (!nextRow) break;
+              let hasItemToken = false;
+              nextRow.eachCell((cell) => {
+                const v = cell && cell.value;
+                const scan = (text) => {
+                  let m; tokenRe.lastIndex = 0;
+                  while ((m = tokenRe.exec(text)) !== null) {
+                    const raw = (m[1] || '').toLowerCase();
+                    const norm = raw.replace(/[^a-z0-9]+/g, '_');
+                    if (norm.startsWith('item')) { hasItemToken = true; break; }
+                  }
+                };
+                if (typeof v === 'string') scan(v);
+                else if (v && typeof v === 'object' && Array.isArray(v.richText)) scan(v.richText.map(f => f && f.text ? f.text : '').join(''));
+              });
+              if (hasItemToken) { baseBlockRowCount += 1; rr += 1; }
+              else break;
+            }
+          }
+        });
+      });
+      if (!targetSheet || templateRowNumber == null) return false;
+
+      // If the template already contains multiple item rows, use them first.
+      // Insert extra rows for additional items beyond the base block (duplicate the last row for style)
+      if (items.length > baseBlockRowCount) {
+        const need = items.length - baseBlockRowCount;
+        const dupIndex = templateRowNumber + baseBlockRowCount - 1;
+        for (let i = 0; i < need; i++) {
+          try { targetSheet.duplicateRow(dupIndex, 1, true); } catch (_) {
+            try { targetSheet.spliceRows(dupIndex + 1, 0, []); } catch (_) {}
+          }
+        }
+      } else if (items.length < baseBlockRowCount) {
+        // Clear remaining template item rows if fewer items provided
+        const reReplace = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+        for (let rr = templateRowNumber + items.length; rr < templateRowNumber + baseBlockRowCount; rr++) {
+          const row = targetSheet.getRow(rr);
+          row.eachCell((cell) => {
+            const v = cell && cell.value;
+            const stripItems = (text) => text.replace(reReplace, (_m, keyRaw) => {
+              const k = (keyRaw || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+              if (!k.startsWith('item')) return _m;
+              return '';
+            });
+            if (typeof v === 'string') { cell.value = stripItems(v); }
+            else if (v && typeof v === 'object' && Array.isArray(v.richText)) { const text = v.richText.map(f => f && f.text ? f.text : '').join(''); cell.value = stripItems(text); }
+          });
+        }
+      }
+
+      // Fill each item row
+      const reReplace = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+      items.forEach((it, idx) => {
+        const r = targetSheet.getRow(templateRowNumber + idx);
+        r.eachCell((cell, c) => {
+          const v = cell && cell.value;
+          const field = colToField.get(c) || '';
+          const computeAmount = () => (it.amount != null && Number.isFinite(it.amount))
+            ? it.amount
+            : ((Number.isFinite(it.quantity) && Number.isFinite(it.rate)) ? (it.quantity * it.rate) : null);
+          const replacements = {
+            description: it.description || '',
+            quantity: (it.quantity != null && Number.isFinite(it.quantity)) ? it.quantity : null,
+            unit: it.unit || '',
+            rate: (it.rate != null && Number.isFinite(it.rate)) ? it.rate : null,
+            amount: computeAmount(),
+            date: it.date || it.item_date || null
+          };
+          const applyFormat = (f, ce) => {
+            if (!ce) return;
+            try {
+              if (f === 'rate' || f === 'amount') applyNumberFormat(ce, { data_type: 'number', format: 'currency' });
+              else if (f === 'quantity') applyNumberFormat(ce, { data_type: 'number', format: 'decimal_2' });
+              else if (f === 'date') applyNumberFormat(ce, { data_type: 'date' });
+              if (f === 'description') {
+                ce.alignment = Object.assign({}, ce.alignment || {}, { wrapText: true, vertical: 'top' });
+              }
+            } catch (_) {}
+          };
+
+          // Replace item tokens within the cell text if present
+          if (typeof v === 'string') {
+            // If this column is a typed field (e.g., date), prefer typed value over inline text replacement
+            if (field === 'date') {
+              const dt = toExcelDate(replacements.date);
+              cell.value = dt || '';
+              applyFormat(field, cell);
+            } else {
+              const newText = v.replace(reReplace, (_m, keyRaw) => {
+                const k = (keyRaw || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                if (!k.startsWith('item')) return _m; // leave other tokens for later
+                const f = classifyItemField(k.replace(/^item[_\.]?/, ''));
+                const val = replacements[f];
+                if (val == null) return '';
+                if (typeof val === 'number' && (f === 'rate' || f === 'amount')) return String(val);
+                return String(val);
+              });
+              cell.value = newText;
+              if (field) applyFormat(field, cell);
+            }
+          } else if (v && typeof v === 'object' && Array.isArray(v.richText)) {
+            const text = v.richText.map(f => f && f.text ? f.text : '').join('');
+            if (field === 'date') {
+              const dt = toExcelDate(replacements.date);
+              cell.value = dt || '';
+              applyFormat(field, cell);
+            } else {
+              const newText = text.replace(reReplace, (_m, keyRaw) => {
+                const k = (keyRaw || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                if (!k.startsWith('item')) return _m;
+                const f = classifyItemField(k.replace(/^item[_\.]?/, ''));
+                const val = replacements[f];
+                if (val == null) return '';
+                if (typeof val === 'number' && (f === 'rate' || f === 'amount')) return String(val);
+                return String(val);
+              });
+              cell.value = newText; // flatten to string
+              if (field) applyFormat(field, cell);
+            }
+          } else if (field) {
+            // Set direct typed values when cell is an item field
+            const val = replacements[field];
+            if (val == null) {
+              cell.value = '';
+            } else {
+              if (field === 'date') {
+                const dt = toExcelDate(val);
+                cell.value = dt || '';
+                applyFormat(field, cell);
+              } else {
+                cell.value = val;
+                applyFormat(field, cell);
+              }
+            }
+          }
+        });
+      });
+
+      return true;
+    };
 
     // Helper to fill the line items at an anchor {{items}}
     const writeLineItems = () => {
@@ -4084,6 +4373,7 @@ module.exports = {
     const insert = await db.addDocument({
       business_id: businessId,
       doc_type: 'invoice',
+      number: (options.invoice_number != null && Number.isFinite(Number(options.invoice_number))) ? Number(options.invoice_number) : undefined,
       status: 'issued',
       total_amount: amount,
       balance_due: amount,
@@ -4100,33 +4390,115 @@ module.exports = {
     const suffixCode = number != null ? `INV-${number}` : 'INV';
     const enrichedContext = { ...context, invoiceCode: suffixCode, issueDate, dueDate, totalAmount: amount };
 
-    // Replace placeholders
+    // First, write repeatable item rows (if a template row exists)
+    let itemRowWritten = false;
+    try { if (items.length) itemRowWritten = writeRepeatableItemRows(); } catch (_) { itemRowWritten = false; }
+    // Fallback: write items to a simple anchor {{items}} if present
+    if (!itemRowWritten && items.length) {
+      const writeLineItems = () => {
+        let anchor = null;
+        let anchorSheet = null;
+        workbook.eachSheet(ws => {
+          if (anchor) return;
+          ws.eachRow((row, rowNumber) => {
+            if (anchor) return;
+            row.eachCell((cell, colNumber) => {
+              if (anchor) return;
+              const v = cell && cell.value;
+              const isToken = typeof v === 'string' && /^{{\s*items\s*}}$/i.test(v.trim());
+              if (isToken) { anchor = { row: rowNumber, col: colNumber }; anchorSheet = ws; }
+            });
+          });
+        });
+        if (!anchor || !anchorSheet) return false;
+        try { anchorSheet.getCell(anchor.row, anchor.col).value = ''; } catch (_) {}
+        const sr = anchorSheet.getRow(anchor.row);
+        items.forEach((it, idx) => {
+          const r = anchor.row + idx;
+          const descCell = anchorSheet.getCell(r, anchor.col);
+          const qtyCell = anchorSheet.getCell(r, anchor.col + 1);
+          const unitCell = anchorSheet.getCell(r, anchor.col + 2);
+          const rateCell = anchorSheet.getCell(r, anchor.col + 3);
+          const amtCell = anchorSheet.getCell(r, anchor.col + 4);
+          descCell.value = it.description || '';
+          qtyCell.value = it.quantity != null && Number.isFinite(it.quantity) ? it.quantity : null;
+          unitCell.value = it.unit || '';
+          rateCell.value = it.rate != null && Number.isFinite(it.rate) ? it.rate : null;
+          const amountVal = (it.amount != null && Number.isFinite(it.amount)) ? it.amount : ((Number.isFinite(it.quantity) && Number.isFinite(it.rate)) ? (it.quantity * it.rate) : null);
+          amtCell.value = amountVal;
+          try { if (sr) {
+            const c1 = sr.getCell(anchor.col), c2 = sr.getCell(anchor.col+1), c3 = sr.getCell(anchor.col+2), c4 = sr.getCell(anchor.col+3), c5 = sr.getCell(anchor.col+4);
+            if (c1 && c1.style) descCell.style = { ...c1.style };
+            if (c2 && c2.style) qtyCell.style = { ...c2.style };
+            if (c3 && c3.style) unitCell.style = { ...c3.style };
+            if (c4 && c4.style) rateCell.style = { ...c4.style };
+            if (c5 && c5.style) amtCell.style = { ...c5.style };
+          } } catch (_) {}
+          try { applyNumberFormat(rateCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
+          try { applyNumberFormat(amtCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
+        });
+        return true;
+      };
+      try { writeLineItems(); } catch (_) {}
+    }
+
+    // Replace remaining placeholders (non-item tokens) after items are populated
     replaceWorkbookPlaceholders(workbook, valueSources, enrichedContext, placeholderMap);
-    // Write items
-    if (items.length) writeLineItems();
     workbook.calcProperties = workbook.calcProperties || {};
     workbook.calcProperties.fullCalcOnLoad = true;
     sanitizeWorkbookValues(workbook);
     await workbook.xlsx.writeFile(workbookPath);
 
-    // Build PDF file name and export with stamping
-    const baseName = path.basename(workbookPath, '.xlsx');
-    let pdfBase = `${baseName} (INV-${number})`;
-    let pdfPath = path.join(directory, `${pdfBase}.pdf`);
-    let n = 2;
-    while (await pathExists(pdfPath)) {
-      pdfPath = path.join(directory, `${pdfBase} (${n}).pdf`);
-      n += 1;
-      if (n > 1000) break;
+    // Move and rename to flat main folder with number-first naming: INV-#### - Client - YYYY-MM-DD
+    const baseDir = path.resolve(business.save_path);
+    await ensureDirectoryExists(baseDir);
+    const clientNameSafe = sanitizeFilenameSegment(context.client?.name || '');
+    const invoiceDateToken = (options && options.field_values && options.field_values.invoice_date) ? options.field_values.invoice_date : (payload.document_date || new Date().toISOString());
+    const invoiceDateIso = formatDateISO(invoiceDateToken);
+    const fileBase = [
+      `INV-${number}`,
+      clientNameSafe || null,
+      invoiceDateIso || null
+    ].filter(Boolean).map(sanitizeFilenameSegment).join(' - ');
+
+    let newWorkbookPath = path.join(baseDir, `${fileBase}.xlsx`);
+    {
+      let k = 2;
+      while (await pathExists(newWorkbookPath)) {
+        newWorkbookPath = path.join(baseDir, `${fileBase} (${k}).xlsx`);
+        k += 1;
+        if (k > 1000) break;
+      }
+    }
+    try {
+      if (!isSubPath(baseDir, workbookPath) || path.basename(workbookPath) !== path.basename(newWorkbookPath)) {
+        await fs.promises.rename(workbookPath, newWorkbookPath);
+      }
+      workbookPath = newWorkbookPath;
+    } catch (_) {
+      // If rename fails, fall back to using the new path for PDF output
+      workbookPath = newWorkbookPath;
     }
 
-    let stampCell = 'E9';
+    // Build PDF file name and export with stamping (same base as workbook)
+    const baseName = path.basename(workbookPath, '.xlsx');
+    let pdfPath = path.join(baseDir, `${baseName}.pdf`);
+    {
+      let n = 2;
+      while (await pathExists(pdfPath)) {
+        pdfPath = path.join(baseDir, `${baseName} (${n}).pdf`);
+        n += 1;
+        if (n > 1000) break;
+      }
+    }
+
+    // Choose stamp cell: prefer cell with {{invoice_code}}, fallback to F14 per template, else E9
+    let stampCell = findTokenCellAddress('invoice_code') || 'F14' || 'E9';
     let stampText = suffixCode;
     try {
       const prefix = await readInvoicePrefixFromWorkbook(workbookPath);
       stampText = `${prefix}${number}`;
     } catch (_) {}
-
     await saveWorkbookAsPdf(workbookPath, pdfPath, { stampCell, stampText });
 
     // Update record with final path
@@ -4154,6 +4526,132 @@ module.exports = {
   listJobsheetDocuments,
   preflightPdfExport
   ,
+  // Create a numbered Excel workbook by copying the template verbatim and opening it in Excel.
+  // Options: { business_id, definition_key='invoice_balance', invoice_number, client_name, invoice_date }
+  createNumberedWorkbookSimple: async (options = {}) => {
+    const businessId = Number(options.business_id ?? options.businessId);
+    if (!Number.isInteger(businessId)) throw new Error('business_id is required');
+    const definitionKey = options.definition_key || 'invoice_balance';
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+    const def = await db.getDocumentDefinition(businessId, definitionKey);
+    const templatePath = def?.template_path || options.template_path || options.templatePath;
+    if (!templatePath) throw new Error('Template path is not configured for this document. Set it in Templates.');
+    const resolvedTemplate = path.resolve(templatePath);
+    await ensureFileAccessible(resolvedTemplate);
+
+    // Reserve/validate number now
+    const insert = await db.addDocument({
+      business_id: businessId,
+      doc_type: 'invoice',
+      number: (options.invoice_number != null && Number.isFinite(Number(options.invoice_number))) ? Number(options.invoice_number) : undefined,
+      status: 'draft',
+      total_amount: null,
+      balance_due: null,
+      due_date: null,
+      client_name: options.client_name || null,
+      document_date: options.invoice_date || new Date().toISOString(),
+      definition_key: definitionKey
+    });
+    const number = insert?.number != null ? Number(insert.number) : null;
+    if (number == null) throw new Error('Failed to reserve invoice number');
+
+    const baseDir = path.resolve(business.save_path);
+    await ensureDirectoryExists(baseDir);
+    const clientSafe = sanitizeFilenameSegment(options.client_name || '');
+    const dateIso = formatDateISO(options.invoice_date || new Date().toISOString());
+    const baseName = [ `INV-${number}`, clientSafe || null, dateIso || null ].filter(Boolean).join(' - ');
+    let destXlsx = path.join(baseDir, `${baseName}.xlsx`);
+    {
+      let k = 2;
+      while (await pathExists(destXlsx)) {
+        destXlsx = path.join(baseDir, `${baseName} (${k}).xlsx`);
+        k += 1; if (k > 1000) break;
+      }
+    }
+
+    // Copy template verbatim to preserve all layout/print settings
+    await fs.promises.copyFile(resolvedTemplate, destXlsx);
+
+    // Update DB record with workbook path (not PDF)
+    try { await db.updateDocumentStatus(insert.id, { file_path: destXlsx, status: 'draft' }); } catch (_) {}
+
+    // Attempt to determine stamp cells (and sheets) for invoice code and client name
+    // Prefer cells with {{invoice_code}} and {{client_name}}; fallback invoice to F14
+    let invoiceCell = '';
+    let clientCell = '';
+    let invoiceSheet = '';
+    let clientSheet = '';
+    try {
+      const wb = new ExcelJS.Workbook();
+      await wb.xlsx.readFile(resolvedTemplate);
+      const TOKEN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+      wb.eachSheet(ws => {
+        ws.eachRow((row) => {
+          row.eachCell((cell) => {
+            const v = cell && cell.value;
+            const scan = (text) => {
+              let m; TOKEN.lastIndex = 0; while ((m = TOKEN.exec(text)) !== null) {
+                const key = (m[1]||'').toLowerCase();
+                if (!invoiceCell && key === 'invoice_code') { invoiceCell = cell.address; invoiceSheet = ws.name || ''; }
+                if (!clientCell && key === 'client_name') { clientCell = cell.address; clientSheet = ws.name || ''; }
+                if (invoiceCell && clientCell) break;
+              }
+            };
+            if (typeof v === 'string') scan(v);
+            else if (v && typeof v === 'object' && Array.isArray(v.richText)) scan(v.richText.map(f=>f&&f.text?f.text:'').join(''));
+          });
+        });
+      });
+      if (!invoiceCell) invoiceCell = 'F14';
+    } catch (_) { invoiceCell = 'F14'; }
+    const invoiceText = `INV-${number}`;
+    const clientText = (options.client_name || '').toString();
+
+    // Open in Excel for manual editing and stamp the invoice code into the chosen cell (unsaved change)
+    try {
+      const osaArgs = [
+        '-e', 'on run argv',
+        '-e', 'if (count of argv) < 1 then error "Missing path"',
+        '-e', 'set workbookPosixPath to item 1 of argv',
+        '-e', 'set invoiceCell to item 2 of argv',
+        '-e', 'set invoiceText to item 3 of argv',
+        '-e', 'set invoiceSheet to item 4 of argv',
+        '-e', 'set clientCell to item 5 of argv',
+        '-e', 'set clientText to item 6 of argv',
+        '-e', 'set clientSheet to item 7 of argv',
+        '-e', 'set workbookHfs to (POSIX file workbookPosixPath) as text',
+        '-e', 'tell application "Microsoft Excel"',
+        '-e', 'launch',
+        '-e', 'set wb to open workbook workbook file name workbookHfs',
+        '-e', 'try',
+        '-e', 'set theSheet to active sheet of wb',
+        '-e', 'if (invoiceCell is not "" and invoiceText is not "") then',
+        '-e', 'set targetSheet to theSheet',
+        '-e', 'try',
+        '-e', 'if (invoiceSheet is not "") then set targetSheet to worksheet invoiceSheet of wb',
+        '-e', 'end try',
+        '-e', 'set value of range invoiceCell of targetSheet to invoiceText',
+        '-e', 'end if',
+        '-e', 'if (clientCell is not "" and clientText is not "") then',
+        '-e', 'set targetSheet2 to theSheet',
+        '-e', 'try',
+        '-e', 'if (clientSheet is not "") then set targetSheet2 to worksheet clientSheet of wb',
+        '-e', 'end try',
+        '-e', 'set value of range clientCell of targetSheet2 to clientText',
+        '-e', 'end if',
+        '-e', 'end try',
+        '-e', 'activate',
+        '-e', 'end tell',
+        '-e', 'end run',
+        destXlsx,
+        (invoiceCell || ''), (invoiceText || ''), (invoiceSheet || ''), (clientCell || ''), (clientText || ''), (clientSheet || '')
+      ];
+      await new Promise((resolve) => execFile('osascript', osaArgs, { timeout: 20000 }, () => resolve()));
+    } catch (_) {}
+
+    return { ok: true, file_path: destXlsx, number, document_id: insert?.id || null };
+  },
   // Ensure a jobsheet's folder exists and return its path
   ensureJobsheetFolder: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
@@ -4193,6 +4691,45 @@ module.exports = {
   buildGigInfoHtml,
   buildPersonnelLogHtml,
   buildPersonnelLogText,
+  // Read an Excel template and return placeholders present ({{token}} occurrences) with positions
+  scanTemplatePlaceholders: async (options = {}) => {
+    let filePath = options.filePath || options.file_path || '';
+    const businessId = Number(options.businessId ?? options.business_id);
+    const definitionKey = options.definition_key || options.definitionKey || 'invoice_balance';
+    if (!filePath) {
+      if (!Number.isInteger(businessId)) throw new Error('businessId or filePath is required');
+      const def = await db.getDocumentDefinition(businessId, definitionKey);
+      filePath = def?.template_path || '';
+    }
+    if (!filePath) throw new Error('Template path not found');
+    const resolved = path.resolve(filePath);
+    await ensureFileAccessible(resolved);
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(resolved);
+    const TOKEN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+    const tokens = [];
+    wb.eachSheet(ws => {
+      ws.eachRow((row, r) => {
+        row.eachCell((cell, c) => {
+          const v = cell && cell.value;
+          const scan = (text) => { let m; TOKEN.lastIndex = 0; while ((m = TOKEN.exec(text)) !== null) { if (m[1]) tokens.push({ key: m[1], sheet: ws.name, row: r, col: c, address: cell.address }); } };
+          if (typeof v === 'string') scan(v);
+          else if (v && typeof v === 'object' && Array.isArray(v.richText)) scan(v.richText.map(f => f && f.text ? f.text : '').join(''));
+        });
+      });
+    });
+    // Deduplicate by key/address pairs; also produce unique key list
+    const byKey = new Map();
+    const unique = [];
+    const seenAddr = new Set();
+    tokens.forEach(t => {
+      const addrKey = `${t.sheet}:${t.address}:${t.key}`;
+      if (!seenAddr.has(addrKey)) { seenAddr.add(addrKey); unique.push(t); }
+      const arr = byKey.get(t.key) || []; arr.push(t); byKey.set(t.key, arr);
+    });
+    const keys = Array.from(byKey.keys());
+    return { tokens: unique, keys };
+  },
   // List files in a jobsheet's folder (non-recursive)
   listJobFolderFiles: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
@@ -4219,6 +4756,143 @@ module.exports = {
       return files.filter(f => filterPattern.test(f.name || ''));
     }
     return files;
+  },
+  // Rename the jobsheet folder (if naming changed) and retitle known document filenames
+  renameJobsheetArtifacts: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const jobsheetIdRaw = options.jobsheetId ?? options.jobsheet_id;
+    const jobsheetId = jobsheetIdRaw != null ? Number(jobsheetIdRaw) : null;
+    if (!Number.isInteger(businessId) || !Number.isInteger(jobsheetId)) {
+      throw new Error('businessId and jobsheetId are required');
+    }
+    const business = await db.getBusinessById(businessId);
+    if (!business || !business.save_path) {
+      throw new Error('Documents folder not configured for this business.');
+    }
+    const js = await db.getAhmenJobsheet(jobsheetId);
+    if (!js) throw new Error('Jobsheet not found');
+
+    // Compute expected new folder path from current snapshot
+    const payload = { business_id: businessId, jobsheet_id: jobsheetId, jobsheet_snapshot: js };
+    const context = buildContext(payload, business);
+    const expectedFolder = buildOutputDirectory(business, context, payload, 'Documents');
+    await ensureDirectoryExists(path.resolve(business.save_path));
+
+    // Find current folder candidate from documents DB
+    const docsAll = await db.getDocuments({ businessId });
+    const docs = (docsAll || []).filter(d => d && Number(d.jobsheet_id) === jobsheetId);
+    let currentFolder = '';
+    for (const d of docs) {
+      const fp = d?.file_path || '';
+      if (!fp) continue;
+      const dir = path.dirname(fp);
+      // Ignore files in the business root
+      if (dir && dir !== path.resolve(business.save_path)) {
+        currentFolder = dir; break;
+      }
+    }
+
+    // If we have an existing folder and it differs, move/merge it to the expected location
+    if (currentFolder && path.resolve(currentFolder) !== path.resolve(expectedFolder)) {
+      await ensureDirectoryExists(expectedFolder);
+      let movedViaRename = false;
+      try {
+        await fs.promises.rename(currentFolder, expectedFolder);
+        movedViaRename = true;
+      } catch (_) {
+        // Fall back: move files one by one
+        try {
+          const entries = await fs.promises.readdir(currentFolder, { withFileTypes: true });
+          for (const e of entries) {
+            if (!e.isFile()) continue;
+            const src = path.join(currentFolder, e.name);
+            let dst = path.join(expectedFolder, e.name);
+            let k = 2;
+            while (await pathExists(dst)) {
+              const base = path.basename(e.name, path.extname(e.name));
+              const ext = path.extname(e.name);
+              dst = path.join(expectedFolder, `${base} (${k})${ext}`);
+              k += 1; if (k > 1000) break;
+            }
+            try { await fs.promises.rename(src, dst); } catch (_) {}
+          }
+          // Attempt to remove old folder if empty
+          try { await fs.promises.rmdir(currentFolder); } catch (_) {}
+        } catch (_) {}
+      }
+
+      // Update DB paths for documents under the old folder
+      const prefix = path.resolve(currentFolder);
+      for (const d of docs) {
+        const fp = d?.file_path || '';
+        if (!fp) continue;
+        const abs = path.resolve(fp);
+        if (!abs.startsWith(prefix)) continue;
+        const remainder = abs.slice(prefix.length).replace(/^[/\\]+/, '');
+        const nextPath = path.join(expectedFolder, remainder);
+        try { await db.setDocumentFilePath(d.document_id, nextPath); } catch (_) {}
+      }
+    }
+
+    // Refresh docs (paths may have changed)
+    const docsUpdatedAll = await db.getDocuments({ businessId });
+    const docsUpdated = (docsUpdatedAll || []).filter(d => d && Number(d.jobsheet_id) === jobsheetId);
+
+    // Rename known files to match current naming conventions (skip locked)
+    const eventDateIso = formatDateISO(js.event_date || '');
+    const clientSafe = sanitizeFilenameSegment(js.client_name || '');
+    // Workbook
+    for (const d of docsUpdated) {
+      if ((d.doc_type || '').toLowerCase() !== 'workbook') continue;
+      if (d.is_locked) continue;
+      const def = { label: 'Workbook' };
+      const naming = buildFileName(context, payload, def);
+      const dir = path.resolve(expectedFolder);
+      const expectedPath = path.join(dir, naming.fileName);
+      const cur = d.file_path || '';
+      if (!cur) continue;
+      const curAbs = path.resolve(cur);
+      if (path.resolve(expectedPath) !== curAbs) {
+        try {
+          await ensureDirectoryExists(dir);
+          await fs.promises.rename(curAbs, expectedPath);
+          await db.setDocumentFilePath(d.document_id, expectedPath);
+        } catch (_) {}
+      }
+    }
+
+    // Invoice PDFs in business root
+    for (const d of docsUpdated) {
+      if ((d.doc_type || '').toLowerCase() !== 'invoice') continue;
+      if (d.is_locked) continue;
+      const num = d.number != null ? Number(d.number) : null;
+      if (!Number.isInteger(num)) continue;
+      const dir = path.resolve(business.save_path);
+      const dateToken = formatDateISO(d.document_date || js.event_date || new Date().toISOString());
+      const base = [
+        `INV-${num}`,
+        clientSafe || null,
+        dateToken || null
+      ].filter(Boolean).map(sanitizeFilenameSegment).join(' - ');
+      const ext = (d.file_path || '').toLowerCase().endsWith('.xlsx') ? '.xlsx' : '.pdf';
+      let expectedPath = path.join(dir, `${base}${ext}`);
+      let k = 2;
+      while (await pathExists(expectedPath)) {
+        expectedPath = path.join(dir, `${base} (${k})${ext}`);
+        k += 1; if (k > 1000) break;
+      }
+      const cur = d.file_path || '';
+      if (!cur) continue;
+      const curAbs = path.resolve(cur);
+      if (path.resolve(expectedPath) !== curAbs) {
+        try {
+          await fs.promises.rename(curAbs, expectedPath);
+          await db.setDocumentFilePath(d.document_id, expectedPath);
+        } catch (_) {}
+      }
+    }
+
+    return { ok: true };
   },
   // Mail presets and signature (per business with global fallback)
   getMailPresets: async (options = {}) => {
@@ -4488,7 +5162,7 @@ module.exports = {
     }
     const root = path.resolve(business.save_path);
 
-    // Collect candidate PDFs with (INV-###) in their filename
+    // Collect candidate PDFs/XLSX with (INV-###) in their filename
     async function walk(dir, depth = 0, maxDepth = 6) {
       let entries = [];
       try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return []; }
@@ -4505,9 +5179,10 @@ module.exports = {
           continue;
         }
         const lower = e.name.toLowerCase();
-        if (!lower.endsWith('.pdf')) continue;
         if (!/inv[\-\s]?\d+/i.test(e.name)) continue;
-        results.push(full);
+        if (lower.endsWith('.pdf') || lower.endsWith('.xlsx')) {
+          results.push(full);
+        }
       }
       return results;
     }
@@ -4527,57 +5202,175 @@ module.exports = {
         const dateStr = parts[0] || '';
         const client = parts[1] || '';
         const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : '';
-        const cand = sheets.find(js => (!dateOk || norm(js.event_date) === norm(dateOk)) && (client ? norm(js.client_name) === norm(client) : true));
+        if (!dateOk || !client) return null; // only treat as strong match if both are present
+        const cand = sheets.find(js => norm(js.event_date) === norm(dateOk) && norm(js.client_name) === norm(client));
         return cand || null;
       } catch (_) { return null; }
     };
 
+    function parseFromFilename(filePath) {
+      const base = path.basename(filePath);
+      const noExt = base.replace(/\.[^.]+$/, '');
+      const normalized = noExt.replace(/[–—]+/g, '-');
+      const tokens = normalized.split(/\s*-\s*/).filter(Boolean);
+
+      // Invoice number
+      let number = null;
+      let numIdx = -1;
+      for (let i = 0; i < tokens.length; i++) {
+        const m = tokens[i].match(/inv[\-\s]?(\d+)/i);
+        if (m && m[1]) { number = Number(m[1]); numIdx = i; break; }
+      }
+
+      // Date token (prefer ISO; fallback to '14 Jun 2025'/'14 June 2025')
+      let dateIso = null;
+      let dateIdx = -1;
+      const monthMap = { jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06', jul:'07', aug:'08', sep:'09', oct:'10', nov:'11', dec:'12' };
+      for (let j = tokens.length - 1; j >= 0; j--) {
+        const t = tokens[j].trim();
+        let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) { dateIso = `${m[1]}-${m[2]}-${m[3]}`; dateIdx = j; break; }
+        m = t.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})$/);
+        if (m) {
+          const dd = String(m[1]).padStart(2, '0');
+          const mm = monthMap[m[2].toLowerCase().slice(0,3)] || null;
+          if (mm) { dateIso = `${m[3]}-${mm}-${dd}`; dateIdx = j; break; }
+        }
+      }
+
+      // Variant
+      let variant = null;
+      const lower = normalized.toLowerCase();
+      if (lower.includes('deposit')) variant = 'deposit'; else if (lower.includes('balance')) variant = 'balance';
+
+      // Client: tokens between number and date
+      let clientName = null;
+      if (numIdx >= 0) {
+        const start = numIdx + 1;
+        const end = dateIdx >= 0 ? dateIdx : tokens.length;
+        if (end > start) clientName = tokens.slice(start, end).join(' - ').trim() || null;
+      }
+
+      return { number, clientName, dateIso, variant };
+    }
+
     let imported = 0;
-    for (const pdfPath of files) {
+    for (const anyPath of files) {
       try {
-        // Skip if invoice already recorded
+        // Skip if invoice already recorded for this exact file
         // eslint-disable-next-line no-await-in-loop
-        const existing = await db.getDocumentByFilePath(businessId, pdfPath);
+        const existing = await db.getDocumentByFilePath(businessId, anyPath);
         if (existing && String(existing.doc_type || '').toLowerCase() === 'invoice') continue;
 
-        const base = path.basename(pdfPath);
+        const base = path.basename(anyPath);
         const numMatch = base.match(/inv[\-\s]?(\d+)/i);
         const number = numMatch ? Number(numMatch[1]) : null;
         if (number == null || !Number.isInteger(number)) continue;
 
-        const nameLower = base.toLowerCase();
-        const variant = nameLower.includes('deposit') ? 'deposit' : (nameLower.includes('balance') ? 'balance' : null);
-        const js = matchJobsheet(pdfPath);
+        const lowerName = base.toLowerCase();
+        const isPdf = lowerName.endsWith('.pdf');
+        const isXlsx = lowerName.endsWith('.xlsx');
 
-        const payload = {
-          business_id: businessId,
-          jobsheet_id: js?.jobsheet_id || null,
-          doc_type: 'invoice',
-          number,
-          status: 'issued',
-          total_amount: variant === 'deposit' ? (js?.deposit_amount ?? null) : (js?.balance_amount ?? null),
-          balance_due: variant === 'balance' ? (js?.balance_amount ?? null) : (js?.deposit_amount ?? js?.balance_amount ?? null),
-          due_date: variant === 'balance' ? (js?.balance_due_date ?? null) : (js?.event_date ?? null),
-          file_path: pdfPath,
-          client_name: js?.client_name || null,
-          event_name: js?.event_type || null,
-          event_date: js?.event_date || null,
-          document_date: js?.updated_at || new Date().toISOString(),
-          definition_key: null,
-          invoice_variant: variant
-        };
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          await db.addDocument(payload);
-          imported += 1;
-        } catch (insErr) {
-          // Number conflict: ensure last_invoice_number sync but skip create
-          // eslint-disable-next-line no-console
-          console.warn('Invoice import skipped', base, insErr?.message || insErr);
+        if (isPdf) {
+          // If an invoice with this number already exists (e.g., workbook row),
+          // update that row to point to the PDF and mark as issued instead of inserting a duplicate number.
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const dupRows = await db.getDocumentsByNumber(businessId, 'invoice', number);
+            if (Array.isArray(dupRows) && dupRows.length) {
+              const pick = dupRows.find(r => (r?.file_path || '').toLowerCase().endsWith('.xlsx')) || dupRows[0];
+              if (pick && pick.document_id != null) {
+                // eslint-disable-next-line no-await-in-loop
+                await db.updateDocumentStatus(pick.document_id, { file_path: anyPath, status: 'issued' });
+                imported += 1;
+                continue;
+              }
+            }
+          } catch (_) {}
+
+          const parsed = parseFromFilename(anyPath);
+          const variant = parsed.variant || (lowerName.includes('deposit') ? 'deposit' : (lowerName.includes('balance') ? 'balance' : null));
+          const js = matchJobsheet(anyPath);
+          const payload = {
+            business_id: businessId,
+            jobsheet_id: js?.jobsheet_id || null,
+            doc_type: 'invoice',
+            number,
+            status: 'issued',
+            total_amount: js ? (variant === 'deposit' ? (js?.deposit_amount ?? null) : (js?.balance_amount ?? null)) : null,
+            balance_due: js ? (variant === 'balance' ? (js?.balance_amount ?? null) : (js?.deposit_amount ?? js?.balance_amount ?? null)) : null,
+            due_date: js ? (variant === 'balance' ? (js?.balance_due_date ?? null) : (js?.event_date ?? null)) : null,
+            file_path: anyPath,
+            client_name: parsed.clientName || js?.client_name || null,
+            event_name: js?.event_type || null,
+            event_date: parsed.dateIso || js?.event_date || null,
+            document_date: js?.updated_at || new Date().toISOString(),
+            definition_key: null,
+            invoice_variant: variant
+          };
+          let createdId = null;
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            const inserted = await db.addDocument(payload);
+            createdId = inserted?.id || null;
+            imported += 1;
+          } catch (insErr) {
+            // Duplicate number or other conflict — fall back to inserting without a number, then set requested number explicitly
+            try {
+              const fallbackPayload = { ...payload };
+              delete fallbackPayload.number;
+              // eslint-disable-next-line no-await-in-loop
+              const inserted = await db.addDocument(fallbackPayload);
+              createdId = inserted?.id || null;
+              if (createdId != null && Number.isInteger(number)) {
+                try { await db.setDocumentNumber(createdId, number); } catch (_) {}
+              }
+              imported += 1;
+            } catch (err2) {
+              // eslint-disable-next-line no-console
+              console.warn('Invoice import skipped', base, err2?.message || err2);
+            }
+          }
+        } else if (isXlsx) {
+          // For workbooks, import as draft invoice so they appear even without a PDF
+          // Attempt to parse client and date from filename: "INV-#### - Client - YYYY-MM-DD.xlsx"
+          const parsedX = parseFromFilename(anyPath);
+          const st = await fs.promises.stat(anyPath).catch(() => null);
+          const docDate = parsedX.dateIso ? new Date(parsedX.dateIso).toISOString() : (st ? new Date(st.mtimeMs).toISOString() : new Date().toISOString());
+          const payload = {
+            business_id: businessId,
+            doc_type: 'invoice',
+            number,
+            status: 'draft',
+            total_amount: null,
+            balance_due: null,
+            due_date: null,
+            file_path: anyPath,
+            client_name: parsedX.clientName || null,
+            document_date: docDate,
+            definition_key: 'invoice_balance'
+          };
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await db.addDocument(payload);
+            imported += 1;
+          } catch (insErr) {
+            // Duplicate number or conflict — insert without number
+            try {
+              const fallbackPayload = { ...payload };
+              delete fallbackPayload.number;
+              // eslint-disable-next-line no-await-in-loop
+              await db.addDocument(fallbackPayload);
+              imported += 1;
+            } catch (err2) {
+              // eslint-disable-next-line no-console
+              console.warn('Workbook import skipped', base, err2?.message || err2);
+            }
+          }
         }
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.warn('Failed to import invoice pdf', pdfPath, err);
+        console.warn('Failed to import invoice file', anyPath, err);
       }
     }
 
@@ -4588,6 +5381,172 @@ module.exports = {
     } catch (_) {}
 
     return { imported };
+  },
+  rebuildInvoiceFromFilename: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const documentId = Number(options.documentId ?? options.document_id);
+    if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+    if (!Number.isInteger(documentId)) throw new Error('documentId is required');
+
+    const doc = await db.getDocumentById(documentId);
+    if (!doc) throw new Error('Document not found');
+    const filePath = doc.file_path || '';
+    if (!filePath) throw new Error('File path missing for document');
+
+    const lowerName = filePath.toLowerCase();
+    const variant = lowerName.includes('deposit') ? 'deposit' : (lowerName.includes('balance') ? 'balance' : null);
+
+    // Try to match jobsheet strictly via folder naming
+    const matchJobsheet = (fp) => {
+      try {
+        const dirBase = path.basename(path.dirname(fp));
+        const parts = dirBase.split(' - ');
+        const dateStr = parts[0] || '';
+        const client = parts[1] || '';
+        const dateOk = /^\d{4}-\d{2}-\d{2}$/.test(dateStr) ? dateStr : '';
+        if (!dateOk || !client) return null;
+        return (options.sheets || []).find(js => (js.event_date || '').slice(0,10) === dateOk && (js.client_name || '').toLowerCase() === client.toLowerCase()) || null;
+      } catch (_) { return null; }
+    };
+
+    // Load jobsheets for matching
+    let sheets = [];
+    try { sheets = await db.getAhmenJobsheets({ businessId }); } catch (_) { sheets = []; }
+    const js = matchJobsheet(filePath);
+
+    // Parse filename tokens
+    const parseFromFilename = (fp) => {
+      const base = path.basename(fp);
+      const noExt = base.replace(/\.[^.]+$/, '');
+      const normalized = noExt.replace(/[–—]+/g, '-');
+      const tokens = normalized.split(/\s*-\s*/).filter(Boolean);
+      let number = null, numIdx = -1;
+      for (let i = 0; i < tokens.length; i++) {
+        const m = tokens[i].match(/inv[\-\s]?(\d+)/i);
+        if (m && m[1]) { number = Number(m[1]); numIdx = i; break; }
+      }
+      let dateIso = null, dateIdx = -1;
+      const monthMap = { jan:'01', feb:'02', mar:'03', apr:'04', may:'05', jun:'06', jul:'07', aug:'08', sep:'09', oct:'10', nov:'11', dec:'12' };
+      for (let j = tokens.length - 1; j >= 0; j--) {
+        const t = tokens[j].trim();
+        let m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (m) { dateIso = `${m[1]}-${m[2]}-${m[3]}`; dateIdx = j; break; }
+        m = t.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})$/);
+        if (m) {
+          const dd = String(m[1]).padStart(2, '0');
+          const mm = monthMap[m[2].toLowerCase().slice(0,3)] || null;
+          if (mm) { dateIso = `${m[3]}-${mm}-${dd}`; dateIdx = j; break; }
+        }
+      }
+      // Client between number and date
+      let clientName = null;
+      if (numIdx >= 0) {
+        const start = numIdx + 1;
+        const end = dateIdx >= 0 ? dateIdx : tokens.length;
+        if (end > start) clientName = tokens.slice(start, end).join(' - ').trim() || null;
+      }
+      // Variant from tokens
+      let variant = null;
+      const lower = normalized.toLowerCase();
+      if (lower.includes('deposit')) variant = 'deposit'; else if (lower.includes('balance')) variant = 'balance';
+      return { number, clientName, dateIso, variant };
+    };
+    const parsed = parseFromFilename(filePath);
+
+    // Determine updates
+    const updatePayload = {};
+    if (parsed.clientName) updatePayload.client_name = parsed.clientName;
+    if (parsed.dateIso) updatePayload.event_date = parsed.dateIso;
+    if (js) {
+      updatePayload.event_name = js.event_type || null;
+      updatePayload.total_amount = variant === 'deposit' ? (js.deposit_amount ?? null) : (js.balance_amount ?? null);
+      updatePayload.balance_due = variant === 'balance' ? (js.balance_amount ?? null) : (js.deposit_amount ?? js.balance_amount ?? null);
+      updatePayload.due_date = variant === 'balance' ? (js.balance_due_date ?? null) : (js.event_date ?? null);
+    }
+    if (variant) updatePayload.invoice_variant = variant;
+
+    // Preview mode: return proposed changes without applying
+    if (options.preview === true) {
+      return {
+        ok: true,
+        preview: true,
+        document_id: documentId,
+        parsed,
+        matched_jobsheet_id: js?.jobsheet_id || null,
+        proposed: { number: parsed.number, ...updatePayload }
+      };
+    }
+
+    // Apply changes
+    const type = String(doc.doc_type || '').toLowerCase();
+    if (type !== 'invoice') {
+      // Promote to invoice first
+      const promoteOpts = Number.isInteger(parsed.number) ? { number: parsed.number } : {};
+      const res = await db.promotePdfToInvoice(documentId, promoteOpts);
+      const targetId = res?.id || documentId;
+      await db.updateDocumentStatus(targetId, updatePayload);
+      return { ok: true, document_id: targetId, promoted: true };
+    }
+
+    // Update number if present
+    if (Number.isInteger(parsed.number)) {
+      try { await db.setDocumentNumber(documentId, parsed.number); } catch (_) {}
+    }
+    await db.updateDocumentStatus(documentId, updatePayload);
+    return { ok: true, document_id: documentId, promoted: false };
+  },
+  relinkInvoiceToJobsheet: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const documentId = Number(options.documentId ?? options.document_id);
+    const jobsheetId = Number(options.jobsheetId ?? options.jobsheet_id);
+    const preview = options.preview === true;
+    if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+    if (!Number.isInteger(documentId)) throw new Error('documentId is required');
+    if (!Number.isInteger(jobsheetId)) throw new Error('jobsheetId is required');
+
+    const doc = await db.getDocumentById(documentId);
+    if (!doc) throw new Error('Document not found');
+    const js = await db.getAhmenJobsheet(jobsheetId);
+    if (!js) throw new Error('Jobsheet not found');
+
+    const lower = (v) => (v == null ? '' : String(v).toLowerCase());
+    let variant = (doc && doc.invoice_variant) ? lower(doc.invoice_variant) : '';
+    if (!variant) {
+      const fp = doc?.file_path || '';
+      const ln = fp.toLowerCase();
+      if (ln.includes('deposit')) variant = 'deposit';
+      else if (ln.includes('balance')) variant = 'balance';
+    }
+
+    const updatePayload = {
+      jobsheet_id: jobsheetId,
+      client_name: js.client_name || null,
+      event_name: js.event_type || null,
+      event_date: js.event_date || null,
+      invoice_variant: variant || null
+    };
+    if (variant === 'deposit') {
+      updatePayload.total_amount = js.deposit_amount != null ? Number(js.deposit_amount) : null;
+      updatePayload.balance_due = updatePayload.total_amount;
+      updatePayload.due_date = js.event_date || null;
+    } else if (variant === 'balance') {
+      updatePayload.total_amount = js.balance_amount != null ? Number(js.balance_amount) : null;
+      updatePayload.balance_due = updatePayload.total_amount;
+      updatePayload.due_date = js.balance_due_date || null;
+    }
+
+    if (preview) {
+      return {
+        ok: true,
+        preview: true,
+        document_id: documentId,
+        jobsheet_id: jobsheetId,
+        proposed: updatePayload
+      };
+    }
+
+    await db.updateDocumentStatus(documentId, updatePayload);
+    return { ok: true, document_id: documentId, jobsheet_id: jobsheetId };
   },
   computeFinderInvoiceMax: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
