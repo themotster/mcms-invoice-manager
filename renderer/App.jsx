@@ -161,6 +161,8 @@ const WORKSPACE_SECTIONS = [
 ];
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
+// Global kill-switch for all programmatic scrolling. When false, no auto-scrolls will run.
+const SCROLL_BEHAVIOR_ENABLED = false;
 const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
 const DOCUMENT_TREE_COLLAPSE_KEY = 'invoiceMaster:documentTreeCollapsed';
 const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => {
@@ -7466,6 +7468,7 @@ function JobsheetEditor({
 
   // Scroll to a group section and propagate selection upstream
   const scrollToGroup = useCallback((key) => {
+    if (!SCROLL_BEHAVIOR_ENABLED) return;
     const el = sectionRefs.current?.[key];
     if (!el) return;
     const sticky = document.getElementById('jobsheet-sticky-header');
@@ -7493,6 +7496,7 @@ function JobsheetEditor({
   const initialSectionAppliedRef = useRef(false);
   const lastProgrammaticKeyRef = useRef(null);
   useEffect(() => {
+    if (!SCROLL_BEHAVIOR_ENABLED) return;
     if (!activeGroupKeyProp) return;
     const key = String(activeGroupKeyProp);
     if (!resolvedGroups.some(g => g.key === key)) return;
@@ -8250,6 +8254,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
 
   const applyStoredScroll = useCallback(() => {
     // Keep available for targeted restores, but do not auto-apply on tab switch.
+    if (!SCROLL_BEHAVIOR_ENABLED) return;
     if (!persistUi || typeof window === 'undefined') return;
     try {
       const y = Number(window.localStorage.getItem(`${PERSIST_PREFIX}scrollY`) || '0');
@@ -9564,6 +9569,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   }, [business.id, business.business_name]);
 
   const scrollInlineEditorIntoView = useCallback(() => {
+    if (!SCROLL_BEHAVIOR_ENABLED) return;
     try {
       const anchor = document.getElementById('inline-jobsheet-editor');
       if (!anchor) return;
@@ -9596,8 +9602,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorTargetId(null);
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => prev + 1);
-    // Scroll to inline editor after it mounts
-    setTimeout(() => scrollInlineEditorIntoView(), 250);
+    // Auto-scroll disabled by global switch
   }, [scrollInlineEditorIntoView]);
 
   const handleOpenExisting = useCallback((jobsheetId) => {
@@ -9607,8 +9612,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorTargetId(numericId);
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => (numericId !== inlineEditorTargetId ? prev + 1 : prev));
-    // Scroll to inline editor after it mounts
-    setTimeout(() => scrollInlineEditorIntoView(), 250);
+    // Auto-scroll disabled by global switch
   }, [inlineEditorTargetId, scrollInlineEditorIntoView]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
