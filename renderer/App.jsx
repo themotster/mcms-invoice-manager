@@ -162,7 +162,7 @@ const WORKSPACE_SECTIONS = [
 
 const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
 // Global kill-switch for all programmatic scrolling. When false, no auto-scrolls will run.
-const SCROLL_BEHAVIOR_ENABLED = false;
+const SCROLL_BEHAVIOR_ENABLED = true;
 // Autosave enabled; guarded to skip while typing in client_name and during modal creation.
 const AUTOSAVE_ENABLED = true;
 const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
@@ -9667,7 +9667,8 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setInlineEditorTargetId(numericId);
     setInlineEditorVisible(true);
     setInlineEditorSession(prev => (numericId !== inlineEditorTargetId ? prev + 1 : prev));
-    // Auto-scroll disabled by global switch
+    // Scroll to inline editor after it mounts
+    setTimeout(() => scrollInlineEditorIntoView(), 250);
   }, [inlineEditorTargetId, scrollInlineEditorIntoView]);
 
   const handleDelete = useCallback(async (jobsheetId) => {
