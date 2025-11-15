@@ -6,7 +6,22 @@ const documentService = require('./documentService');
 const db = require('./db');
 
 const isMCMS = (() => {
-  try { return /mcms/i.test(app.getName() || '') || String(process.env.APP_MODE || '').toLowerCase() === 'mcms'; } catch (_) { return String(process.env.APP_MODE || '').toLowerCase() === 'mcms'; }
+  // 1) Explicit env override
+  const mode = String(process.env.APP_MODE || '').toLowerCase();
+  if (mode === 'mcms') return true;
+
+  const candidates = [];
+  try { candidates.push(String(app.getName ? app.getName() : '')); } catch (_) {}
+  try { candidates.push(String(process.execPath || '')); } catch (_) {}
+  try { candidates.push(String(app.getPath ? app.getPath('exe') : '')); } catch (_) {}
+  try { candidates.push(String(app.getAppPath ? app.getAppPath() : '')); } catch (_) {}
+  try { candidates.push(String(process.resourcesPath || '')); } catch (_) {}
+
+  const joined = candidates.filter(Boolean).join(' | ').toLowerCase();
+  if (joined.includes('mcms') || joined.includes('m.c.m.s') || /mcms\s+invoice/.test(joined)) {
+    return true;
+  }
+  return false;
 })();
 
 const isDev = !app.isPackaged || String(process.env.NODE_ENV || '').toLowerCase() !== 'production';

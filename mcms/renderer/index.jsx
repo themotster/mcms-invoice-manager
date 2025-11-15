@@ -29,6 +29,42 @@ function App() {
 
   const [docs, setDocs] = useState([]);
   const [docsLoading, setDocsLoading] = useState(true);
+  // Sorting for invoice log
+  const [sortKey, setSortKey] = useState('created'); // 'invoice' | 'client' | 'created'
+  const [sortDir, setSortDir] = useState('desc'); // 'asc' | 'desc'
+
+  const sortedDocs = useMemo(() => {
+    const items = Array.isArray(docs) ? [...docs] : [];
+    const getVal = (d) => {
+      switch (sortKey) {
+        case 'invoice': return Number(d?.number) || 0;
+        case 'client': return String(d?.display_client_name || d?.client_name || '').toLowerCase();
+        case 'created': default: {
+          const v = String(d?.event_date || d?.document_date || d?.created_at || '');
+          return v; // ISO-like strings compare lexicographically
+        }
+      }
+    };
+    items.sort((a, b) => {
+      const va = getVal(a);
+      const vb = getVal(b);
+      if (va === vb) return 0;
+      if (sortDir === 'asc') return va > vb ? 1 : -1;
+      return va < vb ? 1 : -1;
+    });
+    return items;
+  }, [docs, sortKey, sortDir]);
+
+  const toggleSort = (key) => {
+    setSortKey(prevKey => {
+      if (prevKey === key) {
+        setSortDir(prevDir => (prevDir === 'asc' ? 'desc' : 'asc'));
+        return prevKey;
+      }
+      setSortDir('asc');
+      return key;
+    });
+  };
   const [fieldValues, setFieldValues] = useState({}); // key -> value
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [invoiceNumTouched, setInvoiceNumTouched] = useState(false);
@@ -188,8 +224,7 @@ function App() {
     const unsub = api.onDocumentsChange(async (payload) => {
       try {
         if (!payload || payload.businessId !== BUSINESS_ID) return;
-        // Auto-import new PDFs detected in save folder
-        try { await window.api?.indexInvoicesFromFilenames?.({ businessId: BUSINESS_ID }); } catch (_) {}
+        // Safe mode: only refresh the log; manual Sync triggers importer
         refreshDocs();
       } catch (_) {}
     });
@@ -546,18 +581,24 @@ function App() {
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
               <thead>
                 <tr style={{ background: '#f8fafc' }}>
-                  <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>Invoice</th>
-                  <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>Client</th>
-                  <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>Created</th>
+                  <th onClick={()=>toggleSort('invoice')} role="button" style={{ userSelect: 'none', cursor: 'pointer', textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>
+                    Invoice {sortKey==='invoice' ? (sortDir==='asc' ? '▲' : '▼') : ''}
+                  </th>
+                  <th onClick={()=>toggleSort('client')} role="button" style={{ userSelect: 'none', cursor: 'pointer', textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>
+                    Client {sortKey==='client' ? (sortDir==='asc' ? '▲' : '▼') : ''}
+                  </th>
+                  <th onClick={()=>toggleSort('created')} role="button" style={{ userSelect: 'none', cursor: 'pointer', textAlign: 'left', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>
+                    Created {sortKey==='created' ? (sortDir==='asc' ? '▲' : '▼') : ''}
+                  </th>
                   <th style={{ textAlign: 'right', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {docs.map(d => (
+                {sortedDocs.map(d => (
                   <tr key={d.document_id} style={{ borderTop: '1px solid #f1f5f9', background: (String(d.status||'').toLowerCase()==='paid') ? '#dcfce7' : '#fee2e2' }}>
                     <td style={{ padding: '8px' }}>Invoice #{d.number ?? ''}</td>
                     <td style={{ padding: '8px' }}>{d.display_client_name || d.client_name || ''}</td>
-                    <td style={{ padding: '8px' }}>{d.created_at || ''}</td>
+                    <td style={{ padding: '8px' }}>{d.event_date || d.document_date || d.created_at || ''}</td>
                     <td style={{ padding: '8px', textAlign: 'right' }}>
                       <button style={{ fontSize: 12, padding: '6px 8px', marginRight: 6, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={() => window.api.openPath(d.file_path)}>Open</button>
                       <button style={{ fontSize: 12, padding: '6px 8px', marginRight: 6, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={() => window.api.showItemInFolder(d.file_path)}>Reveal</button>
@@ -574,8 +615,13 @@ function App() {
                           const same = await window.api?.getDocumentsByNumber?.(BUSINESS_ID, 'invoice', d.number);
                           const list = Array.isArray(same) ? same : [];
                           const lower = (p)=> (p||'').toString().toLowerCase();
-                          const xlsxDoc = list.find(x => lower(x.file_path||'').endsWith('.xlsx')) || null;
-                          const pdfDoc = list.find(x => lower(x.file_path||'').endsWith('.pdf')) || null;
+                          const base = (p)=>{ const s=(p||'').toString(); const name = s.split(/\\\\|\//).pop() || ''; return name.replace(/\.[^.]+$/, ''); };
+                          const dir = (p)=>{ const s=(p||'').toString(); const parts = s.split(/\\\\|\//); parts.pop(); return parts.join('/'); };
+                          const selBase = base(d.file_path || '');
+                          const selDir = dir(d.file_path || '');
+                          // Only consider counterparts in the same directory and base
+                          let xlsxDoc = list.find(x => dir(x.file_path||'') === selDir && base(x.file_path||'') === selBase && lower(x.file_path||'').endsWith('.xlsx')) || null;
+                          let pdfDoc = list.find(x => dir(x.file_path||'') === selDir && base(x.file_path||'') === selBase && lower(x.file_path||'').endsWith('.pdf')) || null;
                           const isSelectedXlsx = !!(xlsxDoc && xlsxDoc.document_id === d.document_id);
                           const isSelectedPdf = !!(pdfDoc && pdfDoc.document_id === d.document_id);
                           setDeleteModalData({
@@ -706,37 +752,37 @@ function App() {
                   const isSelectedPdf = d.file_path && lower(d.file_path).endsWith('.pdf');
                   const removeSelectedFile = (isSelectedXlsx && deleteXlsx) || (isSelectedPdf && deletePdf);
 
-                  const deleteByPathOrUnlink = async (absPath, docIdForFallback) => {
+                  const deleteByPathSafe = async (absPath) => {
                     if (!absPath) return;
-                    try {
-                      await window.api?.deleteDocumentByPath?.({ businessId: BUSINESS_ID, absolutePath: absPath });
-                    } catch (_e) {
-                      if (docIdForFallback) {
-                        try { await window.api?.deleteDocument?.(docIdForFallback, { removeFile: true }); return; } catch (_) {}
-                      }
-                    }
+                    // Only allow deletion inside configured documents folder; never unlink outside
+                    try { await window.api?.deleteDocumentByPath?.({ businessId: BUSINESS_ID, absolutePath: absPath }); }
+                    catch (e) { throw new Error(e?.message || 'Unable to delete by path'); }
                   };
 
                   try {
-                    await window.api.deleteDocument(d.document_id, { removeFile: !!removeSelectedFile });
+                    // Remove selected document row; delete file by path if toggled
+                    if (removeSelectedFile && d.file_path) {
+                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete selected file'); }
+                    }
+                    await window.api.deleteDocument(d.document_id, { removeFile: false });
                     if (deleteXlsx && isSelectedXlsx) {
-                      await deleteByPathOrUnlink(d.file_path, d.document_id);
+                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete Excel'); }
                     } else if (deleteXlsx && xlsxDoc && xlsxDoc.document_id !== d.document_id) {
-                      await deleteByPathOrUnlink(xlsxDoc.file_path, xlsxDoc.document_id);
+                      try { await deleteByPathSafe(xlsxDoc.file_path); } catch (e) { setError(e?.message || 'Unable to delete Excel'); }
                       try { await window.api.deleteDocument(xlsxDoc.document_id, { removeFile: false }); } catch (_) {}
                     } else if (deleteXlsx && !xlsxDoc && isSelectedPdf && d.file_path) {
                       const twin = d.file_path.replace(/\.pdf$/i, '.xlsx');
-                      await deleteByPathOrUnlink(twin, null);
+                      try { await deleteByPathSafe(twin); } catch (_) {}
                     }
 
                     if (deletePdf && isSelectedPdf) {
-                      await deleteByPathOrUnlink(d.file_path, d.document_id);
+                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete PDF'); }
                     } else if (deletePdf && pdfDoc && pdfDoc.document_id !== d.document_id) {
-                      await deleteByPathOrUnlink(pdfDoc.file_path, pdfDoc.document_id);
+                      try { await deleteByPathSafe(pdfDoc.file_path); } catch (e) { setError(e?.message || 'Unable to delete PDF'); }
                       try { await window.api.deleteDocument(pdfDoc.document_id, { removeFile: false }); } catch (_) {}
                     } else if (deletePdf && !pdfDoc && isSelectedXlsx && d.file_path) {
                       const twin = d.file_path.replace(/\.xlsx$/i, '.pdf');
-                      await deleteByPathOrUnlink(twin, null);
+                      try { await deleteByPathSafe(twin); } catch (_) {}
                     }
 
                     // Ensure invoice counter reflects current max after any deletions

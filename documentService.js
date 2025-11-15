@@ -4841,12 +4841,17 @@ module.exports = {
     // Rename known files to match current naming conventions (skip locked)
     const eventDateIso = formatDateISO(js.event_date || '');
     const clientSafe = sanitizeFilenameSegment(js.client_name || '');
-    // Workbook
+    // Workbook (use the actual definition label for this document, not a generic "Workbook" label)
     for (const d of docsUpdated) {
       if ((d.doc_type || '').toLowerCase() !== 'workbook') continue;
       if (d.is_locked) continue;
-      const def = { label: 'Workbook' };
-      const naming = buildFileName(context, payload, def);
+      let def = null;
+      try {
+        def = await db.getDocumentDefinition(businessId, d.definition_key || 'workbook');
+      } catch (_) {
+        def = null;
+      }
+      const naming = buildFileName(context, payload, def || { label: 'Excel Workbook', key: d.definition_key || 'workbook' });
       const dir = path.resolve(expectedFolder);
       const expectedPath = path.join(dir, naming.fileName);
       const cur = d.file_path || '';
@@ -5161,9 +5166,10 @@ module.exports = {
       throw new Error('Documents folder not configured for this business.');
     }
     const root = path.resolve(business.save_path);
+    const updateExisting = options.updateExisting !== false;
 
     // Collect candidate PDFs/XLSX with (INV-###) in their filename
-    async function walk(dir, depth = 0, maxDepth = 6) {
+    async function walk(dir, depth = 0, maxDepth = 0) {
       let entries = [];
       try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch (_) { return []; }
       const results = [];
@@ -5254,17 +5260,99 @@ module.exports = {
       return { number, clientName, dateIso, variant };
     }
 
+    // Helper: read file times (prefer creation time)
+    async function getFileTimes(p) {
+      try {
+        const st = await fs.promises.stat(p);
+        const birth = st.birthtime && Number.isFinite(st.birthtimeMs) ? new Date(st.birthtimeMs).toISOString() : null;
+        const mod = st.mtime && Number.isFinite(st.mtimeMs) ? new Date(st.mtimeMs).toISOString() : null;
+        return { birthIso: birth || mod || new Date().toISOString(), mtimeIso: mod || birth || new Date().toISOString() };
+      } catch (_) {
+        const now = new Date().toISOString();
+        return { birthIso: now, mtimeIso: now };
+      }
+    }
+
+    // Robust filename parsing
+    // Accepts formats like:
+    //   INV-707 - Client Name - 2025-10-07.xlsx
+    //   INV 707 Client Name (2025-10-07).pdf
+    //   INV-707_Client_Name_2025-10-07.pdf
+    // Client segment is everything between the number and the trailing date, if present.
+    function parseFromFilename(fp) {
+      const base = path.basename(fp);
+      const noExt = base.replace(/\.[^.]+$/, '');
+      const norm = noExt
+        .replace(/[–—]+/g, '-')       // em/en dashes -> hyphen
+        .replace(/_/g, ' ')            // underscores -> space
+        .replace(/\s{2,}/g, ' ')      // collapse spaces
+        .trim();
+
+      // 1) Extract invoice number (required)
+      const numMatch = norm.match(/\bINV[\-\s]?(\d+)\b/i);
+      const number = numMatch ? Number(numMatch[1]) : null;
+      const afterNum = numMatch ? norm.slice(numMatch.index + numMatch[0].length).trim() : '';
+
+      // 2) Extract date (ISO YYYY-MM-DD), allow parentheses
+      let dateIso = null;
+      let dateIdx = -1;
+      const parenDate = afterNum.match(/\((\d{4}-\d{2}-\d{2})\)\s*$/);
+      if (parenDate && parenDate[1]) {
+        dateIso = parenDate[1];
+        dateIdx = afterNum.lastIndexOf(parenDate[0]);
+      }
+      if (!dateIso) {
+        const tailIso = afterNum.match(/(\d{4}-\d{2}-\d{2})\s*$/);
+        if (tailIso && tailIso[1]) {
+          dateIso = tailIso[1];
+          dateIdx = afterNum.lastIndexOf(tailIso[1]);
+        }
+      }
+
+      // 3) Client is the middle segment between number and date (or all remaining if no date)
+      let clientRaw = afterNum;
+      if (dateIdx >= 0) clientRaw = afterNum.slice(0, dateIdx).trim();
+      // Trim leading separators like '-' or '—'
+      clientRaw = clientRaw.replace(/^[-–—\s]+/, '').trim();
+      // Remove trailing separators if left
+      clientRaw = clientRaw.replace(/[-–—\s]+$/, '').trim();
+      const clientName = clientRaw || null;
+
+      // 4) Variant via keywords in whole name
+      const lowerAll = norm.toLowerCase();
+      const variant = lowerAll.includes('deposit') ? 'deposit' : (lowerAll.includes('balance') ? 'balance' : null);
+
+      return { number, clientName, dateIso, variant };
+    }
+
     let imported = 0;
     for (const anyPath of files) {
       try {
         // Skip if invoice already recorded for this exact file
         // eslint-disable-next-line no-await-in-loop
         const existing = await db.getDocumentByFilePath(businessId, anyPath);
-        if (existing && String(existing.doc_type || '').toLowerCase() === 'invoice') continue;
+        if (existing && String(existing.doc_type || '').toLowerCase() === 'invoice') {
+          if (updateExisting) {
+            const base = path.basename(anyPath).toLowerCase();
+            const isPdf = base.endsWith('.pdf');
+            const isXlsx = base.endsWith('.xlsx');
+            const parsedCommon = parseFromFilename(anyPath);
+            const times = await getFileTimes(anyPath);
+            const patch = {};
+            if (parsedCommon.clientName && parsedCommon.clientName !== existing.client_name) patch.client_name = parsedCommon.clientName;
+            if (parsedCommon.dateIso) {
+              patch.event_date = parsedCommon.dateIso;
+            }
+            if (!existing.document_date) patch.document_date = times.birthIso;
+            if (isPdf && String(existing.status || '').toLowerCase() !== 'issued') patch.status = 'issued';
+            try { if (Object.keys(patch).length) await db.updateDocumentStatus(existing.document_id, patch); } catch (_) {}
+          }
+          continue;
+        }
 
         const base = path.basename(anyPath);
-        const numMatch = base.match(/inv[\-\s]?(\d+)/i);
-        const number = numMatch ? Number(numMatch[1]) : null;
+        const parsedCommon = parseFromFilename(anyPath);
+        const number = Number.isInteger(parsedCommon.number) ? parsedCommon.number : null;
         if (number == null || !Number.isInteger(number)) continue;
 
         const lowerName = base.toLowerCase();
@@ -5273,12 +5361,18 @@ module.exports = {
 
         if (isPdf) {
           // If an invoice with this number already exists (e.g., workbook row),
-          // update that row to point to the PDF and mark as issued instead of inserting a duplicate number.
+          // update the matching row (same base name) to point to the PDF and mark as issued.
           try {
             // eslint-disable-next-line no-await-in-loop
             const dupRows = await db.getDocumentsByNumber(businessId, 'invoice', number);
             if (Array.isArray(dupRows) && dupRows.length) {
-              const pick = dupRows.find(r => (r?.file_path || '').toLowerCase().endsWith('.xlsx')) || dupRows[0];
+              const base = (p)=>{ const s=(p||'').toString(); const name = s.split(/\\\\|\//).pop() || ''; return name.replace(/\.[^.]+$/, ''); };
+              const selBase = base(anyPath);
+              // Prefer matching workbook row in the same base name
+              let pick = dupRows.find(r => base(r?.file_path||'') === selBase && (r?.file_path||'').toLowerCase().endsWith('.xlsx'))
+                      || dupRows.find(r => base(r?.file_path||'') === selBase)
+                      || dupRows.find(r => (r?.file_path||'').toLowerCase().endsWith('.xlsx'))
+                      || null;
               if (pick && pick.document_id != null) {
                 // eslint-disable-next-line no-await-in-loop
                 await db.updateDocumentStatus(pick.document_id, { file_path: anyPath, status: 'issued' });
@@ -5288,7 +5382,8 @@ module.exports = {
             }
           } catch (_) {}
 
-          const parsed = parseFromFilename(anyPath);
+          const parsed = parsedCommon;
+          const times = await getFileTimes(anyPath);
           const variant = parsed.variant || (lowerName.includes('deposit') ? 'deposit' : (lowerName.includes('balance') ? 'balance' : null));
           const js = matchJobsheet(anyPath);
           const payload = {
@@ -5299,12 +5394,12 @@ module.exports = {
             status: 'issued',
             total_amount: js ? (variant === 'deposit' ? (js?.deposit_amount ?? null) : (js?.balance_amount ?? null)) : null,
             balance_due: js ? (variant === 'balance' ? (js?.balance_amount ?? null) : (js?.deposit_amount ?? js?.balance_amount ?? null)) : null,
-            due_date: js ? (variant === 'balance' ? (js?.balance_due_date ?? null) : (js?.event_date ?? null)) : null,
+            due_date: parsed.dateIso || (js ? (variant === 'balance' ? (js?.balance_due_date ?? null) : (js?.event_date ?? null)) : null),
             file_path: anyPath,
             client_name: parsed.clientName || js?.client_name || null,
             event_name: js?.event_type || null,
             event_date: parsed.dateIso || js?.event_date || null,
-            document_date: js?.updated_at || new Date().toISOString(),
+            document_date: times.birthIso,
             definition_key: null,
             invoice_variant: variant
           };
@@ -5333,10 +5428,10 @@ module.exports = {
           }
         } else if (isXlsx) {
           // For workbooks, import as draft invoice so they appear even without a PDF
-          // Attempt to parse client and date from filename: "INV-#### - Client - YYYY-MM-DD.xlsx"
-          const parsedX = parseFromFilename(anyPath);
-          const st = await fs.promises.stat(anyPath).catch(() => null);
-          const docDate = parsedX.dateIso ? new Date(parsedX.dateIso).toISOString() : (st ? new Date(st.mtimeMs).toISOString() : new Date().toISOString());
+          // Attempt to parse client and date from filename; use creation time when date missing
+          const parsedX = parsedCommon;
+          const times = await getFileTimes(anyPath);
+          const docDate = parsedX.dateIso ? new Date(parsedX.dateIso).toISOString() : times.birthIso;
           const payload = {
             business_id: businessId,
             doc_type: 'invoice',
@@ -5347,6 +5442,7 @@ module.exports = {
             due_date: null,
             file_path: anyPath,
             client_name: parsedX.clientName || null,
+            event_date: parsedX.dateIso || null,
             document_date: docDate,
             definition_key: 'invoice_balance'
           };
@@ -5355,12 +5451,15 @@ module.exports = {
             await db.addDocument(payload);
             imported += 1;
           } catch (insErr) {
-            // Duplicate number or conflict — insert without number
+            // Duplicate number or conflict — insert without number, then assign number explicitly to keep Excel+PDF paired
             try {
               const fallbackPayload = { ...payload };
               delete fallbackPayload.number;
               // eslint-disable-next-line no-await-in-loop
-              await db.addDocument(fallbackPayload);
+              const inserted = await db.addDocument(fallbackPayload);
+              if (inserted && inserted.id != null && Number.isInteger(number)) {
+                try { await db.setDocumentNumber(inserted.id, number); } catch (_) {}
+              }
               imported += 1;
             } catch (err2) {
               // eslint-disable-next-line no-console
