@@ -4964,7 +4964,8 @@ module.exports = {
       booking_pack: {
         label: labelFrom('booking_pack', 'Booking pack'),
         subject: 'Booking pack – {{ client_name }} – {{ event_date }}',
-        body: 'Hi {{ client_first_name|there }},<br><br>Attached are your booking schedule and T&Cs, plus the deposit invoice.<br><br>Please review and let me know if anything needs updating.<br><br>Thanks,<br>'
+        // Use plain text with paragraphs so the composer converts to consistent HTML (<p> with margins)
+        body: 'Hi {{ client_first_name|there }},\n\nAttached are your booking schedule and T&Cs, plus the deposit invoice.\n\nPlease review and let me know if anything needs updating.\n\nThanks,\n',
       },
       invoice_deposit: {
         label: labelFrom('invoice_deposit', 'Deposit invoice'),
