@@ -5894,6 +5894,25 @@ function DocumentsInlinePanel({
     }, 3500);
   };
 
+  const handleResetFinderMax = useCallback(async () => {
+    try {
+      if (!window.api?.computeFinderInvoiceMax || !window.api?.setLastInvoiceNumber) {
+        pushToast('Finder max not available (API missing)', 'error');
+        return;
+      }
+      const result = await window.api.computeFinderInvoiceMax({ businessId });
+      const rawMax = result && result.max != null ? Number(result.max) : 0;
+      const max = Number.isInteger(rawMax) && rawMax > 0 ? rawMax : 0;
+      await window.api.setLastInvoiceNumber(businessId, max);
+      // Update local default next suggestion for invoice numbers
+      setDefaultNext(max > 0 ? max + 1 : null);
+      pushToast(`Reset last invoice number to ${max || 0} (Finder)`, 'success');
+    } catch (err) {
+      console.error('Finder max reset failed', err);
+      pushToast(err?.message || 'Unable to reset from Finder', 'error');
+    }
+  }, [businessId]);
+
   const handleDeleteEmail = async (id) => {
     if (!id) return;
     const confirmDelete = window.confirm('Delete this sent email entry?');
@@ -6554,7 +6573,7 @@ function DocumentsInlinePanel({
       {/* Gate toggle */}
       <div className="flex items-center justify-between">
         <div className="text-sm font-semibold text-slate-700">Documents</div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <label className="inline-flex items-center gap-2 text-xs text-slate-600">
             <input
               type="checkbox"
@@ -6563,7 +6582,12 @@ function DocumentsInlinePanel({
             />
             <span>Bypass invoice export gate</span>
           </label>
-          
+          {renderActionPill({
+            key: 'reset-finder-max',
+            label: 'Reset number to Finder max',
+            onClick: handleResetFinderMax,
+            tone: 'indigo'
+          })}
         </div>
       </div>
 
