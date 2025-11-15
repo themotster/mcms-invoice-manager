@@ -429,6 +429,8 @@ export default function MailComposer({
   }, [clampPosition]);
   const [busy, setBusy] = useState(false);
   const [toasts, setToasts] = useState([]);
+  const [ccSuggestions, setCcSuggestions] = useState([]);
+  const [ccQuery, setCcQuery] = useState('');
   const [templateCtx, setTemplateCtx] = useState({});
 
   useEffect(() => {
@@ -485,6 +487,46 @@ export default function MailComposer({
     setToasts(prev => [...prev, notice]);
     setTimeout(() => setToasts(prev => prev.filter(t => t !== notice)), 3500);
   };
+
+  // Email address suggestions for CC (per business, persisted in localStorage)
+  const CC_STORE_KEY = useMemo(() => (
+    businessId ? `invoiceMaster:ccSuggestions:${businessId}` : 'invoiceMaster:ccSuggestions:global'
+  ), [businessId]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(CC_STORE_KEY);
+      if (!raw) { setCcSuggestions([]); return; }
+      const parsed = JSON.parse(raw);
+      setCcSuggestions(Array.isArray(parsed) ? parsed.filter(v => typeof v === 'string' && v.trim()) : []);
+    } catch (_) {
+      setCcSuggestions([]);
+    }
+  }, [CC_STORE_KEY]);
+
+  const persistCcSuggestions = useCallback((list) => {
+    try { window.localStorage.setItem(CC_STORE_KEY, JSON.stringify(list)); } catch (_) {}
+  }, [CC_STORE_KEY]);
+
+  const normalizedCcList = useMemo(() => {
+    return String(cc || '')
+      .split(/[,;]+/)
+      .map(s => s.trim())
+      .filter(Boolean);
+  }, [cc]);
+
+  const filteredCcSuggestions = useMemo(() => {
+    const q = ccQuery.trim().toLowerCase();
+    if (!q) return [];
+    const existing = new Set(normalizedCcList.map(v => v.toLowerCase()));
+    return ccSuggestions
+      .filter(addr => addr && typeof addr === 'string')
+      .map(addr => addr.trim())
+      .filter(Boolean)
+      .filter(addr => !existing.has(addr.toLowerCase()))
+      .filter(addr => addr.toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [ccQuery, ccSuggestions, normalizedCcList]);
 
   useEffect(() => {
     if (!open) return;
@@ -1111,6 +1153,27 @@ export default function MailComposer({
           jobsheetId
         });
       } catch (_) {}
+      // Persist CC addresses for future autocomplete
+      try {
+        const addrs = normalizedCcList;
+        if (addrs.length) {
+          const existing = new Set((ccSuggestions || []).map(v => String(v || '').toLowerCase()));
+          const next = [...ccSuggestions];
+          addrs.forEach(addr => {
+            const trimmed = String(addr || '').trim();
+            if (!trimmed) return;
+            const lower = trimmed.toLowerCase();
+            if (!existing.has(lower)) {
+              existing.add(lower);
+              next.push(trimmed);
+            }
+          });
+          if (next.length !== ccSuggestions.length) {
+            setCcSuggestions(next);
+            persistCcSuggestions(next);
+          }
+        }
+      } catch (_) {}
       onClose?.();
       onSent?.({ mode: sendWhen });
     } catch (err) {
@@ -1217,9 +1280,42 @@ export default function MailComposer({
               <label className="col-span-1 text-gray-600">To</label>
               <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={to} onChange={e => setTo(e.target.value)} placeholder="email@example.com" />
             </div>
-            <div className="grid grid-cols-6 gap-2 items-center">
+            <div className="grid grid-cols-6 gap-2 items-center relative">
               <label className="col-span-1 text-gray-600">Cc</label>
-              <input className="col-span-5 rounded border border-slate-300 px-2 py-1" value={cc} onChange={e => setCc(e.target.value)} placeholder="optional" />
+              <div className="col-span-5">
+                <input
+                  className="w-full rounded border border-slate-300 px-2 py-1"
+                  value={cc}
+                  onChange={e => {
+                    const val = e.target.value;
+                    setCc(val);
+                    const last = val.split(/[,;]+/).pop() || '';
+                    setCcQuery(last);
+                  }}
+                  placeholder="optional"
+                />
+                {filteredCcSuggestions.length ? (
+                  <div className="absolute z-50 mt-1 max-h-40 w-full overflow-auto rounded border border-slate-200 bg-white shadow-lg text-xs">
+                    {filteredCcSuggestions.map(addr => (
+                      <button
+                        key={addr}
+                        type="button"
+                        className="block w-full px-2 py-1 text-left text-slate-700 hover:bg-indigo-50"
+                        onClick={() => {
+                          const parts = cc.split(/[,;]+/).map(s => s.trim()).filter(Boolean);
+                          parts.pop();
+                          parts.push(addr);
+                          const next = parts.join(', ');
+                          setCc(next);
+                          setCcQuery('');
+                        }}
+                      >
+                        {addr}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
             </div>
             <div className="grid grid-cols-6 gap-2 items-center">
               <label className="col-span-1 text-gray-600">Bcc</label>
