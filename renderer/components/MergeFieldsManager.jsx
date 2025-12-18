@@ -96,7 +96,6 @@ const SOURCE_OPTION_GROUPS = [
       { value: 'jobsheet.ahmen_fee', label: 'AhMen fee' },
       { value: 'jobsheet.pricing_total', label: 'Pricing total' },
       { value: 'jobsheet.extra_fees', label: 'Extra fees (jobsheet)' },
-      { value: 'jobsheet.pricing_custom_fees', label: 'Custom fees' },
       { value: 'jobsheet.pricing_production_total', label: 'Production total' },
       { value: 'jobsheet.production_fees', label: 'Production fees (jobsheet)' },
       { value: 'jobsheet.deposit_amount', label: 'Deposit amount' },

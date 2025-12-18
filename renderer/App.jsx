@@ -16,6 +16,7 @@ import {
 const AHMEN_NUMERIC_FIELDS = new Set([
   'ahmen_fee',
   'production_fees',
+  'vat_amount',
   'deposit_amount',
   'balance_amount',
   'pricing_discount',
@@ -26,7 +27,7 @@ const AHMEN_NUMERIC_FIELDS = new Set([
   'pricing_production_discount_value'
 ]);
 
-const AHMEN_BOOLEAN_FIELDS = new Set(['venue_same_as_client']);
+const AHMEN_BOOLEAN_FIELDS = new Set(['venue_same_as_client', 'vat_enabled']);
 
 const STATUS_OPTIONS = [
   { value: 'enquiry', label: 'Enquiry' },
@@ -71,6 +72,21 @@ const DOCUMENT_TYPE_OPTIONS = Object.entries(DOC_TYPE_META).map(([value, meta]) 
   value,
   label: meta.label
 }));
+
+// Fields that should never render in the jobsheet UI (legacy/redundant)
+const HIDDEN_JOBSHEET_FIELDS = new Set([
+  'client_address1',
+  'client_address2',
+  'client_address3',
+  'client_town',
+  'client_postcode',
+  'venue_address1',
+  'venue_address2',
+  'venue_address3',
+  'venue_town',
+  'venue_postcode',
+  'extra_fees'
+]);
 
 const BOOKING_PACK_DEFINITION_KEYS = new Set(['booking_schedule', 't_cs', 'invoice_deposit']);
 
@@ -289,6 +305,7 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   client_name: '',
   client_email: '',
   client_phone: '',
+  client_address: '',
   client_address1: '',
   client_address2: '',
   client_address3: '',
@@ -299,6 +316,7 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   event_start: '',
   event_end: '',
   venue_id: null,
+  venue_address: '',
   venue_same_as_client: false,
   venue_name: '',
   venue_address1: '',
@@ -308,15 +326,17 @@ const DEFAULT_JOBSHEET = (businessId) => ({
   venue_postcode: '',
   ahmen_fee: '',
   production_fees: '',
+  vat_amount: '',
+  vat_enabled: false,
   deposit_amount: '',
   balance_amount: '',
   balance_due_date: '',
   balance_reminder_date: '',
   service_types: '',
   notes: '',
+  special_conditions: '',
   pricing_service_id: '',
   pricing_selected_singers: [],
-  pricing_custom_fees: '',
   pricing_discount: '',
   pricing_discount_type: 'amount',
   pricing_discount_value: '',
@@ -332,9 +352,9 @@ const DEFAULT_JOBSHEET = (businessId) => ({
 const CATEGORY_TO_GROUP_KEY = {
   client: 'client',
   event: 'event',
-  venue: 'venue',
+  venue: 'event',
   financial: 'billing',
-  services: 'services'
+  services: 'event'
 };
 
 const FIELD_META = {
@@ -363,6 +383,10 @@ const FIELD_META = {
     component: 'productionPanel',
     always: true
   },
+  vat_row: {
+    component: 'vatRow',
+    fallback: true
+  },
   documents_panel: {
     component: 'documentsPanel',
     always: true
@@ -378,24 +402,33 @@ const FIELD_META = {
     always: true,
     fallback: true
   },
+  special_conditions: {
+    label: 'Special Conditions',
+    type: 'textarea',
+    rows: 3,
+    hint: 'Shown on the booking schedule for client confirmation.',
+    fallback: true
+  },
   client_name: { fallback: true },
   client_email: { type: 'email', fallback: true },
   client_phone: { type: 'tel', fallback: true },
-  client_address1: { fallback: true },
-  client_address2: { fallback: true },
-  client_address3: { fallback: true },
-  client_town: { fallback: true },
-  client_postcode: { fallback: true },
+  client_address: { label: 'Client Address', type: 'textarea', rows: 3, fallback: true },
+  client_address1: { fallback: false },
+  client_address2: { fallback: false },
+  client_address3: { fallback: false },
+  client_town: { fallback: false },
+  client_postcode: { fallback: false },
   event_type: { fallback: true },
   event_date: { type: 'date', fallback: true },
   event_start: { type: 'time', fallback: true },
   event_end: { type: 'time', fallback: true },
   venue_name: { fallback: true },
-  venue_address1: { fallback: true },
-  venue_address2: { fallback: true },
-  venue_address3: { fallback: true },
-  venue_town: { fallback: true },
-  venue_postcode: { fallback: true },
+  venue_address: { label: 'Venue Address', type: 'textarea', rows: 3, fallback: true },
+  venue_address1: { fallback: false },
+  venue_address2: { fallback: false },
+  venue_address3: { fallback: false },
+  venue_town: { fallback: false },
+  venue_postcode: { fallback: false },
   caterer_name: {},
   service_types: { type: 'textarea', rows: 2, fallback: true },
   specialist_singers: { type: 'textarea', rows: 2 },
@@ -415,11 +448,6 @@ const FIELD_META = {
     readOnly: true,
     always: true,
     fallback: true
-  },
-  extra_fees: {
-    label: 'Extra Fees',
-    type: 'number',
-    step: '0.01'
   },
   total_amount: {
     label: 'Total Amount',
@@ -472,35 +500,29 @@ const GROUP_CONFIG = {
       'client_name',
       'client_email',
       'client_phone',
-      'client_address1',
-      'client_address2',
-      'client_address3',
-      'client_town',
-      'client_postcode'
+      'client_address'
     ],
     prepend: ['status'],
     defaultOpen: true
   },
   event: {
-    title: 'Event Details',
-    description: 'What, when, and how the event will run.',
+    title: 'Event & Venue Details',
+    description: 'What, when, where, and key requirements.',
     category: 'event',
-    order: ['event_type', 'event_date', 'event_start', 'event_end']
-  },
-  venue: {
-    title: 'Venue Details',
-    description: 'Where your team will be performing and saved venue options.',
-    category: 'venue',
     order: [
+      'event_type',
+      'event_date',
+      'event_start',
+      'event_end',
+      'venue_same_as_client',
+      'saved_venue',
       'venue_name',
-      'venue_address1',
-      'venue_address2',
-      'venue_address3',
-      'venue_town',
-      'venue_postcode',
-      'caterer_name'
-    ],
-    prepend: ['saved_venue', 'venue_same_as_client']
+      'venue_address',
+      'caterer_name',
+      'service_types',
+      'specialist_singers',
+      'special_conditions'
+    ]
   },
   pricing: {
     title: 'Pricing & Personnel',
@@ -519,22 +541,15 @@ const GROUP_CONFIG = {
     description: 'Invoicing breakdown that feeds quotes and invoices.',
     category: 'financial',
     order: [
+      'vat_row',
       'ahmen_fee',
       'production_fees',
-      'extra_fees',
       'total_amount',
       'deposit_amount',
       'balance_amount',
       'balance_due_date',
       'balance_reminder_date'
     ]
-  },
-  services: {
-    title: 'Services & Notes',
-    description: 'Additional requirements and context for the booking.',
-    category: 'services',
-    order: ['service_types', 'specialist_singers'],
-    append: ['notes']
   },
   documents: {
     title: 'Documents',
@@ -777,6 +792,7 @@ function buildJobsheetGroups(mergeFields = []) {
 
     const addField = (fieldKey, { force } = {}) => {
       if (!fieldKey || used.has(fieldKey)) return;
+      if (HIDDEN_JOBSHEET_FIELDS.has(fieldKey)) return;
       const meta = FIELD_META[fieldKey] || {};
       const candidate = bucketMap.get(fieldKey) || registryMap.get(fieldKey);
       const showFromRegistry = Boolean(candidate && candidate.show_in_jobsheet !== false && candidate.active !== false);
@@ -1114,14 +1130,20 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
   const [editingRemId, setEditingRemId] = useState(null);
   const [remDraft, setRemDraft] = useState('');
   const [savingRemId, setSavingRemId] = useState(null);
-  const [sortKey, setSortKey] = useState('due'); // number | client | amount | due | reminder | status
+  const [sortKey, setSortKey] = useState('number'); // number | client | event_date | paid | reminder
   const [sortDir, setSortDir] = useState('desc'); // asc | desc
 
   const toggleSort = useCallback((key) => {
+    const defaults = {
+      number: 'desc',
+      client: 'asc',
+      event_date: 'asc',
+      paid: 'asc',
+      reminder: 'asc'
+    };
     setSortKey(prevKey => {
       if (prevKey !== key) {
-        // default directions per column
-        setSortDir((key === 'client' || key === 'status') ? 'asc' : 'desc');
+        setSortDir(defaults[key] || 'asc');
         return key;
       }
       setSortDir(prev => (prev === 'asc' ? 'desc' : 'asc'));
@@ -1644,19 +1666,6 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
         if (ad != null && bd != null) return (ad - bd) * dirMul;
         return 0;
       }
-      if (sortKey === 'amount') {
-        const av = Number(a.total_amount ?? a.balance_due);
-        const bv = Number(b.total_amount ?? b.balance_due);
-        return ((Number.isFinite(av) ? av : -Infinity) - (Number.isFinite(bv) ? bv : -Infinity)) * dirMul;
-      }
-      if (sortKey === 'due') {
-        const av = asDate(a.due_date);
-        const bv = asDate(b.due_date);
-        if (av != null && bv != null) return (av - bv) * dirMul;
-        if (av != null) return -1 * dirMul;
-        if (bv != null) return 1 * dirMul;
-        return 0;
-      }
       if (sortKey === 'reminder') {
         const av = asDate(a.reminder_date);
         const bv = asDate(b.reminder_date);
@@ -1665,10 +1674,17 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
         if (bv != null) return 1 * dirMul;
         return 0;
       }
-      if (sortKey === 'status') {
-        const order = { paid: 3, 'due soon': 2, overdue: 1, issued: 0 };
-        const av = order[(a.derived_status || '').toLowerCase()] ?? -1;
-        const bv = order[(b.derived_status || '').toLowerCase()] ?? -1;
+      if (sortKey === 'event_date') {
+        const av = asDate(a.display_event_date || a.event_date);
+        const bv = asDate(b.display_event_date || b.event_date);
+        if (av != null && bv != null) return (av - bv) * dirMul;
+        if (av != null) return -1 * dirMul;
+        if (bv != null) return 1 * dirMul;
+        return 0;
+      }
+      if (sortKey === 'paid') {
+        const av = String(a.status || '').toLowerCase() === 'paid' || !!a.paid_at ? 1 : 0;
+        const bv = String(b.status || '').toLowerCase() === 'paid' || !!b.paid_at ? 1 : 0;
         if (av !== bv) return (av - bv) * dirMul;
         return 0;
       }
@@ -1676,6 +1692,31 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     };
     return filtered.slice().sort(cmp);
   }, [list, filter, search, sortKey, sortDir]);
+
+  // Keep last invoice number in sync with the highest number in the log (only ever bumps upward).
+  const lastInvoiceSyncRef = useRef(null);
+  useEffect(() => {
+    if (!businessId) return;
+    const rows = Array.isArray(list) ? list : [];
+    const maxNumber = rows.reduce((max, doc) => {
+      const raw = doc?.number != null ? Number(doc.number) : null;
+      if (Number.isFinite(raw)) return Math.max(max, raw);
+      const fp = String(doc?.file_path || '');
+      const base = fp ? fp.split(/[\\/]+/).pop() || '' : '';
+      const match = base.match(/INV[-\s]?(\d+)/i);
+      const parsed = match ? Number(match[1]) : null;
+      return Number.isFinite(parsed) ? Math.max(max, parsed) : max;
+    }, 0);
+    if (!Number.isFinite(maxNumber) || maxNumber <= 0) return;
+    if (lastInvoiceSyncRef.current === maxNumber) return;
+    const current = business?.last_invoice_number != null ? Number(business.last_invoice_number) : null;
+    if (Number.isFinite(current) && current >= maxNumber) {
+      lastInvoiceSyncRef.current = maxNumber;
+      return;
+    }
+    lastInvoiceSyncRef.current = maxNumber;
+    window.api?.setLastInvoiceNumber?.(businessId, maxNumber).catch(() => {});
+  }, [list, businessId, business?.last_invoice_number]);
 
   // Bulk lock all visible (based on current filter/search)
   const canLockAll = useMemo(() => {
@@ -1713,426 +1754,105 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     try { return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(n); } catch (_err) { return `£${n.toFixed(2)}`; }
   };
 
-  // Narrower INV column, wider Client/Event column
-  const GRID_COLS = '0.8fr 3.4fr 1fr 0.9fr 1fr 0.9fr 64px';
-  const GRID_TEMPLATE_WITH_SEP = '0.8fr 1px 3.4fr 1px 1fr 1px 0.9fr 1px 1fr 1px 0.9fr 1px 64px';
-  const CELL_BORDER = '#94a3b8'; // clearer divider (slate-400)
-
-  const statusPill = (value) => {
-    const v = (value || '').toLowerCase();
-    const palette = {
-      paid:   { bg: '#ecfdf5', border: '#86efac', color: '#166534' }, // green-50/300/800-ish
-      overdue:{ bg: '#fef2f2', border: '#fca5a5', color: '#991b1b' }, // red-50/300/800-ish
-      'due soon': { bg: '#fffbeb', border: '#fcd34d', color: '#92400e' }, // amber-50/300/800-ish
-      default:{ bg: '#f8fafc', border: '#cbd5e1', color: '#334155' } // slate-50/300/700-ish
-    };
-    const p = palette[v] || palette.default;
-    return (
-      <span
-        className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium border"
-        style={{ backgroundColor: p.bg, borderColor: p.border, color: p.color }}
-      >
-        {value || '—'}
-      </span>
-    );
-  };
-
-  const [menuOpenId, setMenuOpenId] = useState(null);
-  const closeMenus = useCallback(() => setMenuOpenId(null), []);
-  useEffect(() => {
-    const onDoc = (e) => {
-      if (!menuOpenId) return;
-      try {
-        const target = e.target;
-        if (target && typeof target.closest === 'function') {
-          const container = target.closest('[data-kebab-for]');
-          if (container) {
-            const idAttr = container.getAttribute('data-kebab-for');
-            const idNum = idAttr != null ? Number(idAttr) : null;
-            if (idNum != null && idNum === menuOpenId) {
-              // Click was inside the open menu/button container; do not auto-close
-              return;
-            }
-          }
-        }
-      } catch (_) {}
-      closeMenus();
-    };
-    document.addEventListener('scroll', onDoc, true);
-    document.addEventListener('mousedown', onDoc);
-    return () => { document.removeEventListener('scroll', onDoc, true); document.removeEventListener('mousedown', onDoc); };
-  }, [menuOpenId, closeMenus]);
-
-  // Close kebab on Escape
-  useEffect(() => {
-    const onKey = (e) => {
-      if (!menuOpenId) return;
-      if (e.key === 'Escape' || e.key === 'Esc') {
-        e.stopPropagation();
-        closeMenus();
-      }
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [menuOpenId, closeMenus]);
-
   return (<>
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold text-slate-700">Invoice Log</h2>
-          <p className="text-sm text-slate-500">Manage issued invoices and reminders.</p>
+          <p className="text-sm text-slate-500">Issued invoices with payment tracking.</p>
         </div>
-          <div className="flex items-center gap-2 text-sm">
-            <input
-              type="text"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Search by #, client, or event…"
-              className="w-64 rounded border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-            />
-            <select value={filter} onChange={e => setFilter(e.target.value)} className="rounded border border-slate-300 px-2 py-1 text-sm">
-              <option value="all">All</option>
-              <option value="unpaid">Unpaid</option>
-              <option value="overdue">Overdue</option>
-              <option value="duesoon">Due soon</option>
-              <option value="paid">Paid</option>
-            </select>
-            <button type="button" onClick={handleImportHistoric} disabled={importing} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60">{importing ? 'Importing…' : 'Import from filenames'}</button>
-            <button type="button" onClick={refresh} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-            <button
-              type="button"
-              onClick={handleLockAll}
-              disabled={!canLockAll}
-              className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60"
-              title="Lock all visible invoices"
-            >
-              Lock all
-            </button>
-          </div>
+        <button
+          type="button"
+          onClick={refresh}
+          className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+        >
+          Refresh
+        </button>
       </div>
 
       {error ? <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div> : null}
       {loading ? <div className="text-sm text-slate-500">Loading…</div> : null}
 
-      <div
-        className="rounded border border-slate-200 overflow-x-auto"
-        tabIndex={0}
-        ref={panelRef}
-        onMouseDown={(e) => {
-          // Only focus container if clicking outside form fields
-          const t = e.target;
-          const tag = t && t.tagName ? t.tagName.toLowerCase() : '';
-          const isForm = tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable);
-          if (isForm) return;
-          try { panelRef.current?.focus({ preventScroll: true }); } catch (_) {}
-        }}
-        onKeyDown={(e) => {
-          // Quick Look selected invoice with Spacebar (not while editing)
-          if ((e.key === ' ' || e.code === 'Space') && !rebuildOpen) {
-            const t = e.target;
-            const tag = t && t.tagName ? t.tagName.toLowerCase() : '';
-            const isForm = tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable);
-            if (isForm) return; // let form fields handle space
-            e.preventDefault();
-            quickLookSelected();
-          }
-        }}
-      >
-        <div
-          className="grid items-center px-3 py-3 text-xs font-semibold text-slate-600"
-          style={{ gridTemplateColumns: GRID_COLS, textAlign: 'left' }}
-        >
-          <button type="button" onClick={() => toggleSort('number')} className="text-left hover:text-indigo-600">
-            Invoice # {renderSortIndicator('number')}
-          </button>
-          <button type="button" onClick={() => toggleSort('client')} className="text-left hover:text-indigo-600">
-            Client / Event {renderSortIndicator('client')}
-          </button>
-          <button type="button" onClick={() => toggleSort('amount')} className="text-left hover:text-indigo-600">
-            Amount {renderSortIndicator('amount')}
-          </button>
-          <button type="button" onClick={() => toggleSort('due')} className="text-left hover:text-indigo-600">
-            Due {renderSortIndicator('due')}
-          </button>
-          <button type="button" onClick={() => toggleSort('reminder')} className="text-left hover:text-indigo-600">
-            Reminder {renderSortIndicator('reminder')}
-          </button>
-          <button type="button" onClick={() => toggleSort('status')} className="text-center hover:text-indigo-600">
-            Status {renderSortIndicator('status')}
-          </button>
-          <div style={{ textAlign: 'center' }}>Actions</div>
-        </div>
-        <div className="divide-y divide-slate-200">
-          {computed.map(doc => {
-            const detectVariant = (d) => {
-              const raw = String(d.definition_invoice_variant || d.invoice_variant || '').toLowerCase();
-              if (raw === 'deposit' || raw === 'balance') return raw;
-              const hay = `${String(d.file_path || '').toLowerCase()} ${String(d.display_label || d.label || '').toLowerCase()}`;
-              if (hay.includes('deposit')) return 'deposit';
-              if (hay.includes('balance')) return 'balance';
-              return '';
-            };
-            const variant = detectVariant(doc);
-            const variantLabel = variant === 'deposit' ? 'Deposit' : (variant === 'balance' ? 'Balance' : '');
-            const numberLabel = doc.number != null ? `INV-${doc.number}` : '—';
-            const title = numberLabel; // keep tooltip consistent with visible value
-            const eventDateLabel = formatDate(doc.display_event_date || doc.event_date || '');
-            const clientEventBase = [doc.display_client_name || doc.client_name || '', eventDateLabel || ''].filter(Boolean).join(' — ');
-            const clientEvent = variantLabel ? `${clientEventBase} · ${variantLabel}` : clientEventBase;
-            const status = doc.derived_status || doc.status || '';
-            const locked = !!doc.is_locked;
-            const statusKey = String(status || '').toLowerCase();
-            const rowBg = (() => {
-              if (statusKey === 'paid') return '#ecfdf5';
-              if (statusKey === 'overdue') return '#fef2f2';
-              if (statusKey === 'due soon') return '#fffbeb';
-              return 'transparent';
-            })();
-            const isSelected = selectedInvoiceId != null && Number(selectedInvoiceId) === Number(doc.document_id);
-            return (
-              <div
-                key={doc.document_id}
-                className={`grid items-center px-3 py-3 text-sm relative ${isSelected ? 'ring-2 ring-indigo-300 rounded-md' : ''}`}
-                style={{ gridTemplateColumns: GRID_COLS, backgroundColor: rowBg, textAlign: 'left' }}
-                role="row"
-                aria-selected={isSelected}
-                onClick={() => setSelectedInvoiceId(doc.document_id)}
-              >
-                <div className="whitespace-normal break-words" title={title}>
-                  <div className="inline-flex items-center gap-1 max-w-full">
-                    {doc.is_locked ? (
-                      <span className="text-slate-500" aria-label="Locked" title="Locked">🔒</span>
-                    ) : null}
-                    {editingNumberId === doc.document_id ? (
-                      <input
-                        type="number"
-                        min={1}
-                        step={1}
-                        inputMode="numeric"
-                        pattern="[0-9]*"
-                        value={numberDraft}
-                        disabled={savingNumberId === doc.document_id}
-                        onChange={(e) => setNumberDraft(String(e.target.value || '').replace(/[^0-9]/g, ''))}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditNumber(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditNumber(); } }}
-                        onBlur={() => commitEditNumber(doc)}
-                        autoFocus
-                        className="w-24 rounded border border-slate-300 px-2 py-0.5 text-sm"
-                      />
-                    ) : (
-                      <button
-                        type="button"
-                        className={`rounded px-1 py-0.5 truncate ${doc.number == null ? 'text-indigo-600 hover:bg-indigo-50 underline' : 'text-slate-700 hover:bg-slate-50'}`}
-                        onClick={() => beginEditNumber(doc)}
-                        title={doc.number == null ? 'Set invoice number' : 'Edit invoice number'}
-                      >
-                        {numberLabel}
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <div className="truncate" title={clientEvent}>
-                  {editingClientId === doc.document_id ? (
-                    <div className="flex flex-col gap-1">
-                      <input
-                        type="text"
-                        value={clientDraft}
-                        disabled={savingClientId === doc.document_id}
-                        onChange={(e) => setClientDraft(e.target.value)}
-                        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditClient(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditClient(); } }}
-                        className="w-full rounded border border-slate-300 px-2 py-0.5 text-sm"
-                        placeholder="Client name"
-                        autoFocus
-                      />
-                      <div className="grid grid-cols-1 md:grid-cols-[1fr,auto] gap-1 items-center">
-                        <input
-                          type="text"
-                          value={eventNameDraft}
-                          disabled={savingClientId === doc.document_id}
-                          onChange={(e) => setEventNameDraft(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditClient(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditClient(); } }}
-                          className="w-full rounded border border-slate-300 px-2 py-0.5 text-sm"
-                          placeholder="Event name"
-                        />
-                        <input
-                          type="date"
-                          value={eventDateDraft}
-                          disabled={savingClientId === doc.document_id}
-                          onChange={(e) => setEventDateDraft(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditClient(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditClient(); } }}
-                          className="rounded border border-slate-300 px-2 py-0.5 text-sm"
-                          placeholder="Event date"
-                        />
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button type="button" className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50" onClick={() => commitEditClient(doc)}>Save</button>
-                        <button type="button" className="rounded border border-slate-200 px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-50" onClick={cancelEditClient}>Cancel</button>
-                      </div>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50 w-full text-left"
-                      onClick={() => beginEditClient(doc)}
-                      title="Edit client/event"
-                    >
-                      {clientEvent}
-                    </button>
-                  )}
-                </div>
-                <div>
-                  {editingAmountId === doc.document_id ? (
+      <div className="rounded border border-slate-300 overflow-x-auto">
+        <table className="min-w-full border-collapse text-sm">
+          <thead className="bg-slate-100 text-xs uppercase text-slate-600">
+            <tr>
+              <th className="border border-slate-300 px-3 py-2 text-left">
+                <button type="button" onClick={() => toggleSort('number')} className="text-left hover:text-indigo-600">
+                  Inv # {renderSortIndicator('number')}
+                </button>
+              </th>
+              <th className="border border-slate-300 px-3 py-2 text-left">
+                <button type="button" onClick={() => toggleSort('client')} className="text-left hover:text-indigo-600">
+                  Client {renderSortIndicator('client')}
+                </button>
+              </th>
+              <th className="border border-slate-300 px-3 py-2 text-left">
+                <button type="button" onClick={() => toggleSort('event_date')} className="text-left hover:text-indigo-600">
+                  Event Date {renderSortIndicator('event_date')}
+                </button>
+              </th>
+              <th className="border border-slate-300 px-3 py-2 text-center">
+                <button type="button" onClick={() => toggleSort('paid')} className="hover:text-indigo-600">
+                  Paid {renderSortIndicator('paid')}
+                </button>
+              </th>
+              <th className="border border-slate-300 px-3 py-2 text-left">
+                <button type="button" onClick={() => toggleSort('reminder')} className="text-left hover:text-indigo-600">
+                  Reminder {renderSortIndicator('reminder')}
+                </button>
+              </th>
+            </tr>
+          </thead>
+          <tbody className="bg-white">
+            {computed.map(doc => {
+              const numberLabel = doc.number != null ? `INV-${doc.number}` : '—';
+              const detectVariant = (d) => {
+                const raw = String(d.definition_invoice_variant || d.invoice_variant || '').toLowerCase();
+                if (raw === 'deposit' || raw === 'balance') return raw;
+                const hay = `${String(d.file_path || '').toLowerCase()} ${String(d.display_label || d.label || '').toLowerCase()}`;
+                if (hay.includes('deposit')) return 'deposit';
+                if (hay.includes('balance')) return 'balance';
+                return '';
+              };
+              const variant = detectVariant(doc);
+              const variantLabel = variant === 'deposit' ? 'Deposit' : (variant === 'balance' ? 'Balance' : '');
+              const clientBase = doc.display_client_name || doc.client_name || '—';
+              const amountLabel = toCurrency(doc.total_amount ?? doc.balance_due);
+              const clientParts = [clientBase];
+              if (variantLabel) clientParts.push(variantLabel);
+              if (amountLabel) clientParts.push(amountLabel);
+              const clientLabel = clientParts.join(' · ');
+              const eventDateLabel = formatDate(doc.display_event_date || doc.event_date) || '—';
+              const reminderLabel = formatDate(doc.reminder_date) || '—';
+              const isPaid = String(doc.status || '').toLowerCase() === 'paid' || !!doc.paid_at;
+              return (
+                <tr key={doc.document_id}>
+                  <td className="border border-slate-300 px-3 py-2 whitespace-nowrap">{numberLabel}</td>
+                  <td className="border border-slate-300 px-3 py-2">{clientLabel}</td>
+                  <td className="border border-slate-300 px-3 py-2 whitespace-nowrap">{eventDateLabel}</td>
+                  <td className="border border-slate-300 px-3 py-2 text-center">
                     <input
-                      type="number"
-                      step="0.01"
-                      value={amountDraft}
-                      disabled={savingAmountId === doc.document_id}
-                      onChange={(e) => setAmountDraft(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditAmount(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditAmount(); } }}
-                      onBlur={() => commitEditAmount(doc)}
-                      autoFocus
-                      className="w-28 rounded border border-slate-300 px-2 py-0.5 text-sm text-right"
+                      type="checkbox"
+                      checked={isPaid}
+                      onChange={() => handleMarkPaidToggle(doc)}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      aria-label={`Mark ${numberLabel} as ${isPaid ? 'unpaid' : 'paid'}`}
                     />
-                  ) : (
-                    <button type="button" className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50 w-full text-right" onClick={() => beginEditAmount(doc)} title="Edit amount">
-                      {toCurrency(doc.total_amount ?? doc.balance_due)}
-                    </button>
-                  )}
-                </div>
-                <div className="whitespace-nowrap">
-                  {editingDueId === doc.document_id ? (
-                    <input
-                      type="date"
-                      value={dueDraft}
-                      disabled={savingDueId === doc.document_id}
-                      onChange={(e) => setDueDraft(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditDue(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditDue(); } }}
-                      onBlur={() => commitEditDue(doc)}
-                      autoFocus
-                      className="rounded border border-slate-300 px-2 py-0.5 text-sm"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50"
-                      onClick={() => beginEditDue(doc)}
-                      title="Edit due date"
-                    >
-                      {formatDate(doc.due_date) || '—'}
-                    </button>
-                  )}
-                </div>
-                <div className="whitespace-nowrap">
-                  {editingRemId === doc.document_id ? (
-                    <input
-                      type="date"
-                      value={remDraft}
-                      disabled={savingRemId === doc.document_id}
-                      onChange={(e) => setRemDraft(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitEditRem(doc); } else if (e.key === 'Escape') { e.preventDefault(); cancelEditRem(); } }}
-                      onBlur={() => commitEditRem(doc)}
-                      autoFocus
-                      className="rounded border border-slate-300 px-2 py-0.5 text-sm"
-                    />
-                  ) : (
-                    <button
-                      type="button"
-                      className="rounded px-1 py-0.5 text-slate-700 hover:bg-slate-50"
-                      onClick={() => beginEditRem(doc)}
-                      title="Edit reminder date"
-                    >
-                      {formatDate(doc.reminder_date) || '—'}
-                    </button>
-                  )}
-                </div>
-                <div style={{ textAlign: 'center' }}>
-                  {editingStatusId === doc.document_id ? (
-                    <select
-                      value={statusDraft}
-                      disabled={savingStatusId === doc.document_id}
-                      onChange={(e) => setStatusDraft(e.target.value)}
-                      onBlur={() => commitEditStatus(doc)}
-                      className="rounded border border-slate-300 px-2 py-1 text-xs"
-                      autoFocus
-                    >
-                      <option value="Issued">Issued</option>
-                      <option value="Paid">Paid</option>
-                    </select>
-                  ) : (
-                    <button type="button" className="rounded px-2 py-0.5 text-slate-700 hover:bg-slate-50" onClick={() => beginEditStatus(doc)} title="Edit status">
-                      {statusPill(status)}
-                    </button>
-                  )}
-                </div>
-                <div className="flex items-center justify-center gap-2 relative" data-kebab-for={doc.document_id}>
-                  <IconButton size="md" label="Actions" className="bg-white" onClick={(e) => { e.stopPropagation(); setMenuOpenId(prev => prev === doc.document_id ? null : doc.document_id); }}>
-                    <span aria-hidden>⋮</span>
-                  </IconButton>
-                  {menuOpenId === doc.document_id ? (
-                    <div className="absolute right-0 top-full z-20 mt-2 w-48 rounded border border-slate-200 bg-white p-1 shadow-lg">
-                      <button type="button" onClick={() => { toggleLock(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
-                        {locked ? 'Unlock' : 'Lock'}
-                      </button>
-                      <button type="button" onClick={() => { handleSetNumber(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set number…</button>
-                      <button type="button" onClick={async () => {
-                        closeMenus();
-                        setRebuildDoc(doc);
-                        setRebuildLoading(true);
-                        setRebuildPreview(null);
-                        setRebuildOpen(true);
-                        try {
-                          const res = await window.api?.rebuildInvoiceFromFilename?.({ businessId, documentId: doc.document_id, preview: true });
-                          setRebuildPreview(res || null);
-                        } catch (err) {
-                          setRebuildPreview({ ok: false, message: err?.message || 'Unable to preview rebuild' });
-                        } finally {
-                          setRebuildLoading(false);
-                        }
-                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Rebuild from filename…</button>
-                      <button type="button" onClick={async () => {
-                        closeMenus();
-                        setRelinkDoc(doc);
-                        setRelinkOpen(true);
-                        setRelinkLoading(true);
-                        setRelinkJobsheets([]);
-                        setRelinkSelectedId(null);
-                        setRelinkPreview(null);
-                        try {
-                          const list = await window.api?.getAhmenJobsheets?.({ businessId, includeArchived: true });
-                          setRelinkJobsheets(Array.isArray(list) ? list : []);
-                        } catch (_) {}
-                        setRelinkLoading(false);
-                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Relink to jobsheet…</button>
-                      <button type="button" onClick={async () => {
-                        const current = doc?.due_date ? String(doc.due_date).slice(0,10) : '';
-                        const next = window.prompt('Set due date (YYYY-MM-DD)', current);
-                        if (next == null) { closeMenus(); return; }
-                        try { await window.api?.updateDocumentStatus?.(doc.document_id, { due_date: next }); refresh(); } catch (err) { window.alert(err?.message || 'Unable to set due date'); }
-                        closeMenus();
-                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set due date…</button>
-                      <button type="button" onClick={async () => {
-                        const current = doc?.reminder_date ? String(doc.reminder_date).slice(0,10) : '';
-                        const next = window.prompt('Set reminder date (YYYY-MM-DD)', current);
-                        if (next == null) { closeMenus(); return; }
-                        try { await window.api?.updateDocumentStatus?.(doc.document_id, { reminder_date: next }); refresh(); } catch (err) { window.alert(err?.message || 'Unable to set reminder date'); }
-                        closeMenus();
-                      }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">Set reminder…</button>
-                      <button type="button" onClick={() => { handleOpen(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Open</button>
-                      <button type="button" onClick={() => { handleReveal(doc); closeMenus(); }} disabled={!doc.file_path} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100 disabled:opacity-60">Reveal in Finder</button>
-                      <button type="button" onClick={() => { handleMarkPaidToggle(doc); closeMenus(); }} className="w-full text-left rounded px-2 py-1 text-sm text-slate-700 hover:bg-slate-100">
-                        {String(status).toLowerCase() === 'paid' ? 'Mark unpaid' : 'Mark paid'}
-                      </button>
-                      <button type="button" onClick={() => { onDeleteDocument?.(doc); closeMenus(); }} disabled={!doc?.document_id} className="w-full text-left rounded px-2 py-1 text-sm text-red-600 hover:bg-red-50 disabled:opacity-60">Delete</button>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            );
-          })}
-          {(!loading && computed.length === 0) ? (
-            <div className="px-3 py-4 text-sm text-slate-500">No invoices yet.</div>
-          ) : null}
-        </div>
+                  </td>
+                  <td className="border border-slate-300 px-3 py-2 whitespace-nowrap">{reminderLabel}</td>
+                </tr>
+              );
+            })}
+            {(!loading && computed.length === 0) ? (
+              <tr>
+                <td colSpan={5} className="border border-slate-300 px-3 py-4 text-sm text-slate-500">
+                  No invoices yet.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
     </div>
     {rebuildOpen ? (
@@ -2704,8 +2424,16 @@ function addDays(dateStr, offset) {
   return base.toISOString().slice(0, 10);
 }
 
+function parseMoney(value) {
+  if (value === null || value === undefined || value === '') return NaN;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  const cleaned = String(value).replace(/[^0-9.\-]+/g, '');
+  const num = Number(cleaned);
+  return Number.isFinite(num) ? num : NaN;
+}
+
 function toCurrency(value) {
-  const amount = Number(value);
+  const amount = parseMoney(value);
   if (!Number.isFinite(amount)) return '£0.00';
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(amount);
 }
@@ -2770,19 +2498,50 @@ function preparePayload(formState, businessId) {
 function applyDerivedFields(nextState) {
   const next = { ...nextState };
 
-  const singerFee = Number(next.ahmen_fee);
+  const splitAddress = (combined) => {
+    if (!combined) return [];
+    return String(combined)
+      .split(/\r?\n+/)
+      .map(line => line.trim())
+      .filter(Boolean);
+  };
+
+  const spreadAddress = (combined, prefix) => {
+    if (!combined) return;
+    const parts = splitAddress(combined);
+    next[`${prefix}_address1`] = parts[0] || next[`${prefix}_address1`] || '';
+    next[`${prefix}_address2`] = parts[1] || next[`${prefix}_address2`] || '';
+    next[`${prefix}_address3`] = parts[2] || next[`${prefix}_address3`] || '';
+    next[`${prefix}_town`] = parts[3] || next[`${prefix}_town`] || '';
+    next[`${prefix}_postcode`] = parts[4] || next[`${prefix}_postcode`] || '';
+  };
+
+  // Keep legacy address fields in sync with combined address inputs
+  spreadAddress(next.client_address, 'client');
+  spreadAddress(next.venue_address, 'venue');
+
+  const normalizeMoney = (val) => {
+    const num = parseMoney(val);
+    return Number.isFinite(num) ? num : 0;
+  };
+
+  const singerFee = normalizeMoney(next.ahmen_fee);
   const productionSource = next.pricing_production_total ?? next.production_fees;
-  const productionFee = Number(productionSource);
-  const totalForDeposit = [singerFee, productionFee]
-    .map(amount => (Number.isFinite(amount) && amount > 0 ? amount : 0))
-    .reduce((sum, value) => sum + value, 0);
+  const productionFee = normalizeMoney(productionSource);
+  // Always keep VAT amount in sync with current base fees
+  const autoVat = Math.round((singerFee + productionFee) * 0.2 * 100) / 100;
+  next.vat_amount = Number.isFinite(autoVat) ? Number(autoVat.toFixed(2)) : '';
+  const vatValue = next.vat_enabled ? autoVat : 0;
+  const totalForDeposit = Math.max(singerFee + productionFee + vatValue, 0);
 
   if (totalForDeposit > 0) {
     const deposit = Math.round(totalForDeposit * 0.3 * 100) / 100;
     const balance = Math.max(totalForDeposit - deposit, 0);
+    next.total_amount = totalForDeposit.toFixed(2);
     next.deposit_amount = deposit.toFixed(2);
     next.balance_amount = balance.toFixed(2);
   } else {
+    next.total_amount = '';
     next.deposit_amount = '';
     next.balance_amount = '';
   }
@@ -2804,11 +2563,8 @@ function applyDerivedFields(nextState) {
     // Force override: ignore/clear any saved venue selection
     next.venue_id = null;
     next.venue_name = 'Private residence';
-    next.venue_address1 = next.client_address1 || '';
-    next.venue_address2 = next.client_address2 || '';
-    next.venue_address3 = next.client_address3 || '';
-    next.venue_town = next.client_town || '';
-    next.venue_postcode = next.client_postcode || '';
+    next.venue_address = next.client_address || [next.client_address1, next.client_address2, next.client_address3, next.client_town, next.client_postcode].filter(Boolean).join('\n');
+    spreadAddress(next.venue_address, 'venue');
   }
 
   return next;
@@ -4056,7 +3812,16 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     [productionItems]
   );
 
-  const customFeesNumber = Number(formState.pricing_custom_fees) || 0;
+  const parseMoney = useCallback((value) => {
+    if (value === null || value === undefined || value === '') return 0;
+    const num = Number(value);
+    return Number.isFinite(num) ? num : 0;
+  }, []);
+
+  const calcAutoVat = useCallback(() => {
+    const baseFees = parseMoney(formState.ahmen_fee) + parseMoney(formState.production_fees);
+    return Math.round(baseFees * 0.2 * 100) / 100;
+  }, [formState.ahmen_fee, formState.production_fees, parseMoney]);
 
   const formatFeeForInput = useCallback((value) => {
     if (value === null || value === undefined || value === '') return '';
@@ -4182,7 +3947,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       }
     });
 
-    const singerSubtotal = base + customFeesNumber;
+    const singerSubtotal = base;
     const singerDiscountValue = calculateDiscountValue({
       type: formState.pricing_discount_type || 'amount',
       value: formState.pricing_discount,
@@ -4197,21 +3962,20 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     });
     const productionNet = Math.max(productionTotalValue - productionDiscountValue, 0);
     const total = Math.max(singerNet + productionNet, 0);
-    const hasSelection = singerCount > 0 || customFeesNumber !== 0 || productionTotalValue !== 0 || singerDiscountValue > 0 || productionDiscountValue > 0;
+    const hasSelection = singerCount > 0 || productionTotalValue !== 0 || singerDiscountValue > 0 || productionDiscountValue > 0;
     return {
       base,
       singerCount,
       productionSubtotal: productionTotalValue,
       productionNet,
       productionDiscountValue,
-      custom: customFeesNumber,
       singerDiscountValue,
       singerNet,
       subtotal: singerSubtotal + productionTotalValue,
       total,
       hasSelection
     };
-  }, [selectedEntries, poolMap, productionTotalValue, customFeesNumber, formState.pricing_discount, formState.pricing_discount_type, formState.pricing_production_discount, formState.pricing_production_discount_type]);
+  }, [selectedEntries, poolMap, productionTotalValue, formState.pricing_discount, formState.pricing_discount_type, formState.pricing_production_discount, formState.pricing_production_discount_type]);
 
   const totals = pricingTotals || internalTotals;
   const singerDiscountType = formState.pricing_discount_type || 'amount';
@@ -4220,9 +3984,23 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
   const productionDiscountValueNumber = totals.productionDiscountValue || 0;
   const productionSubtotalValue = totals.productionSubtotal ?? productionTotalValue;
   const productionNetValue = totals.productionNet ?? Math.max(productionSubtotalValue - productionDiscountValueNumber, 0);
-  const singerNetValue = totals.singerNet ?? Math.max((totals.base || 0) + customFeesNumber - singerDiscountValueNumber, 0);
-  const totalValue = totals.total ?? (singerNetValue + productionNetValue);
+  const subtotalBeforeVat = (totals.base || 0) + productionSubtotalValue;
+  const vatEnabled = Boolean(formState.vat_enabled);
+  const vatAmountValue = Number.isFinite(Number(formState.vat_amount))
+    ? Number(formState.vat_amount)
+    : calcAutoVat();
+  const singerNetValue = totals.singerNet ?? Math.max((totals.base || 0) - singerDiscountValueNumber, 0);
+  const totalValue = singerNetValue + productionNetValue + (vatEnabled ? vatAmountValue : 0);
   const totalDerivedString = totals.hasSelection ? totalValue.toFixed(2) : '';
+
+  // Auto-calculate VAT at UK rate (20%) when enabled; clear when disabled
+  useEffect(() => {
+    const currentVat = parseMoney(formState.vat_amount);
+    const autoVat = calcAutoVat();
+    if (Math.abs(currentVat - autoVat) > 0.009) {
+      handleFieldChange('vat_amount', autoVat.toFixed(2));
+    }
+  }, [calcAutoVat, parseMoney, handleFieldChange, formState.vat_amount]);
 
   useEffect(() => {
     const nextDiscountString = singerDiscountValueNumber > 0 ? singerDiscountValueNumber.toFixed(2) : '';
@@ -4813,7 +4591,6 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
         <div>Production after discount: {toCurrency(totals.productionNet ?? productionNetValue)}</div>
         <div>Singer discount: -{toCurrency(singerDiscountValueNumber)}</div>
         <div>Production discount: -{toCurrency(productionDiscountValueNumber)}</div>
-        <div>Custom fees: {toCurrency(customFeesNumber)}</div>
         <div className="font-semibold text-indigo-900">Total after adjustments: {toCurrency(totalValue)}</div>
       </div>
       </div>
@@ -5626,6 +5403,9 @@ function DocumentsInlinePanel({
   const excelDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
   const pdfDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
   const defs = Array.isArray(documentDefinitions) ? documentDefinitions : [];
+  const docsByKey = new Map(
+    list.map(d => [d.definition_key || 'workbook', d])
+  );
 
   // helpers to match PDFs to workbook by base name
   const baseNameNoExt = (fp) => {
@@ -5650,9 +5430,12 @@ function DocumentsInlinePanel({
     pdfDocs.map(d => [normalizeBase(baseNameNoExt(d.file_path || '')), d])
   );
 
-  // Dynamic: show all definitions that point to an .xlsx template
+  // Dynamic: show all definitions that point to an .xlsx or .pdf template
   const excelDefs = defs
-    .filter(d => (d?.template_path || '').toLowerCase().endsWith('.xlsx'))
+    .filter(d => {
+      const pathLower = (d?.template_path || '').toLowerCase();
+      return pathLower.endsWith('.xlsx') || pathLower.endsWith('.pdf');
+    })
     .sort((a, b) => {
       const ao = Number.isFinite(a.sort_order) ? a.sort_order : 0;
       const bo = Number.isFinite(b.sort_order) ? b.sort_order : 0;
@@ -5660,19 +5443,22 @@ function DocumentsInlinePanel({
       const al = (a.label || a.key || '').toLowerCase();
       const bl = (b.label || b.key || '').toLowerCase();
       return al.localeCompare(bl);
-    });
-
-  const excelItems = excelDefs.map(def => {
-    const doc = def ? workbookDocsByKey.get(def.key) : null;
-    const label = def.label || def.key;
-    return { def, doc, label };
   });
 
-  const pdfItems = excelItems.map(({ def, label }) => {
+  const excelItems = excelDefs.map(def => {
+    const rawDoc = def ? docsByKey.get(def.key) || null : null;
+    const docIsXlsx = rawDoc && (rawDoc.file_path || '').toLowerCase().endsWith('.xlsx');
+    const doc = docIsXlsx ? rawDoc : (def ? workbookDocsByKey.get(def.key) : null);
+    const pdfDirect = rawDoc && (rawDoc.file_path || '').toLowerCase().endsWith('.pdf') ? rawDoc : null;
+    const label = def.label || def.key;
+    return { def, doc, label, pdfDirect };
+  });
+
+  const pdfItems = excelItems.map(({ def, label, doc, pdfDirect }) => {
     const wbDoc = def ? workbookDocsByKey.get(def.key) : null;
     const wbBase = normalizeBase(baseNameNoExt(wbDoc?.file_path || ''));
-    const pdfDoc = wbDoc ? pdfByBase.get(wbBase) : null;
-    return { def, wbDoc, pdfDoc, label };
+    const pdfDoc = pdfDirect || (wbDoc ? pdfByBase.get(wbBase) : null);
+    return { def, wbDoc: wbDoc || null, pdfDoc, label };
   });
 
   const composerStoreKey = jobsheetId != null ? `jobsheet:${jobsheetId}` : 'jobsheet:global';
@@ -6188,6 +5974,7 @@ function DocumentsInlinePanel({
     const pdfReady = row.pdfExported;
     const workbookLocked = Boolean(workbookDoc?.is_locked);
     const pdfLocked = Boolean(pdfDoc?.is_locked);
+    const isPdfTemplate = row.def && typeof row.def.template_path === 'string' && row.def.template_path.toLowerCase().endsWith('.pdf');
     const emailInfo = row.emailInfo;
     const emailStatusKey = String(emailInfo?.status || '').toLowerCase();
     const mailReady = emailStatusKey ? !['error', 'scheduled_error'].includes(emailStatusKey) : false;
@@ -6199,11 +5986,16 @@ function DocumentsInlinePanel({
     const scheduleDateDisplay = row.mailScheduledAt ? formatTimestampDisplay(row.mailScheduledAt) : '';
     const pdfVariantRequiresNumber = row.def && (row.def.invoice_variant === 'deposit' || row.def.invoice_variant === 'balance');
 
-    const generateDisabled = !jobsheetId || !row.def || !row.def.template_path || definitionsLoading || workbookLocked || !row.gateOk;
-    const exportDisabled = !pdfItem || pdfLocked || !row.gateOk || !workbookReady || definitionsLoading;
+    const generateDisabled = isPdfTemplate
+      ? (!jobsheetId || !row.def || !row.def.template_path || definitionsLoading || !row.gateOk)
+      : (!jobsheetId || !row.def || !row.def.template_path || definitionsLoading || workbookLocked || !row.gateOk);
+    const exportDisabled = isPdfTemplate
+      ? (!row.def || !row.def.template_path || definitionsLoading || pdfLocked || !row.gateOk)
+      : (!pdfItem || pdfLocked || !row.gateOk || !workbookReady || definitionsLoading);
     const mailDisabled = !mailHasTemplate || !pdfReady;
 
     const handleWorkbookPrimaryClick = () => {
+      if (isPdfTemplate) return;
       if (workbookReady) {
         if (workbookDoc?.file_path) onOpenFile?.(workbookDoc.file_path);
         return;
@@ -6218,9 +6010,46 @@ function DocumentsInlinePanel({
         if (pdfDoc?.file_path) onOpenFile?.(pdfDoc.file_path);
         return;
       }
-      if (exportDisabled || !pdfItem) return;
+      if (exportDisabled) return;
       if (docKey) queueAutoLock(docKey, 'pdf');
-      handleExportForDef(pdfItem);
+      if (isPdfTemplate) {
+        handleGenerate(row.def.key);
+      } else if (pdfItem) {
+        handleExportForDef(pdfItem);
+      }
+    };
+
+    const handleRegenerate = async () => {
+      const hasExisting = pdfReady && pdfDoc?.file_path;
+      if (hasExisting) {
+        const confirm = window.confirm('A PDF already exists. Regenerate and overwrite?');
+        if (!confirm) return;
+      }
+      try {
+        if (pdfDoc?.document_id != null && window.api?.deleteDocument) {
+          await window.api.deleteDocument(pdfDoc.document_id, { removeFile: true });
+        } else if (pdfDoc?.file_path && window.api?.deleteDocumentByPath) {
+          await window.api.deleteDocumentByPath({ businessId: numericBusinessId, absolutePath: pdfDoc.file_path });
+        }
+      } catch (err) {
+        console.warn('Failed to remove existing PDF before regenerate', err);
+      }
+
+      if (docKey) queueAutoLock(docKey, 'pdf');
+      let result = null;
+      if (isPdfTemplate) {
+        result = await handleGenerate(row.def.key);
+      } else if (pdfItem) {
+        result = await handleExportForDef(pdfItem);
+      }
+      await refreshJobsheetDocuments();
+      const newPath = result?.file_path || result?.output_path || pdfDoc?.file_path;
+      // Open after generating (prefer newly returned path)
+      setTimeout(() => {
+        if (newPath) {
+          onOpenFile?.(newPath);
+        }
+      }, 150);
     };
 
     const handleMailPrimaryClick = async () => {
@@ -6243,7 +6072,7 @@ function DocumentsInlinePanel({
     </button>
   );
 
-    const workbookRow = (
+    const workbookRow = isPdfTemplate ? null : (
       <div key="row-workbook" className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
         <span className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">XLSX</span>
         {workbookReady ? readyIcon('Workbook ready') : renderActionPill({
@@ -6292,7 +6121,7 @@ function DocumentsInlinePanel({
         <span key="tick" className="inline-flex">{readyIcon('PDF ready')}</span>
       ) : renderActionPill({
         key: 'pdf-export',
-        label: 'Export',
+        label: isPdfTemplate ? 'Generate' : 'Export',
         onClick: handlePdfPrimaryClick,
         disabled: exportDisabled,
         tone: 'indigo'
@@ -6307,6 +6136,16 @@ function DocumentsInlinePanel({
         className="border-slate-200 text-slate-600 hover:bg-slate-50"
       >
         <OpenIcon className="h-4 w-4" />
+      </IconButton>,
+      <IconButton
+        key="regenerate"
+        label="Regenerate PDF"
+        onClick={handleRegenerate}
+        disabled={exportDisabled}
+        size="md"
+        className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+      >
+        <span className="text-2xl font-semibold leading-none">⟳</span>
       </IconButton>,
       <IconButton
         key="reveal"
@@ -6416,9 +6255,11 @@ function DocumentsInlinePanel({
           <div className={`rounded border ${tone.innerBorder} bg-white p-2 shadow-sm`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
               {workbookRow}
-              <div className="hidden sm:block" aria-hidden>
-                <div className="h-9 w-px bg-slate-200" />
-              </div>
+              {workbookRow && pdfRow ? (
+                <div className="hidden sm:block" aria-hidden>
+                  <div className="h-9 w-px bg-slate-200" />
+                </div>
+              ) : null}
               {pdfRow}
             </div>
           </div>
@@ -6548,22 +6389,24 @@ function DocumentsInlinePanel({
   };
 
   const handleExportAll = async () => {
-    // ensure all workbooks exist first
-    const missing = pdfItems.filter(i => !i.wbDoc || !i.wbDoc.file_path);
-    if (missing.length) {
-      const ok = window.confirm('Some PDFs need a workbook. Generate missing workbooks first?');
-      if (!ok) return;
-      for (const i of missing) { // sequential
-        // eslint-disable-next-line no-await-in-loop
-        await onGenerate?.(i.def.key);
-      }
-    }
-    // Only export PDFs that are not already exported
     for (const i of pdfItems) {
       const alreadyExported = Boolean(i.pdfDoc && i.pdfDoc.file_path);
-      if (i.wbDoc && i.wbDoc.file_path && !alreadyExported) {
+      const isPdfTemplate = i.def && (i.def.template_path || '').toLowerCase().endsWith('.pdf');
+      if (alreadyExported) continue;
+      if (isPdfTemplate) {
+        // eslint-disable-next-line no-await-in-loop
+        await onGenerate?.(i.def.key);
+        continue;
+      }
+      if (i.wbDoc && i.wbDoc.file_path) {
         // eslint-disable-next-line no-await-in-loop
         await onExportPdf?.(i.wbDoc);
+      } else if (i.def?.key) {
+        const ok = window.confirm(`No workbook found for ${i.def.label || i.def.key}. Generate it first?`);
+        if (ok) {
+          // eslint-disable-next-line no-await-in-loop
+          await onGenerate?.(i.def.key);
+        }
       }
     }
   };
@@ -6795,7 +6638,6 @@ function ProductionPanel({ formState, onChange, totals }) {
   const productionNetValue = totals?.productionNet ?? Math.max(productionTotalValue - productionDiscountValueNumber, 0);
   const productionDiscountValueDisplay = totals?.productionDiscountValue ?? productionDiscountValueNumber;
   const singerDiscountValueNumber = totals?.singerDiscountValue ?? (Number(formState.pricing_discount_value) || 0);
-  const customFeesNumber = totals?.custom ?? (Number(formState.pricing_custom_fees) || 0);
   const singerNetValue = totals?.singerNet ?? (Number(formState.ahmen_fee) || 0);
   const totalValue = totals?.total ?? (singerNetValue + productionNetValue);
 
@@ -6803,7 +6645,7 @@ function ProductionPanel({ formState, onChange, totals }) {
     <div className="space-y-6">
       <section className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div>
+          <div className="sr-only">
             <span className="text-sm font-medium text-slate-600">Production & external services</span>
             <p className="text-xs text-slate-500">Track external suppliers, apply markup, and include totals automatically.</p>
           </div>
@@ -6811,7 +6653,7 @@ function ProductionPanel({ formState, onChange, totals }) {
         <button
           type="button"
           onClick={handleAddProductionItem}
-          className="inline-flex items-center gap-1 rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          className="inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
         >
           + Add item
         </button>
@@ -6948,7 +6790,6 @@ function ProductionPanel({ formState, onChange, totals }) {
         <div>Production after discount: {toCurrency(totals?.productionNet ?? productionNetValue)}</div>
         <div>Singer discount: -{toCurrency(singerDiscountValueNumber)}</div>
         <div>Production discount: -{toCurrency(productionDiscountValueDisplay)}</div>
-        <div>Custom fees: {toCurrency(customFeesNumber)}</div>
         <div className="font-semibold text-indigo-900">Total after adjustments: {toCurrency(totalValue)}</div>
       </div>
     </div>
@@ -7243,6 +7084,13 @@ function JobsheetEditor({
   const ensureExpanded = useCallback((key) => {
     setCollapsedMap(prev => (prev?.[key] ? { ...prev, [key]: false } : prev));
   }, []);
+  const setExclusiveOpen = useCallback((key) => {
+    setCollapsedMap(() => {
+      const next = {};
+      resolvedGroups.forEach(g => { next[g.key] = g.key !== key; });
+      return next;
+    });
+  }, [resolvedGroups]);
   useEffect(() => {
     try {
       if (typeof window !== 'undefined') {
@@ -7302,27 +7150,15 @@ function JobsheetEditor({
     return bestKey;
   }, [resolvedGroups, stickyTop]);
 
+  // Disable auto-activation on scroll: sections only open via sidebar selection
   useEffect(() => {
-    const onScroll = () => {
-      if (scrollRafRef.current != null) return;
-      scrollRafRef.current = window.requestAnimationFrame(() => {
-        scrollRafRef.current = null;
-        const nextKey = detectActiveGroup();
-        if (nextKey && nextKey !== activeGroupKeyProp) {
-          changeByScrollRef.current = true;
-          onActiveGroupChange?.(nextKey);
-        }
-      });
-    };
-    window.addEventListener('scroll', onScroll, { passive: true });
     return () => {
-      window.removeEventListener('scroll', onScroll);
       if (scrollRafRef.current != null) {
         window.cancelAnimationFrame(scrollRafRef.current);
         scrollRafRef.current = null;
       }
     };
-  }, [detectActiveGroup, activeGroupKeyProp, onActiveGroupChange]);
+  }, []);
 
   const [savedVenueId, setSavedVenueId] = useState(() => (
     formState.venue_id ? String(formState.venue_id) : ''
@@ -7512,10 +7348,10 @@ function JobsheetEditor({
     if (!nextKey) return;
     if (!resolvedGroups.some(group => group.key === nextKey)) return;
     onActiveGroupChange?.(nextKey);
-    ensureExpanded(nextKey);
+    setExclusiveOpen(nextKey);
     // Defer to ensure refs exist
     setTimeout(() => scrollToGroup(nextKey), 0);
-  }, [resolvedGroups, onActiveGroupChange, scrollToGroup, ensureExpanded]);
+  }, [resolvedGroups, onActiveGroupChange, scrollToGroup, setExclusiveOpen]);
 
   // When an external action requests a specific section (e.g., 'documents'),
   // honor it by scrolling into view.
@@ -7565,6 +7401,7 @@ function JobsheetEditor({
     handleFieldChange('venue_same_as_client', false);
     handleFieldChange('venue_id', venue.venue_id);
     handleFieldChange('venue_name', venue.name || '');
+    handleFieldChange('venue_address', [venue.address1, venue.address2, venue.address3, venue.town, venue.postcode].filter(Boolean).join('\n'));
     handleFieldChange('venue_address1', venue.address1 || '');
     handleFieldChange('venue_address2', venue.address2 || '');
     handleFieldChange('venue_address3', venue.address3 || '');
@@ -7623,6 +7460,7 @@ function JobsheetEditor({
           ...prev,
           venue_id: null,
           venue_name: '',
+          venue_address: '',
           venue_address1: '',
           venue_address2: '',
           venue_address3: '',
@@ -7666,8 +7504,9 @@ function JobsheetEditor({
           </div>
         </div>
 
-      <div className="flex flex-col gap-6 lg:flex-row">
-        <nav className="lg:w-64 flex-shrink-0 lg:sticky self-start" style={{ top: stickyTop }}>
+      <div className="relative flex flex-col gap-6 lg:flex-row lg:gap-0 rounded-t-lg overflow-hidden z-0">
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-indigo-200 z-50" />
+        <nav className="lg:w-64 flex-shrink-0 lg:sticky self-start relative z-40" style={{ top: 0 }}>
           <div className="space-y-2" role="navigation" aria-orientation="vertical" aria-label="Jump to section">
             {resolvedGroups.map(group => {
               const isActive = activeGroupKeyProp && group.key === activeGroupKeyProp;
@@ -7678,8 +7517,16 @@ function JobsheetEditor({
                   type="button"
                   onClick={() => setGroupKey(group.key)}
                   aria-current={isActive ? 'page' : undefined}
-                  className={`group flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm' : 'border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
+                  className={`group relative flex w-full items-center gap-3 rounded-lg border px-3 py-3 text-left transition focus:outline-none focus:ring-2 focus:ring-indigo-500 ${isActive ? 'z-50 bg-indigo-50 border-indigo-200 text-indigo-700 font-semibold shadow-sm rounded-r-none border-r-0' : 'z-0 border-transparent bg-white text-slate-600 hover:bg-slate-50 hover:border-slate-200'}`}
+                  style={isActive ? { boxShadow: '4px 0 0 #eef2ff' } : undefined}
                 >
+                  {isActive ? (
+                    <span
+                      aria-hidden
+                      className="pointer-events-none absolute right-[-4px] top-[-2px] bottom-[-2px] w-[8px]"
+                      style={{ background: '#eef2ff' }}
+                    />
+                  ) : null}
                   <span className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full text-lg transition ${isActive ? 'bg-indigo-100 text-indigo-700 shadow-sm' : 'bg-slate-100 text-slate-500 group-hover:bg-slate-200 group-hover:text-slate-700'}`}>
                     {icon}
                   </span>
@@ -7695,206 +7542,286 @@ function JobsheetEditor({
           </div>
         </nav>
 
-        <div className="flex-1">
+        <div className="flex-1 relative" style={{ minHeight: 'min(120vh, 1200px)' }}>
           {resolvedGroups.length ? (
             resolvedGroups.map(group => (
-              <section
-                key={group.key}
-                id={`jobsheet-section-${group.key}`}
-                ref={el => { if (el) sectionRefs.current[group.key] = el; }}
-                className="bg-white border border-slate-200 rounded-lg p-5 space-y-5"
-                style={{ scrollMarginTop: stickyTop + 8 }}
-              >
-                <div>
+              activeGroupKeyProp === group.key ? (
+                <section
+                  key={group.key}
+                  id={`jobsheet-section-${group.key}`}
+                  ref={el => { if (el) sectionRefs.current[group.key] = el; }}
+                  className="relative z-0 border border-indigo-200 bg-indigo-50 rounded-lg p-5 space-y-5 lg:rounded-l-none lg:border-l border-l"
+                  style={{ scrollMarginTop: stickyTop + 8, minHeight: 'min(110vh, 1100px)' }}
+                >
                   <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-lg font-semibold text-slate-700">{group.title}</h3>
-                      {group.key === 'documents' ? (
-                        <>
-                          <button
-                            type="button"
-                            onClick={async () => {
-                              try {
-                                const res = await window.api?.ensureJobsheetFolder?.({ businessId, jobsheetId, jobsheetSnapshot: formState });
-                                const folderPath = res?.folder_path || res?.path || '';
-                                if (!folderPath) throw new Error('Unable to resolve folder path');
-                                const open = await window.api?.openPath?.(folderPath);
-                                if (open && open.ok === false) throw new Error(open.message || 'Unable to open folder');
-                                await onRefreshDocuments?.();
-                              } catch (err) {
-                                window.alert(err?.message || 'Unable to open job folder');
-                              }
-                            }}
-                            className="inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                          >
-                            <span aria-hidden>📂</span>
-                            <span>Open job folder</span>
-                          </button>
-                        </>
-                      ) : null}
+                    <div className="sr-only">
+                      <h3>{group.title}</h3>
+                      {group.description ? <p>{group.description}</p> : null}
                     </div>
-                    <div className="flex items-center gap-2">
+                    {group.key === 'documents' ? (
                       <button
                         type="button"
-                        aria-expanded={!isGroupCollapsed(group.key)}
-                        aria-controls={`jobsheet-section-${group.key}`}
-                        onClick={() => toggleGroup(group.key)}
-                        className="inline-flex items-center gap-1.5 rounded border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:text-indigo-600 hover:border-indigo-200 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                        title={isGroupCollapsed(group.key) ? 'Expand section' : 'Collapse section'}
+                        onClick={async () => {
+                          try {
+                            const res = await window.api?.ensureJobsheetFolder?.({ businessId, jobsheetId, jobsheetSnapshot: formState });
+                            const folderPath = res?.folder_path || res?.path || '';
+                            if (!folderPath) throw new Error('Unable to resolve folder path');
+                            const open = await window.api?.openPath?.(folderPath);
+                            if (open && open.ok === false) throw new Error(open.message || 'Unable to open folder');
+                            await onRefreshDocuments?.();
+                          } catch (err) {
+                            window.alert(err?.message || 'Unable to open job folder');
+                          }
+                        }}
+                        className="inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                       >
-                        <span aria-hidden>{isGroupCollapsed(group.key) ? '▸' : '▾'}</span>
-                        <span className="hidden sm:inline">{isGroupCollapsed(group.key) ? 'Expand' : 'Collapse'}</span>
+                        <span aria-hidden>📂</span>
+                        <span>Open job folder</span>
                       </button>
-                    </div>
+                    ) : null}
                   </div>
-                  {group.description && !isGroupCollapsed(group.key) ? (
-                    <p className="mt-1 text-sm text-slate-500">{group.description}</p>
-                  ) : null}
-                </div>
-                {!isGroupCollapsed(group.key) ? (
-                  <div className="space-y-4">
-                    {group.fields.map(field => {
+                  {group?.fields?.length ? (() => {
+                    const renderFieldControl = (field) => {
                       if (field.component === 'pricingPanel') {
                         return pricingConfig ? (
                           <PricingPanel
                             key={field.name}
-                          pricingConfig={pricingConfig}
-                          pricingTotals={pricingTotals}
-                          formState={formState}
-                          onChange={handleFieldChange}
-                          hasExisting={hasExisting}
-                          onUpdateSingerPool={onUpdateSingerPool}
-                        onFocusPricingPanel={() => setGroupKey('pricing')}
+                            pricingConfig={pricingConfig}
+                            pricingTotals={pricingTotals}
+                            formState={formState}
+                            onChange={handleFieldChange}
+                            hasExisting={hasExisting}
+                            onUpdateSingerPool={onUpdateSingerPool}
+                            onFocusPricingPanel={() => setGroupKey('pricing')}
+                          />
+                        ) : (
+                          <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
+                            Loading pricing configuration…
+                          </div>
+                        );
+                      }
+                      if (field.component === 'gigInfoPanel') {
+                        return (
+                          <GigInfoPanel
+                            key="gigInfoPanel"
+                            formState={formState}
+                            onChange={handleFieldChange}
+                            businessId={Number(businessId) || 0}
+                            jobsheetId={jobsheetId}
+                          />
+                        );
+                      }
+      if (field.component === 'productionPanel') {
+        return (
+          <ProductionPanel
+            key={field.name}
+            formState={formState}
+            onChange={handleFieldChange}
+            totals={pricingTotals}
+          />
+        );
+      }
+      if (field.component === 'vatRow') {
+        return (
+          <div key="vatRow" className="flex flex-col gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:gap-3">
+              <div className="flex items-center gap-2">
+                <input
+                  id="vat_enabled"
+                  name="vat_enabled"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  checked={Boolean(formState.vat_enabled)}
+                  onChange={e => handleFieldChange('vat_enabled', e.target.checked)}
+                />
+                <label htmlFor="vat_enabled" className="text-sm font-medium text-slate-700">
+                  Charge VAT
+                </label>
+              </div>
+              <div className="flex-1 min-w-[180px]">
+                <label className="text-sm font-medium text-slate-700" htmlFor="vat_amount">
+                  VAT (£)
+                </label>
+                <input
+                  id="vat_amount"
+                  name="vat_amount"
+                  type="text"
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm bg-slate-50 text-slate-700 pointer-events-none select-none"
+                  value={(() => {
+                    const toNumber = (value) => {
+                      const num = parseMoney(value);
+                      return Number.isFinite(num) ? num : 0;
+                    };
+                    const autoVat = Math.round((toNumber(formState.ahmen_fee) + toNumber(formState.production_fees)) * 0.2 * 100) / 100;
+                    const vatRaw = toNumber(formState.vat_amount);
+                    const vatDisplay = Number.isFinite(vatRaw) && vatRaw !== 0 ? vatRaw : autoVat;
+                    return Number.isFinite(vatDisplay) ? vatDisplay.toFixed(2) : '';
+                  })()}
+                  readOnly
+                  aria-readonly="true"
+                  tabIndex={-1}
+                />
+                <p className="mt-1 text-xs text-slate-500">Auto-calculated at UK rate; applied only when checked.</p>
+              </div>
+            </div>
+          </div>
+        );
+      }
+                      if (field.component === 'documentsPanel') {
+                        return (
+                          <DocumentsInlinePanel
+                            key="documentsPanel"
+                            jobsheetId={jobsheetId}
+                            jobsheetStatus={formState.status}
+                            documentDefinitions={documentDefinitions}
+                            documents={documents}
+                            loading={documentsLoading}
+                            definitionsLoading={definitionsLoading}
+                            error={documentsError}
+                            onRefresh={onRefreshDocuments}
+                            onGenerate={onGenerateDocument}
+                            onExportPdf={onExportPdf}
+                            onToggleLock={handleToggleDefinitionLockInline}
+                            locksOverride={definitionLocks}
+                            onOpenFile={onOpenDocumentFile}
+                            onRevealFile={onRevealDocument}
+                            onDelete={onDeleteDocument}
+                            documentFolder={documentFolder}
+                            businessId={businessId}
+                            lastInvoiceNumber={business?.last_invoice_number}
+                            jobsheetSnapshot={formState}
+                          />
+                        );
+                      }
+                      if (field.component === 'savedVenueSelector') {
+                        return (
+                          <SavedVenueSelector
+                            key={field.name}
+                            label={field.label}
+                            value={savedVenueId}
+                            venues={venues}
+                            onSelect={handleSelectSavedVenue}
+                            onSaveCurrent={() => onSaveVenue()}
+                            onCreateNew={() => openVenueModal()}
+                            onEdit={handleEditSavedVenue}
+                            onDelete={handleDeleteSavedVenue}
+                            saving={venueSaving}
+                          />
+                        );
+                      }
+
+                      const resolvedValue = field.name === 'status'
+                        ? (formState.status || 'enquiry')
+                        : field.type === 'checkbox'
+                          ? Boolean(formState[field.name])
+                          : formState[field.name] ?? '';
+
+                      return (
+                        <Field
+                          key={field.name}
+                          label={field.label}
+                          name={field.name}
+                          type={field.type || 'text'}
+                          step={field.step}
+                          rows={field.rows}
+                          hint={field.hint}
+                          readOnly={field.name === 'venue_name' ? Boolean(formState.venue_same_as_client) : field.readOnly}
+                          component={field.component}
+                          options={field.options}
+                          autoFocus={(!hasExisting && field.name === 'client_name') ? true : undefined}
+                          value={resolvedValue}
+                          onChange={value => handleFieldChange(
+                            field.name,
+                            field.type === 'checkbox' ? Boolean(value) : value
+                          )}
                         />
-                      ) : (
-                        <div key={field.name} className="rounded border border-slate-200 bg-white p-4 text-sm text-slate-500">
-                          Loading pricing configuration…
+                      );
+                    };
+
+                    if (group.key === 'event') {
+                      const venueFieldNames = new Set([
+                        'venue_same_as_client',
+                        'saved_venue',
+                        'venue_name',
+                        'venue_address'
+                      ]);
+                      const preFields = [];
+                      const venueFields = [];
+                      const postFields = [];
+                      group.fields.forEach(field => {
+                        if (venueFieldNames.has(field.name) || (field.name && field.name.startsWith('venue_')) || field.component === 'savedVenueSelector') {
+                          venueFields.push(field);
+                        } else {
+                          if (postFields.length || field.name === 'service_types' || field.name === 'specialist_singers' || field.name === 'special_conditions') {
+                            postFields.push(field);
+                          } else {
+                            preFields.push(field);
+                          }
+                        }
+                      });
+                      return (
+                        <div className="space-y-4">
+                          {preFields.map(renderFieldControl)}
+                          <div
+                            className="rounded-lg border border-slate-300 bg-slate-100 p-3 space-y-3 shadow-inner"
+                            style={{ backgroundColor: '#e2e8f0' }}
+                          >
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">Venue</div>
+                            {venueFields.map(renderFieldControl)}
+                          </div>
+                          {postFields.map(renderFieldControl)}
                         </div>
                       );
                     }
-                    if (field.component === 'gigInfoPanel') {
+
+                    if (group.key === 'client') {
                       return (
-                        <GigInfoPanel
-                          key="gigInfoPanel"
-                          formState={formState}
-                          onChange={handleFieldChange}
-                          businessId={Number(businessId) || 0}
-                          jobsheetId={jobsheetId}
-                        />
-                      );
-                    }
-                    if (field.component === 'productionPanel') {
-                      return (
-                        <ProductionPanel
-                          key={field.name}
-                          formState={formState}
-                          onChange={handleFieldChange}
-                          totals={pricingTotals}
-                        />
-                      );
-                    }
-                    if (field.component === 'documentsPanel') {
-                      return (
-                        <DocumentsInlinePanel
-                          key="documentsPanel"
-                          jobsheetId={jobsheetId}
-                          jobsheetStatus={formState.status}
-                          documentDefinitions={documentDefinitions}
-                          documents={documents}
-                          loading={documentsLoading}
-                          definitionsLoading={definitionsLoading}
-                          error={documentsError}
-                          onRefresh={onRefreshDocuments}
-                          onGenerate={onGenerateDocument}
-                          onExportPdf={onExportPdf}
-                          onToggleLock={handleToggleDefinitionLockInline}
-                          locksOverride={definitionLocks}
-                          onOpenFile={onOpenDocumentFile}
-                          onRevealFile={onRevealDocument}
-                          onDelete={onDeleteDocument}
-                          documentFolder={documentFolder}
-                          businessId={businessId}
-                          lastInvoiceNumber={business?.last_invoice_number}
-                          jobsheetSnapshot={formState}
-                        />
-                      );
-                    }
-                    if (field.component === 'savedVenueSelector') {
-                      return (
-                        <SavedVenueSelector
-                          key={field.name}
-                          label={field.label}
-                          value={savedVenueId}
-                          venues={venues}
-                          onSelect={handleSelectSavedVenue}
-                          onSaveCurrent={() => onSaveVenue()}
-                          onCreateNew={() => openVenueModal()}
-                          onEdit={handleEditSavedVenue}
-                          onDelete={handleDeleteSavedVenue}
-                          saving={venueSaving}
-                        />
+                        <div className="space-y-4">
+                          <div
+                            className="rounded-lg border border-slate-300 bg-slate-100 p-3 space-y-3 shadow-inner"
+                            style={{ backgroundColor: '#e2e8f0' }}
+                          >
+                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-600">Client</div>
+                            {group.fields.map(renderFieldControl)}
+                          </div>
+                        </div>
                       );
                     }
 
-                    const resolvedValue = field.name === 'status'
-                      ? (formState.status || 'enquiry')
-                      : field.type === 'checkbox'
-                        ? Boolean(formState[field.name])
-                        : formState[field.name] ?? '';
-
-                     return (
-                       <Field
-                         key={field.name}
-                         label={field.label}
-                         name={field.name}
-                         type={field.type || 'text'}
-                         step={field.step}
-                         rows={field.rows}
-                         hint={field.hint}
-                         readOnly={field.name === 'venue_name' ? Boolean(formState.venue_same_as_client) : field.readOnly}
-                         component={field.component}
-                         options={field.options}
-                         autoFocus={(!hasExisting && field.name === 'client_name') ? true : undefined}
-                         value={resolvedValue}
-                         onChange={value => handleFieldChange(
-                           field.name,
-                           field.type === 'checkbox' ? Boolean(value) : value
-                         )}
-                       />
-                     );
-                  })}
-                  </div>
-                ) : null}
-              </section>
+                    return (
+                      <div className="space-y-4">
+                        {group.fields.map(renderFieldControl)}
+                      </div>
+                    );
+                  })() : null}
+                </section>
+              ) : null
             ))
           ) : (
             <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-500">No sections available.</div>
           )}
         </div>
       </div>
+    </div>
 
-      <div className="flex items-center justify-end text-sm text-slate-500 min-h-[1.5rem]">
-        {saving ? 'Saving changes…' : null}
-      </div>
-      </div>
-
-      {showVenueModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
-          <div className="w-full max-w-5xl max-h-[90vh] rounded-lg bg-white p-6 shadow-xl flex flex-col">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-800">Add new venue</h3>
-                <p className="text-sm text-slate-500">Capture the venue details and save them to reuse later.</p>
-              </div>
-              <button
-                type="button"
-                onClick={closeVenueModal}
-                className="text-slate-400 hover:text-slate-600"
-                aria-label="Close venue modal"
-              >
-                ✕
-              </button>
+    {showVenueModal ? (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" role="dialog" aria-modal="true">
+        <div className="w-full max-w-2xl rounded-lg bg-white shadow-xl">
+          <div className="flex items-start justify-between border-b border-slate-200 px-4 py-3">
+            <div>
+              <h3 className="text-lg font-semibold text-slate-800">Add new venue</h3>
+              <p className="text-sm text-slate-500">Capture the venue details and save them to reuse later.</p>
             </div>
+            <button
+              type="button"
+              onClick={closeVenueModal}
+              className="text-slate-400 hover:text-slate-600"
+              aria-label="Close venue modal"
+            >
+              ✕
+            </button>
+          </div>
+          <div className="px-4 pb-5">
             <div className="mt-4 space-y-3">
               <div className="flex items-center justify-start">
                 <button
@@ -8053,9 +7980,7 @@ function JobsheetEditor({
                 </div>
               </div>
               {venueSearchUrl ? (
-                <div className="mt-2 overflow-hidden rounded border border-slate-200 h-[82vh] md:h-[86vh]"
-                >
-                  {/* Electron webview renders external content inside the modal */}
+                <div className="mt-2 overflow-hidden rounded border border-slate-200 h-[82vh] md:h-[86vh]">
                   <webview
                     src={venueSearchUrl}
                     allowpopups="false"
@@ -8110,7 +8035,6 @@ function JobsheetEditor({
                   />
                 </label>
               </div>
-              
             </div>
             <div className="mt-6 flex justify-end gap-2">
               <button
@@ -8131,9 +8055,10 @@ function JobsheetEditor({
             </div>
           </div>
         </div>
-      ) : null}
-    </>
-  );
+      </div>
+    ) : null}
+  </>
+);
 }
 
 function BusinessWorkspace({ business, onBusinessUpdate }) {
@@ -8367,6 +8292,14 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       }
     } catch (_err) {}
   }, [persistUi, applyStoredScroll]);
+
+  const appliedScrollRef = useRef(false);
+  useEffect(() => {
+    if (!persistUi || appliedScrollRef.current) return;
+    if (listLoading) return;
+    appliedScrollRef.current = true;
+    setTimeout(() => applyStoredScroll(), 120);
+  }, [persistUi, applyStoredScroll, listLoading]);
   // Stop auto-scroll on tab switch; scroll only on explicit actions (open/create)
 
   useEffect(() => {
@@ -9862,6 +9795,17 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => setPersistUi(prev => !prev)}
+                className={`w-full rounded-lg border px-3 py-2 text-left text-xs font-semibold shadow-sm transition ${
+                  persistUi
+                    ? 'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'
+                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {persistUi ? 'Disable restore previous view' : 'Enable restore previous view'}
+              </button>
             </div>
           </nav>
 
@@ -10113,6 +10057,17 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                 <div>
                   <h2 className="text-lg font-semibold text-slate-700">Business settings</h2>
                   <p className="text-sm text-slate-500">Update folders and review business information.</p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPersistUi(prev => !prev)}
+                    className="inline-flex items-center rounded bg-indigo-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  >
+                    {persistUi ? 'Disable previous view restore' : 'Enable previous view restore'}
+                  </button>
+                  <span className="text-xs text-slate-500 self-center">Toggles restoring the previous app layout and position.</span>
                 </div>
 
                 <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
@@ -12324,8 +12279,7 @@ function JobsheetEditorWindow({
       base += Number.isFinite(feeValue) ? feeValue : 0;
     });
 
-    const custom = Number(formState.pricing_custom_fees) || 0;
-    const singerSubtotal = base + custom;
+    const singerSubtotal = base;
     const singerDiscountValue = calculateDiscountValue({
       type: formState.pricing_discount_type || 'amount',
       value: formState.pricing_discount,
@@ -12342,12 +12296,11 @@ function JobsheetEditorWindow({
     const productionNet = Math.max(productionSubtotal - productionDiscountValue, 0);
 
     const total = Math.max(singerNet + productionNet, 0);
-    const hasSelection = singerCount > 0 || custom !== 0 || productionSubtotal !== 0 || singerDiscountValue > 0 || productionDiscountValue > 0;
+    const hasSelection = singerCount > 0 || productionSubtotal !== 0 || singerDiscountValue > 0 || productionDiscountValue > 0;
     const totalString = hasSelection ? total.toFixed(2) : '';
     return {
       base,
       singerCount,
-      custom,
       singerSubtotal,
       singerNet,
       singerDiscountValue,
@@ -12423,12 +12376,13 @@ function JobsheetEditorWindow({
       const prevY = typeof window !== 'undefined' ? (window.scrollY || 0) : 0;
       const prevActive = typeof document !== 'undefined' ? document.activeElement : null;
       const anchor = typeof document !== 'undefined' ? document.getElementById('inline-jobsheet-editor') : null;
-      const wasEditing = prevActive && anchor && anchor.contains(prevActive) && (/^(input|textarea|select)$/i).test(prevActive.tagName);
-      // If user is actively editing the client name field, skip this autosave cycle to avoid UI movement
-      const editingName = wasEditing && prevActive && (prevActive.getAttribute('name') === 'client_name');
-      if (editingName) {
-        return; // next keystroke or blur will schedule/save again
-      }
+      const wasEditing = !!(prevActive && anchor && anchor.contains(prevActive));
+      const hadSelection =
+        prevActive &&
+        typeof prevActive.selectionStart === 'number' &&
+        typeof prevActive.selectionEnd === 'number'
+          ? { start: prevActive.selectionStart, end: prevActive.selectionEnd }
+          : null;
       setSaving(true);
       try {
         const payload = preparePayload(formState, numericBusinessId);
@@ -12446,11 +12400,15 @@ function JobsheetEditorWindow({
         setMessage('Saved');
         // Restore focus and scroll position if the autosave caused layout to move
         try {
-          if (wasEditing && prevActive && typeof prevActive.focus === 'function') {
+          if (wasEditing && prevActive && typeof prevActive.focus === 'function' && document.contains(prevActive)) {
             prevActive.focus();
             if (prevActive.setSelectionRange && typeof prevActive.value === 'string') {
-              const pos = prevActive.value.length;
-              prevActive.setSelectionRange(pos, pos);
+              if (hadSelection) {
+                prevActive.setSelectionRange(hadSelection.start, hadSelection.end);
+              } else {
+                const pos = prevActive.value.length;
+                prevActive.setSelectionRange(pos, pos);
+              }
             }
           }
         } catch (_) {}
@@ -12549,7 +12507,6 @@ function JobsheetEditorWindow({
 
     const depositAmount = parseAmount(current.deposit_amount);
     const balanceAmount = parseAmount(current.balance_amount);
-    const extraFees = parseAmount(current.extra_fees ?? current.pricing_custom_fees);
     const productionFees = parseAmount(current.production_fees) ?? productionSubtotal;
 
     const discountAmount = parseAmount(
@@ -12614,7 +12571,6 @@ function JobsheetEditorWindow({
     };
     addLineItem('Performance fee', current.ahmen_fee);
     addLineItem('Production services', productionFees);
-    addLineItem('Extras', extraFees);
 
     const payload = {
       business_id: numericBusinessId,
@@ -12628,7 +12584,6 @@ function JobsheetEditorWindow({
       balance_reminder_date: current.balance_reminder_date || undefined,
       deposit_amount: depositAmount ?? undefined,
       discount_amount: discountAmount ?? undefined,
-      extra_fees: extraFees ?? undefined,
       production_fees: productionFees ?? undefined,
       service_types: current.service_types || '',
       specialist_singers: current.specialist_singers || '',
@@ -12793,6 +12748,15 @@ function JobsheetEditorWindow({
       });
       setTimeout(() => setMessage(''), 4000);
       await refreshJobsheetDocuments();
+
+      // Open freshly generated PDFs/workbooks
+      const openPath = result?.file_path || result?.output_path || '';
+      if (openPath) {
+        setTimeout(() => {
+          window.api?.openPath?.(openPath).catch(() => {});
+        }, 150);
+      }
+
       return result;
     } catch (err) {
       console.error('Failed to generate document', err);
@@ -13106,9 +13070,27 @@ function JobsheetEditorWindow({
     return () => window.removeEventListener('beforeunload', handler);
   }, [numericBusinessId, jobsheetId, buildSnapshot]);
 
-  const summarySingerFee = Number(formState.ahmen_fee) || (pricingDerived ? pricingDerived.singerNet : 0);
-  const summaryProductionFee = Number(formState.production_fees) || (pricingDerived ? pricingDerived.productionNet : 0);
-  const summaryTotal = pricingDerived ? pricingDerived.total : summarySingerFee + summaryProductionFee;
+  const summarySingerFee = (() => {
+    const parsed = parseMoney(formState.ahmen_fee);
+    if (Number.isFinite(parsed)) return parsed;
+    return pricingDerived ? pricingDerived.singerNet : 0;
+  })();
+  const summaryProductionFee = (() => {
+    const parsed = parseMoney(formState.production_fees);
+    if (Number.isFinite(parsed)) return parsed;
+    return pricingDerived ? pricingDerived.productionNet : 0;
+  })();
+  const summaryVat = formState.vat_enabled
+    ? (() => {
+      const parsed = parseMoney(formState.vat_amount);
+      if (Number.isFinite(parsed) && parsed !== 0) return parsed;
+      return Math.round((summarySingerFee + summaryProductionFee) * 0.2 * 100) / 100;
+    })()
+    : 0;
+  const baseTotal = pricingDerived
+    ? (pricingDerived.total ?? (summarySingerFee + summaryProductionFee))
+    : summarySingerFee + summaryProductionFee;
+  const summaryTotal = baseTotal + (formState.vat_enabled ? summaryVat : 0);
   const summaryCard = (
     <div className="bg-white border border-slate-200 rounded-lg px-5 py-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-5 text-sm text-slate-600">
       <div>
@@ -13127,7 +13109,10 @@ function JobsheetEditorWindow({
       <div>
         <div className="text-xs uppercase tracking-wide text-slate-400">Fee</div>
         <div className="text-base font-semibold text-slate-800">{toCurrency(summaryTotal)}</div>
-        <div className="text-xs text-slate-500">Singers {toCurrency(summarySingerFee)} · Production {toCurrency(summaryProductionFee)}</div>
+        <div className="text-xs text-slate-500">
+          Singers {toCurrency(summarySingerFee)} · Production {toCurrency(summaryProductionFee)}
+          {formState.vat_enabled ? ` · VAT ${toCurrency(summaryVat)}` : ''}
+        </div>
       </div>
       <div>
         <div className="text-xs uppercase tracking-wide text-slate-400">Status</div>
@@ -13444,6 +13429,10 @@ function mapApiToForm(apiData, businessId) {
       base[key] = parseProductionItems(value);
       return;
     }
+    if (key === 'vat_enabled') {
+      base[key] = Boolean(value);
+      return;
+    }
     if (key === 'venue_same_as_client') {
       base[key] = Boolean(value);
       return;
@@ -13483,6 +13472,25 @@ function mapApiToForm(apiData, businessId) {
   }
   if (!base.pricing_production_subtotal && base.production_fees != null) {
     base.pricing_production_subtotal = String(base.production_fees);
+  }
+  const combineAddress = (parts) => parts.filter(Boolean).join('\n');
+  if (!base.client_address) {
+    base.client_address = combineAddress([
+      base.client_address1,
+      base.client_address2,
+      base.client_address3,
+      base.client_town,
+      base.client_postcode
+    ]);
+  }
+  if (!base.venue_address) {
+    base.venue_address = combineAddress([
+      base.venue_address1,
+      base.venue_address2,
+      base.venue_address3,
+      base.venue_town,
+      base.venue_postcode
+    ]);
   }
   return applyDerivedFields(base);
 }

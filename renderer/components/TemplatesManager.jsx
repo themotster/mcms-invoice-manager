@@ -10,7 +10,7 @@ const CATEGORY_LABELS = {
   other: 'Other'
 };
 
-const WORKBOOK_FILE_FILTERS = [{ name: 'Excel workbook', extensions: ['xlsx'] }];
+const WORKBOOK_FILE_FILTERS = [{ name: 'Excel workbook or PDF', extensions: ['xlsx', 'pdf'] }];
 
 const TEMPLATES_MANAGER_TABS = [
   { key: 'templates', label: 'Templates' },
@@ -320,22 +320,25 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
     try {
       const previousScroll = typeof window !== 'undefined' ? window.scrollY : 0;
       const selectedPath = await api.chooseFile({
-        title: `Select workbook for ${definition.label || startCase(definition.key)}`,
+        title: `Select template for ${definition.label || startCase(definition.key)}`,
         filters: WORKBOOK_FILE_FILTERS
       });
       if (!selectedPath) return;
 
       setBusyDefinitionKey(definition.key);
-      setMessage('Updating workbook template…');
+      setMessage('Updating template…');
 
       try {
-        await api.normalizeTemplate?.({ templatePath: selectedPath });
+        const lowerPath = String(selectedPath).toLowerCase();
+        if (lowerPath.endsWith('.xlsx')) {
+          await api.normalizeTemplate?.({ templatePath: selectedPath });
+        }
       } catch (normalizeErr) {
         console.warn('Normalize template failed', normalizeErr);
       }
 
       await persistDefinition(definition, { template_path: selectedPath });
-      setMessage(`${definition.label || startCase(definition.key)} template updated and normalized.`);
+      setMessage(`${definition.label || startCase(definition.key)} template updated${String(selectedPath).toLowerCase().endsWith('.xlsx') ? ' and normalized' : ''}.`);
       await loadDefinitions();
       onTemplatesUpdated?.();
       restoreScroll(previousScroll);
@@ -813,9 +816,10 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
                   }
                   const paths = definitions
                     .map(def => def.template_path)
-                    .filter(path => typeof path === 'string' && path.trim());
+                    .filter(path => typeof path === 'string' && path.trim())
+                    .filter(path => path.toLowerCase().endsWith('.xlsx'));
                   if (!paths.length) {
-                    setMessage('No templates to normalize');
+                    setMessage('No Excel templates to normalize');
                     setTimeout(() => setMessage(''), 2000);
                     return;
                   }

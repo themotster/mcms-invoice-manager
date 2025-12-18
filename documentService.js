@@ -4,6 +4,7 @@ const { execFile } = require('child_process');
 let chokidar = null;
 try { chokidar = require('chokidar'); } catch (_err) { chokidar = null; }
 const ExcelJS = require('exceljs');
+const { PDFDocument, StandardFonts, TextAlignment, rgb } = require('pdf-lib');
 const db = require('./db');
 const msal = require('@azure/msal-node');
 const ahmenCosting = require('./ahmenCosting');
@@ -66,6 +67,14 @@ function escapeHtml(s) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function splitAddressLines(raw) {
+  if (!raw) return [];
+  return String(raw)
+    .split(/\r?\n+/)
+    .map(line => line.trim())
+    .filter(Boolean);
 }
 
 function buildItemsTableHtml(items = []) {
@@ -617,6 +626,26 @@ function buildContext(payload, business = {}) {
   const client = { ...payload.client_override };
   const event = { ...payload.event_override };
   const pricing = { ...(payload.pricing_snapshot || {}) };
+
+  const populateAddress = (target, combinedKey, prefix) => {
+    if (!target || !combinedKey || !prefix) return;
+    const combined = target[combinedKey];
+    if (!combined) return;
+    const parts = splitAddressLines(combined);
+    const assign = (key, val) => {
+      if (target[key] == null || target[key] === '') {
+        target[key] = val;
+      }
+    };
+    assign(`${prefix}_address1`, parts[0] || '');
+    assign(`${prefix}_address2`, parts[1] || '');
+    assign(`${prefix}_address3`, parts[2] || '');
+    assign(`${prefix}_town`, parts[3] || '');
+    assign(`${prefix}_postcode`, parts[4] || '');
+  };
+
+  populateAddress(jobsheet, 'client_address', 'client');
+  populateAddress(jobsheet, 'venue_address', 'venue');
 
   const derived = {
     totalAmount: payload.total_amount ?? payload.balance_amount ?? payload.balance_due ?? null,
@@ -1398,6 +1427,71 @@ function formatTimeLabel(start, end) {
   return a || b || '';
 }
 
+function normalizeProductionItemsServer(raw) {
+  let items = [];
+  if (Array.isArray(raw)) {
+    items = raw;
+  } else if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) items = parsed;
+    } catch (_) {
+      items = [];
+    }
+  }
+  return items
+    .map((item, index) => {
+      if (!item) return null;
+      return {
+        id: item.id != null ? String(item.id) : `prod-${index}`,
+        name: item.name != null ? String(item.name) : '',
+        description: item.description != null ? String(item.description) : '',
+        cost: item.cost != null ? String(item.cost) : '',
+        markup: item.markup != null ? String(item.markup) : '',
+        notes: item.notes != null ? String(item.notes) : ''
+      };
+    })
+    .filter(it => it && (it.name || it.description || it.cost || it.notes));
+}
+
+function calculateProductionItemTotalServer(item) {
+  if (!item) return 0;
+  const base = Number(String(item.cost || '').replace(/[^0-9.\-]+/g, ''));
+  const markupPct = Number(String(item.markup || '').replace(/[^0-9.\-]+/g, ''));
+  const safeBase = Number.isFinite(base) ? base : 0;
+  const fraction = Number.isFinite(markupPct) ? markupPct / 100 : 0;
+  const total = safeBase + safeBase * fraction;
+  return Number.isFinite(total) ? total : 0;
+}
+
+function formatProductionLines(items = []) {
+  const labels = normalizeProductionItemsServer(items).map((item) => {
+    const label = (item.description || '').trim() || (item.name || '').trim();
+    const amount = calculateProductionItemTotalServer(item);
+    const amountLabel = Number.isFinite(amount) && amount > 0 ? formatCurrencyGBP(amount) : '';
+    const amountPart = amountLabel ? (label ? `(${amountLabel})` : amountLabel) : '';
+    const notes = item.notes ? `(${item.notes})` : '';
+    // Only show client-facing description (no supplier/company)
+    return [label, amountPart, notes].filter(Boolean).join(' ').trim();
+  }).filter(Boolean);
+
+  if (!labels.length) return ['', ''];
+
+  const maxLen = 90;
+  let first = '';
+  let second = '';
+  labels.forEach((entry) => {
+    const candidate = first ? `${first}; ${entry}` : entry;
+    if (!first || candidate.length <= maxLen) {
+      first = candidate;
+    } else {
+      second = second ? `${second}; ${entry}` : entry;
+    }
+  });
+
+  return [first, second];
+}
+
 async function buildPersonnelLogHtml(options = {}) {
   const businessId = Number(options.businessId ?? options.business_id);
   if (!Number.isInteger(businessId)) throw new Error('businessId is required');
@@ -1826,7 +1920,370 @@ async function createWorkbookDocument(payload = {}) {
   };
 }
 
+async function createPdfDocument(payload = {}) {
+  const businessId = Number(payload.business_id ?? payload.businessId);
+  if (!Number.isInteger(businessId)) {
+    throw new Error('business_id is required to generate documents.');
+  }
+
+  const templatePath = resolvePath(payload.template_path || payload.templatePath);
+  await ensureFileAccessible(templatePath);
+
+  const business = await db.getBusinessById(businessId);
+  if (!business) {
+    throw new Error('Business record not found.');
+  }
+
+  const context = buildContext(payload, business);
+  const definitionKey = payload.definition_key || payload.document_definition_key || 'workbook';
+  const definition = await db.getDocumentDefinition(businessId, definitionKey);
+  const naming = buildFileName(context, payload, definition);
+  const directory = buildOutputDirectory(business, context, payload, naming.folderName);
+  await fs.promises.mkdir(directory, { recursive: true });
+
+  const docTypeRaw = (payload.doc_type || payload.type || definition?.doc_type || 'workbook').toLowerCase() || 'workbook';
+
+  const js = context.jobsheet || {};
+  const client = context.client || {};
+  const event = context.event || {};
+  const derived = context.context || {};
+  const pricing = context.pricing || {};
+
+  const parseAmount = (val) => {
+    if (val === null || val === undefined || val === '') return null;
+    const num = Number(String(val).replace(/[^0-9.\-]+/g, ''));
+    return Number.isFinite(num) ? Math.round(num * 100) / 100 : null;
+  };
+  const currencyOrEmpty = (val) => {
+    const num = parseAmount(val);
+    return num === null ? '' : formatCurrencyGBP(num);
+  };
+
+  const totalAmount = parseAmount(derived.totalAmount ?? js.pricing_total ?? js.total_amount ?? payload.total_amount);
+  const depositAmount = parseAmount(derived.depositAmount ?? js.deposit_amount ?? payload.deposit_amount);
+  const balanceAmount = parseAmount(derived.balanceAmount ?? js.balance_amount ?? payload.balance_amount ?? derived.balanceDue);
+  const ahmenFee = parseAmount(js.ahmen_fee);
+  const productionFees = parseAmount(derived.productionFees ?? js.production_fees ?? js.pricing_production_total);
+  const vatEnabled = Boolean(js.vat_enabled);
+  const vatAmount = parseAmount(js.vat_amount);
+  const vatRate = 0.2;
+  const quoteSubtotal = Math.max((ahmenFee || 0) + (productionFees || 0), 0);
+  const computedVat = Math.max(quoteSubtotal * vatRate, 0);
+  const effectiveVat = vatEnabled ? (vatAmount != null && vatAmount !== '' ? vatAmount : computedVat) : 0;
+  const quoteTotal = Math.max(quoteSubtotal + (vatEnabled ? effectiveVat : 0), 0);
+  const extraFees = 0; // legacy field removed from UI; keep at zero for PDFs
+
+  const invoiceVariant = payload.invoice_variant || definition?.invoice_variant || null;
+  const invoiceAmount = (() => {
+    if (docTypeRaw !== 'invoice') return null;
+    if (invoiceVariant === 'deposit' && Number.isFinite(depositAmount)) return depositAmount;
+    if (invoiceVariant === 'balance' && Number.isFinite(balanceAmount)) return balanceAmount;
+    return Number.isFinite(totalAmount) ? totalAmount : null;
+  })();
+  const invoiceTotal = Number.isFinite(invoiceAmount) ? invoiceAmount : quoteTotal;
+  let reservedInvoiceId = null;
+  let reservedInvoiceNumber = null;
+  if (docTypeRaw === 'invoice') {
+    const documentDate = payload.document_date || new Date().toISOString();
+    try {
+      const inserted = await db.addDocument({
+        business_id: businessId,
+        jobsheet_id: payload.jobsheet_id || null,
+        doc_type: 'invoice',
+        status: 'issued',
+        total_amount: Number.isFinite(invoiceTotal) ? invoiceTotal : 0,
+        balance_due: Number.isFinite(invoiceTotal) ? invoiceTotal : 0,
+        due_date: payload.balance_due_date ?? payload.due_date ?? null,
+        file_path: null,
+        client_name: js.client_name || client.name || null,
+        event_name: js.event_name || js.event_type || null,
+        event_date: js.event_date || event.event_date || null,
+        document_date: documentDate,
+        definition_key: definitionKey,
+        invoice_variant: invoiceVariant
+      });
+      reservedInvoiceId = inserted?.id || null;
+      reservedInvoiceNumber = inserted?.number != null ? Number(inserted.number) : null;
+    } catch (err) {
+      console.warn('Failed to reserve invoice number', err);
+    }
+  }
+
+  const ext = path.extname(templatePath) || '.pdf';
+  const baseStemRaw = naming.fileName ? naming.fileName.replace(/\.xlsx$/i, '').replace(/\.[^.]+$/, '') : '';
+  const baseStem = baseStemRaw || 'Document';
+  const invoiceSuffix = reservedInvoiceNumber != null ? ` (INV-${reservedInvoiceNumber})` : '';
+  const stemWithSuffix = docTypeRaw === 'invoice' ? `${baseStem}${invoiceSuffix}` : baseStem;
+  let targetPath = path.join(directory, `${stemWithSuffix}${ext}`);
+  let counter = 2;
+  while (await pathExists(targetPath)) {
+    try {
+      const existing = await db.getDocumentByFilePath(businessId, targetPath);
+      if (existing && existing.is_locked) {
+        throw new Error('Document is locked');
+      }
+    } catch (_err) {}
+    targetPath = path.join(directory, `${stemWithSuffix} (${counter})${ext}`);
+    counter += 1;
+    if (counter > 200) break;
+  }
+
+  const templateBytes = await fs.promises.readFile(templatePath);
+  const pdfDoc = await PDFDocument.load(templateBytes);
+  const form = pdfDoc.getForm();
+
+  // Font selection: default Helvetica 10pt for non-quotes; quotes keep template styling
+  const baseFont = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const applyFieldStyle = (field) => {
+    if (!field) return;
+    if (docTypeRaw === 'quote') return; // keep template-defined appearance for quotes
+    try {
+      field.setFont(baseFont);
+      field.setFontSize(10);
+    } catch (_) {}
+  };
+
+  const setText = (name, value, align) => {
+    try {
+      const field = form.getTextField(name);
+      if (field) {
+        field.setText(value == null ? '' : String(value));
+        if (align) {
+          try { field.setAlignment(align); } catch (_) {}
+        }
+        applyFieldStyle(field);
+        // Some quote fields (notably VAT) need fresh appearances to render values
+        const upper = name.toUpperCase();
+        const needsExplicitAppearance = upper.startsWith('VAT') || upper === 'DATE_TODAY' || upper === 'TODAY_DATE';
+        if (needsExplicitAppearance) {
+          try {
+            // Preserve template font if available; fallback to baseFont
+            const da = field.acroField.getDefaultAppearance();
+            if (da) {
+              field.defaultUpdateAppearances(da);
+            } else {
+              field.setFont(baseFont);
+              field.setFontSize(9);
+              field.setTextColor(rgb(0, 0, 0));
+              field.setAlignment(align || TextAlignment.Right);
+              field.updateAppearances(baseFont);
+            }
+          } catch (_) {}
+        }
+      }
+    } catch (_err) {}
+  };
+  const setCheck = (name, value) => {
+    try {
+      const field = form.getCheckBox(name);
+      if (!field) return;
+      if (value) field.check();
+      else field.uncheck();
+      applyFieldStyle(field);
+    } catch (_err) {}
+  };
+
+  const [prodLine1, prodLine2] = formatProductionLines(js.pricing_production_items || pricing.pricing_production_items || []);
+  const startTime = formatTimeLabel(js.event_start || event.event_start || '', null);
+  const endTime = formatTimeLabel(null, js.event_end || event.event_end || '');
+  const eventDateDisplay = formatDisplayDate(js.event_date || event.event_date || '');
+  const balanceDateDisplay = formatDisplayDate(js.balance_due_date || derived.balanceDate || payload.balance_due_date || payload.due_date || '');
+  const clientLines = (() => {
+    const combined = js.client_address || '';
+    const parts = splitAddressLines(combined);
+    if (parts.length) return parts;
+    return [
+      js.client_address1,
+      js.client_address2,
+      js.client_address3,
+      [js.client_town, js.client_postcode].filter(Boolean).join(' ')
+    ].filter(Boolean);
+  })();
+  const specialRaw = String(js.special_conditions || '').trim();
+  const specialLines = specialRaw
+    ? specialRaw.split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+    : [];
+  while (specialLines.length > 3) {
+    const overflow = specialLines.splice(3).join(' ');
+    specialLines[2] = `${specialLines[2]} ${overflow}`.trim();
+  }
+  const usesInvoiceVariant = docTypeRaw === 'invoice' && (invoiceVariant === 'deposit' || invoiceVariant === 'balance');
+  const fullVat = vatEnabled ? effectiveVat : 0;
+  let displaySubtotal = quoteSubtotal;
+  let displayVat = fullVat;
+  let displayTotal = quoteTotal;
+  let displayDepositAmount = depositAmount;
+  let displayBalanceAmount = balanceAmount;
+  if (docTypeRaw === 'invoice') {
+    displayTotal = Number.isFinite(invoiceTotal) ? invoiceTotal : quoteTotal;
+    if (usesInvoiceVariant) {
+      const ratio = quoteTotal > 0 ? displayTotal / quoteTotal : 0;
+      displayVat = vatEnabled ? Math.round(fullVat * ratio * 100) / 100 : 0;
+      displaySubtotal = vatEnabled ? Math.max(displayTotal - displayVat, 0) : displayTotal;
+    } else {
+      displayVat = vatEnabled ? fullVat : 0;
+      displaySubtotal = vatEnabled ? Math.max(displayTotal - displayVat, 0) : displayTotal;
+    }
+    if (invoiceVariant === 'deposit') {
+      displayDepositAmount = displaySubtotal;
+    } else if (invoiceVariant === 'balance') {
+      displayBalanceAmount = displaySubtotal;
+    }
+  } else if (docTypeRaw === 'quote' && vatEnabled) {
+    const netRatio = quoteTotal > 0 ? quoteSubtotal / quoteTotal : 0;
+    if (Number.isFinite(depositAmount) && netRatio > 0) {
+      displayDepositAmount = Math.round(depositAmount * netRatio * 100) / 100;
+    }
+    if (Number.isFinite(balanceAmount) && netRatio > 0) {
+      displayBalanceAmount = Math.round(balanceAmount * netRatio * 100) / 100;
+    }
+  }
+
+  setText('CLIENT_NAME', js.client_name || client.name || '');
+  setText('CLIENT_EMAIL', js.client_email || client.email || '');
+  setText('CLIENT_PHONE', js.client_phone || client.phone || '');
+  setText('CLIENT_ADDRESS1', clientLines[0] || '');
+  setText('CLIENT_ADDRESS2', clientLines[1] || '');
+  setText('CLIENT_ADDRESS3', clientLines[2] || '');
+  setText('CLIENT_ADDRESS4', clientLines[3] || '');
+  setText('CLIENT_NAME_es_:signer', js.client_name || client.name || '');
+  setText('CLIENT_SIGN_es_:signer:signature', '');
+  setText('EVENT_DATE', eventDateDisplay);
+  setText('EVENT_START', startTime);
+  setText('EVENT_END', endTime);
+  setText('EVENT_TYPE', js.event_type || event.event_type || '');
+  setText('SERVICE_TYPE', js.service_types || '');
+  setText('SPECIALIST_SINGERS', js.specialist_singers || '');
+  setText('VENUE_NAME', js.venue_name || '');
+  const venueLines = (() => {
+    const combined = js.venue_address || '';
+    const parts = splitAddressLines(combined);
+    if (!parts.length) {
+      return [js.venue_address1, js.venue_address2, js.venue_address3, [js.venue_town, js.venue_postcode].filter(Boolean).join(' ')].filter(Boolean);
+    }
+    return parts;
+  })();
+  setText('VENUE_ADDRESS1', venueLines[0] || '');
+  setText('VENUE_ADDRESS2', venueLines[1] || '');
+  setText('VENUE_ADDRESS3', venueLines[2] || '');
+  setText('VENUE_ADDRESS4', venueLines[3] || [js.venue_town, js.venue_postcode].filter(Boolean).join(' '));
+  setText('CATERER_NAME', js.caterer_name || '');
+  const displayTotalFees = vatEnabled ? quoteTotal : (totalAmount != null ? totalAmount : quoteTotal);
+  setText('TOTAL_FEES', currencyOrEmpty(displayTotalFees), TextAlignment.Right);
+  setText('DEPOSIT_AMOUNT', currencyOrEmpty(displayDepositAmount), TextAlignment.Right);
+  setText('BALANCE_AMOUNT', currencyOrEmpty(displayBalanceAmount), TextAlignment.Right);
+  setText('AHMEN_FEE', currencyOrEmpty(ahmenFee), TextAlignment.Right);
+  setText('PRODUCTION_FEES', currencyOrEmpty(productionFees), TextAlignment.Right);
+  // Legacy typo fallback (template field PRODUCTION_)FEES)
+  setText('PRODUCTION_)FEES', currencyOrEmpty(productionFees), TextAlignment.Right);
+  // Common subtotal/VAT/total fields (used by Booking Schedule and others if present)
+  setText('SUBTOTAL', currencyOrEmpty(displaySubtotal), TextAlignment.Right);
+  setText('VAT', vatEnabled ? currencyOrEmpty(displayVat) : 'N/A', TextAlignment.Right);
+  setText('VAT_RATE', vatEnabled ? '20%' : 'N/A', TextAlignment.Right);
+  setText('TOTAL', currencyOrEmpty(displayTotal), TextAlignment.Right);
+  setText('EXTRA_FEES', currencyOrEmpty(extraFees));
+  setText('ADD_PROD', prodLine1);
+  setText('ADD_PROD2', prodLine2);
+  if (reservedInvoiceNumber != null) {
+    setText('INV_NUMBER', `INV-${reservedInvoiceNumber}`);
+  }
+  setText('BALANCE_DATE', balanceDateDisplay);
+  setText('E Special Conditions if any 1', specialLines[0] || '');
+  setText('E Special Conditions if any 2', specialLines[1] || '');
+  setText('E Special Conditions if any 3', specialLines[2] || '');
+  setText('TODAY_DATE', formatDisplayDate(new Date()));
+  setText('DATE_TODAY', formatDisplayDate(new Date()), TextAlignment.Right);
+  setText('DATE_SIGNED', '');
+
+  // Quote-specific fields (static PDF with form fields)
+  if (definition?.doc_type === 'quote' || (payload.doc_type || '').toLowerCase() === 'quote' || definitionKey === 'quote') {
+    setText('CLIENT_NAME', js.client_name || client.name || '');
+    setText('CLIENT_EMAIL', js.client_email || client.email || '');
+    setText('CLIENT_PHONE', js.client_phone || client.phone || '');
+    setText('CLIENT_ADDRESS1', clientLines[0] || '');
+    setText('CLIENT_ADDRESS2', clientLines[1] || '');
+    setText('CLIENT_ADDRESS3', clientLines[2] || '');
+    setText('CLIENT_ADDRESS4', clientLines[3] || '');
+    setText('DATE_TODAY', formatDisplayDate(new Date()));
+    setText('EVENT_DATE', eventDateDisplay);
+    setText('VENUE_NAME', js.venue_name || '');
+    setText('AHMEN_FEE', currencyOrEmpty(ahmenFee), TextAlignment.Right);
+    setText('PRODUCTION_FEES', currencyOrEmpty(productionFees), TextAlignment.Right);
+    setText('DEPOSIT_AMOUNT', currencyOrEmpty(displayDepositAmount), TextAlignment.Right);
+    setText('BALANCE_AMOUNT', currencyOrEmpty(displayBalanceAmount), TextAlignment.Right);
+    setText('SUBTOTAL', currencyOrEmpty(quoteSubtotal), TextAlignment.Right);
+    const vatDisplay = vatEnabled ? currencyOrEmpty(effectiveVat) : 'N/A';
+    ['VAT', 'VAT_AMOUNT', 'VAT_AMT', 'VAT_VALUE'].forEach(name => setText(name, vatDisplay, TextAlignment.Right));
+    setText('VAT_RATE', vatEnabled ? '20%' : 'N/A', TextAlignment.Right);
+    setText('TOTAL', currencyOrEmpty(quoteTotal), TextAlignment.Right);
+  }
+
+  const hasProduction = Boolean((parseAmount(productionFees) || 0) > 0 || prodLine1 || prodLine2);
+  setCheck('AhMen to provide SoundAV Please tick if appropriate', hasProduction);
+  ['Tick', 'Tick_2', 'Tick_3', 'Tick_4', 'Tick_5'].forEach(name => setCheck(name, true));
+
+  // For quote PDFs, preserve the template's own field appearances; otherwise rebuild with the selected font
+  if (docTypeRaw === 'quote') {
+    try {
+      form.updateFieldAppearances(baseFont);
+    } catch (_) {}
+  } else {
+    try {
+      form.updateFieldAppearances(baseFont);
+    } catch (_) {}
+  }
+
+  const pdfBytes = await pdfDoc.save();
+  await fs.promises.writeFile(targetPath, pdfBytes);
+
+  const docType = docTypeRaw;
+  const documentDate = payload.document_date || new Date().toISOString();
+
+  let inserted = null;
+  if (docTypeRaw === 'invoice' && reservedInvoiceId != null) {
+    const reminderDate = invoiceVariant === 'balance' ? (js.balance_reminder_date || null) : null;
+    await db.updateDocumentStatus(reservedInvoiceId, {
+      file_path: targetPath,
+      status: 'issued',
+      total_amount: Number.isFinite(invoiceTotal) ? invoiceTotal : 0,
+      balance_due: Number.isFinite(invoiceTotal) ? invoiceTotal : 0,
+      due_date: payload.balance_due_date ?? payload.due_date ?? null,
+      reminder_date: reminderDate
+    });
+    inserted = { id: reservedInvoiceId, number: reservedInvoiceNumber };
+  } else {
+    inserted = await db.addDocument({
+      business_id: businessId,
+      jobsheet_id: payload.jobsheet_id || null,
+      doc_type: docType,
+      status: 'generated',
+      total_amount: totalAmount ?? 0,
+      balance_due: balanceAmount ?? totalAmount ?? 0,
+      due_date: payload.balance_due_date ?? payload.due_date ?? null,
+      file_path: targetPath,
+      client_name: js.client_name || client.name || null,
+      event_name: js.event_name || js.event_type || null,
+      event_date: js.event_date || event.event_date || null,
+      document_date: documentDate,
+      definition_key: definitionKey,
+      invoice_variant: payload.invoice_variant || null
+    });
+  }
+
+  return {
+    ok: true,
+    file_path: targetPath,
+    document_id: inserted?.id || null,
+    number: inserted?.number ?? null,
+    additional_outputs: []
+  };
+}
+
 async function createDocument(payload = {}) {
+  const templatePath = payload.template_path || payload.templatePath || '';
+  if (templatePath && /\.pdf$/i.test(String(templatePath))) {
+    return createPdfDocument(payload);
+  }
   return createWorkbookDocument(payload);
 }
 
@@ -4845,6 +5302,8 @@ module.exports = {
     for (const d of docsUpdated) {
       if ((d.doc_type || '').toLowerCase() !== 'workbook') continue;
       if (d.is_locked) continue;
+      const cur = d.file_path || '';
+      if (!cur || !cur.toLowerCase().endsWith('.xlsx')) continue;
       let def = null;
       try {
         def = await db.getDocumentDefinition(businessId, d.definition_key || 'workbook');
@@ -4854,8 +5313,6 @@ module.exports = {
       const naming = buildFileName(context, payload, def || { label: 'Excel Workbook', key: d.definition_key || 'workbook' });
       const dir = path.resolve(expectedFolder);
       const expectedPath = path.join(dir, naming.fileName);
-      const cur = d.file_path || '';
-      if (!cur) continue;
       const curAbs = path.resolve(cur);
       if (path.resolve(expectedPath) !== curAbs) {
         try {

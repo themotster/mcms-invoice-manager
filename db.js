@@ -97,6 +97,7 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   client_name: 'jobsheet.client_name',
   client_email: 'jobsheet.client_email',
   client_phone: 'jobsheet.client_phone',
+  client_address: 'jobsheet.client_address',
   client_address1: 'jobsheet.client_address1',
   client_address2: 'jobsheet.client_address2',
   client_address3: 'jobsheet.client_address3',
@@ -106,6 +107,7 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   event_date: 'jobsheet.event_date',
   event_start: 'jobsheet.event_start',
   event_end: 'jobsheet.event_end',
+  venue_address: 'jobsheet.venue_address',
   venue_name: 'jobsheet.venue_name',
   venue_address1: 'jobsheet.venue_address1',
   venue_address2: 'jobsheet.venue_address2',
@@ -114,15 +116,16 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   venue_postcode: 'jobsheet.venue_postcode',
   caterer_name: 'jobsheet.caterer_name',
   ahmen_fee: 'jobsheet.ahmen_fee',
+  vat_amount: 'jobsheet.vat_amount',
   total_amount: 'context.totalAmount',
-  extra_fees: 'context.extraFees',
   production_fees: 'context.productionFees',
   deposit_amount: 'context.depositAmount',
   balance_amount: 'context.balanceAmount',
   balance_due_date: 'context.balanceDate',
   balance_reminder_date: 'context.balanceRemind',
   service_types: 'jobsheet.service_types',
-  specialist_singers: 'jobsheet.specialist_singers'
+  specialist_singers: 'jobsheet.specialist_singers',
+  special_conditions: 'jobsheet.special_conditions'
 };
 
 const TRASH_DIR_NAME = '.trash';
@@ -141,6 +144,7 @@ const AHMEN_JOBSHEET_FIELDS = [
   'client_name',
   'client_email',
   'client_phone',
+  'client_address',
   'client_address1',
   'client_address2',
   'client_address3',
@@ -152,6 +156,7 @@ const AHMEN_JOBSHEET_FIELDS = [
   'event_end',
   'venue_id',
   'venue_name',
+  'venue_address',
   'venue_address1',
   'venue_address2',
   'venue_address3',
@@ -160,17 +165,19 @@ const AHMEN_JOBSHEET_FIELDS = [
   'venue_same_as_client',
   'ahmen_fee',
   'production_fees',
+  'vat_enabled',
+  'vat_amount',
   'deposit_amount',
   'balance_amount',
   'balance_due_date',
   'balance_reminder_date',
   'service_types',
   'specialist_singers',
+  'special_conditions',
   'gig_info',
   'notes',
   'pricing_service_id',
   'pricing_selected_singers',
-  'pricing_custom_fees',
   'pricing_discount',
   'pricing_discount_type',
   'pricing_discount_value',
@@ -186,6 +193,7 @@ const AHMEN_JOBSHEET_FIELDS = [
 const AHMEN_JOBSHEET_NUMERIC_FIELDS = new Set([
   'ahmen_fee',
   'production_fees',
+  'vat_amount',
   'deposit_amount',
   'balance_amount',
   'pricing_discount',
@@ -197,7 +205,8 @@ const AHMEN_JOBSHEET_NUMERIC_FIELDS = new Set([
 ]);
 
 const AHMEN_JOBSHEET_BOOLEAN_FIELDS = new Set([
-  'venue_same_as_client'
+  'venue_same_as_client',
+  'vat_enabled'
 ]);
 
 const AHMEN_JOBSHEET_INTEGER_FIELDS = new Set([
@@ -528,6 +537,7 @@ function initializeDatabase() {
       client_name TEXT NOT NULL,
       client_email TEXT,
       client_phone TEXT,
+      client_address TEXT,
       client_address1 TEXT,
       client_address2 TEXT,
       client_address3 TEXT,
@@ -539,6 +549,7 @@ function initializeDatabase() {
       event_end TEXT,
       venue_id INTEGER,
       venue_name TEXT,
+      venue_address TEXT,
       venue_address1 TEXT,
       venue_address2 TEXT,
       venue_address3 TEXT,
@@ -549,12 +560,14 @@ function initializeDatabase() {
       ahmen_fee REAL,
       specialist_fees REAL,
       production_fees REAL,
+      vat_amount REAL,
       deposit_amount REAL,
       balance_amount REAL,
       balance_due_date TEXT,
       balance_reminder_date TEXT,
       service_types TEXT,
       specialist_singers TEXT,
+      special_conditions TEXT,
       gig_info TEXT,
       notes TEXT,
       pricing_service_id TEXT,
@@ -563,6 +576,7 @@ function initializeDatabase() {
       pricing_discount REAL,
       pricing_discount_type TEXT,
       pricing_discount_value REAL,
+      vat_enabled INTEGER DEFAULT 0,
       pricing_production_items TEXT,
       pricing_production_subtotal REAL,
       pricing_production_discount TEXT,
@@ -614,10 +628,15 @@ function initializeDatabase() {
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_service_id TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_selected_singers TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_custom_fees TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN vat_amount REAL', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN vat_enabled INTEGER DEFAULT 0', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_total REAL', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN gig_info TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN archived_at TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN client_address TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN venue_address TEXT', logDuplicateColumn);
+    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN special_conditions TEXT', logDuplicateColumn);
     
     db.run(`UPDATE ahmen_jobsheets SET status='enquiry' WHERE status IS NULL OR status='' OR status='draft'`, err => {
       if (err) console.error('Failed to normalize jobsheet status:', err);
