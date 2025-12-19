@@ -164,13 +164,14 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       }
       const data = await api.getDocumentDefinitions(business.id, { includeInactive: true });
       const allDefinitions = Array.isArray(data) ? data : [];
-      setDefinitions(allDefinitions);
+      const filteredDefinitions = allDefinitions.filter(def => def?.key !== 'client_data' && def?.key !== 't_cs');
+      setDefinitions(filteredDefinitions);
 
       // One-time notice if any definitions are missing a template path
       try {
         const seen = window.localStorage.getItem(MISSING_TPL_NOTICE_KEY);
         if (seen !== '1') {
-          const missingCount = allDefinitions.filter(d => !d?.template_path).length;
+          const missingCount = filteredDefinitions.filter(d => !d?.template_path).length;
           if (missingCount > 0) {
             setMessage(`${missingCount} template${missingCount === 1 ? '' : 's'} need a workbook path. Use “Replace” to select a file.`);
             window.localStorage.setItem(MISSING_TPL_NOTICE_KEY, '1');

@@ -40,6 +40,27 @@ let scheduledMailWorkerStarted = false;
 let scheduledMailWorkerExecuting = false;
 let ElectronBrowserWindow = null;
 
+async function syncFinderInvoiceCounter(businessId) {
+  const id = Number(businessId);
+  if (!Number.isInteger(id)) return null;
+  try {
+    if (typeof module.exports.computeFinderInvoiceMax !== 'function') return null;
+    const business = await db.getBusinessById(id);
+    const currentRaw = business?.last_invoice_number;
+    const current = Number.isInteger(Number(currentRaw)) ? Number(currentRaw) : 0;
+    const result = await module.exports.computeFinderInvoiceMax({ businessId: id });
+    const rawMax = result && result.max != null ? Number(result.max) : 0;
+    const max = Number.isInteger(rawMax) && rawMax >= 0 ? rawMax : 0;
+    const next = Math.max(current, max);
+    if (next !== current) {
+      await db.setLastInvoiceNumber(id, next);
+    }
+    return next;
+  } catch (_err) {
+    return null;
+  }
+}
+
 function normalizeTokenKey(value) {
   if (!value) return '';
   return String(value)
@@ -1984,6 +2005,7 @@ async function createPdfDocument(payload = {}) {
   let reservedInvoiceId = null;
   let reservedInvoiceNumber = null;
   if (docTypeRaw === 'invoice') {
+    await syncFinderInvoiceCounter(businessId);
     const documentDate = payload.document_date || new Date().toISOString();
     try {
       const inserted = await db.addDocument({
@@ -2191,8 +2213,10 @@ async function createPdfDocument(payload = {}) {
   setText('E Special Conditions if any 1', specialLines[0] || '');
   setText('E Special Conditions if any 2', specialLines[1] || '');
   setText('E Special Conditions if any 3', specialLines[2] || '');
-  setText('TODAY_DATE', formatDisplayDate(new Date()));
-  setText('DATE_TODAY', formatDisplayDate(new Date()), TextAlignment.Right);
+  const todayDisplay = formatDisplayDate(new Date());
+  const dateAlign = (docTypeRaw === 'quote' || docTypeRaw === 'invoice') ? TextAlignment.Left : TextAlignment.Right;
+  setText('TODAY_DATE', todayDisplay, dateAlign);
+  setText('DATE_TODAY', todayDisplay, dateAlign);
   setText('DATE_SIGNED', '');
 
   // Quote-specific fields (static PDF with form fields)
@@ -2204,7 +2228,7 @@ async function createPdfDocument(payload = {}) {
     setText('CLIENT_ADDRESS2', clientLines[1] || '');
     setText('CLIENT_ADDRESS3', clientLines[2] || '');
     setText('CLIENT_ADDRESS4', clientLines[3] || '');
-    setText('DATE_TODAY', formatDisplayDate(new Date()));
+    // DATE_TODAY handled above with quote-specific alignment
     setText('EVENT_DATE', eventDateDisplay);
     setText('VENUE_NAME', js.venue_name || '');
     setText('AHMEN_FEE', currencyOrEmpty(ahmenFee), TextAlignment.Right);
@@ -2328,6 +2352,9 @@ async function buildMCMSDocumentHtml(options = {}) {
   await ensureDirectoryExists(directory);
 
   // Reserve a document number
+  if (rawType === 'invoice') {
+    await syncFinderInvoiceCounter(businessId);
+  }
   const inserted = await db.addDocument({
     business_id: businessId,
     doc_type: rawType,
@@ -2836,6 +2863,7 @@ async function exportWorkbookPdfs(options = {}) {
               throw pfErr;
             }
             // Reserve the next invoice number by creating the DB row first (so counter increments only when success, we’ll roll back on failure)
+            await syncFinderInvoiceCounter(businessId);
             const clientName = wbDoc?.client_name || null;
             const eventName = wbDoc?.event_name || null;
             const eventDate = wbDoc?.event_date || null;
@@ -3782,7 +3810,7 @@ async function getBookingPackPdfs(options = {}) {
 
   // Heuristics
   const schedulePdf = findFirst([/schedule/i, /booking\s*schedule/i]);
-  const termsPdf = findFirst([/t\s*&\s*c/i, /tandc/i, /tnc/i, /terms/i, /terms\s*&\s*conditions/i, /conditions/i]);
+  const termsPdf = '';
   // Prefer deposit-specific filenames first, then generic invoice pattern (excluding balance)
   let depositPdf = findFirst([
     /deposit/i,
@@ -3910,13 +3938,13 @@ async function sendBookingPackViaGraph(options = {}) {
   const snapshot = options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object' ? { ...options.jobsheetSnapshot } : {};
 
   const assets = await getBookingPackPdfs({ businessId, jobsheetId, jobsheetSnapshot: snapshot });
-  const files = [assets.schedule_pdf, assets.terms_pdf, assets.deposit_pdf].filter(Boolean);
+  const files = [assets.schedule_pdf, assets.deposit_pdf].filter(Boolean);
   if (!files.length) throw new Error('No booking pack PDFs found in the job folder.');
   const to = (snapshot.client_email || '').trim();
   if (!to) throw new Error('Client email missing on jobsheet');
   const subject = `Booking pack – ${(snapshot.client_name || 'Client')} – ${formatDisplayDate(snapshot.event_date)}`;
   const firstName = (snapshot.client_name || '').trim().split(/\s+/)[0] || 'there';
-  const body = `Hi ${firstName},\n\nAttached are your booking schedule, T&Cs, and deposit invoice. The deposit is payable on contract signing.\n\nThanks,\nMotti`;
+  const body = `Hi ${firstName},\n\nAttached are your booking schedule and deposit invoice. The deposit is payable on contract signing.\n\nThanks,\nMotti`;
   await graphSendMailRaw({ to, subject, body, attachments: files });
   try {
     await db.logEmail({ business_id: businessId, jobsheet_id: jobsheetId, to, cc: '', bcc: '', subject, body, attachments: files, provider: 'graph', status: 'sent', message_id: null });
@@ -4104,7 +4132,7 @@ async function resolveTemplateDefaultAttachments(options = {}) {
     case 'booking_pack': {
       try {
         const bundle = await getBookingPackPdfs({ businessId, jobsheetId });
-        attachments.push(bundle?.schedule_pdf || '', bundle?.terms_pdf || '', bundle?.deposit_pdf || '');
+        attachments.push(bundle?.schedule_pdf || '', bundle?.deposit_pdf || '');
       } catch (_) {}
       if (!attachments.filter(Boolean).length) {
         const schedule = findInFolder([
@@ -4112,19 +4140,12 @@ async function resolveTemplateDefaultAttachments(options = {}) {
           /booking\s*schedule/i,
           /itinerary/i
         ]);
-        const terms = findInFolder([
-          /t\s*&\s*c/i,
-          /terms/i,
-          /conditions/i,
-          /tandc/i,
-          /tnc/i
-        ]);
         const deposit = findInFolder([
           /deposit/i,
           /\bdep\b/i,
           /invoice[-_\s]*deposit/i
         ]);
-        attachments.push(schedule || '', terms || '', deposit || '');
+        attachments.push(schedule || '', deposit || '');
       }
       break;
     }
@@ -4350,6 +4371,9 @@ module.exports = {
     await workbook.xlsx.writeFile(workbookPath);
 
     // Reserve a document number (invoice/quote counter)
+    if (rawType === 'invoice') {
+      await syncFinderInvoiceCounter(businessId);
+    }
     const insert = await db.addDocument({
       business_id: businessId,
       doc_type: rawType,
@@ -4827,6 +4851,7 @@ module.exports = {
     const amount = options.total_amount ?? (items.reduce((s, it) => s + (Number.isFinite(it.amount) ? it.amount : 0), 0) || null);
 
     // Reserve a document number now (invoice counter)
+    await syncFinderInvoiceCounter(businessId);
     const insert = await db.addDocument({
       business_id: businessId,
       doc_type: 'invoice',
@@ -4998,6 +5023,7 @@ module.exports = {
     await ensureFileAccessible(resolvedTemplate);
 
     // Reserve/validate number now
+    await syncFinderInvoiceCounter(businessId);
     const insert = await db.addDocument({
       business_id: businessId,
       doc_type: 'invoice',
@@ -5422,7 +5448,7 @@ module.exports = {
         label: labelFrom('booking_pack', 'Booking pack'),
         subject: 'Booking pack – {{ client_name }} – {{ event_date }}',
         // Use plain text with paragraphs so the composer converts to consistent HTML (<p> with margins)
-        body: 'Hi {{ client_first_name|there }},\n\nAttached are your booking schedule and T&Cs, plus the deposit invoice.\n\nPlease review and let me know if anything needs updating.\n\nThanks,\n',
+        body: 'Hi {{ client_first_name|there }},\n\nAttached are your booking schedule and deposit invoice.\n\nPlease review and let me know if anything needs updating.\n\nThanks,\n',
       },
       invoice_deposit: {
         label: labelFrom('invoice_deposit', 'Deposit invoice'),

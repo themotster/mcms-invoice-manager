@@ -18,7 +18,7 @@
       "booking_pack": {
         "label": "Booking pack",
         "subject": "Booking pack – {{ client_name }} – {{ event_date }}",
-        "body": "Hi {{ client_first_name|there }},\n\nPlease find the attached PDF documents as follows:\n  1) Booking schedule\n  2) T&Cs\n  3) Deposit invoice (payable upon signing).\n\nYour booking will be confirmed once we have received the signed booking schedule and the deposit payment.\n\nThanks so much,\nMotti\n"
+        "body": "Hi {{ client_first_name|there }},\n\nPlease find the attached PDF documents as follows:\n  1) Booking schedule\n  2) Deposit invoice (payable upon signing).\n\nYour booking will be confirmed once we have received the signed booking schedule and the deposit payment.\n\nThanks so much,\nMotti\n"
       },
       "invoice_balance": {
         "label": "Balance invoice",

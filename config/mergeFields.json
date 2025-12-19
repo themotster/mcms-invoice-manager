@@ -46,6 +46,14 @@
     ]
   },
   {
+    "field_key": "client_address",
+    "label": "Client Address",
+    "placeholder": "CLIENT_ADDRESS",
+    "category": "client",
+    "show_in_jobsheet": true,
+    "description": "Full client address (multi-line)"
+  },
+  {
     "field_key": "client_address1",
     "label": "Client Address Line 1",
     "placeholder": "CLIENT_ADDRESS1",
@@ -195,6 +203,14 @@
         "data_type": "string"
       }
     ]
+  },
+  {
+    "field_key": "venue_address",
+    "label": "Venue Address",
+    "placeholder": "VENUE_ADDRESS",
+    "category": "venue",
+    "show_in_jobsheet": true,
+    "description": "Full venue address (multi-line)"
   },
   {
     "field_key": "venue_address1",
@@ -369,6 +385,14 @@
     ]
   },
   {
+    "field_key": "vat_amount",
+    "label": "VAT Amount",
+    "placeholder": "VAT_AMOUNT",
+    "category": "financial",
+    "show_in_jobsheet": false,
+    "description": "Calculated VAT amount"
+  },
+  {
     "field_key": "balance_due_date",
     "label": "Balance Due Date",
     "placeholder": "BALANCE_DATE",
@@ -429,6 +453,14 @@
         "data_type": "string"
       }
     ]
+  },
+  {
+    "field_key": "special_conditions",
+    "label": "Special Conditions",
+    "placeholder": "SPECIAL_CONDITIONS",
+    "category": "event",
+    "show_in_jobsheet": true,
+    "description": "Client-facing special conditions"
   },
   {
     "field_key": "caterer_name",

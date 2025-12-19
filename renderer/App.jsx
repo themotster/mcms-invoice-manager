@@ -88,11 +88,10 @@ const HIDDEN_JOBSHEET_FIELDS = new Set([
   'extra_fees'
 ]);
 
-const BOOKING_PACK_DEFINITION_KEYS = new Set(['booking_schedule', 't_cs', 'invoice_deposit']);
+const BOOKING_PACK_DEFINITION_KEYS = new Set(['booking_schedule', 'invoice_deposit']);
 
 const DOCUMENT_GROUP_OPTIONS = [
   { value: 'none', label: 'All Documents' },
-  { value: 'doc_type', label: 'Document Type' },
   { value: 'client', label: 'Client' },
   { value: 'event_date', label: 'Event Date' }
 ];
@@ -117,11 +116,6 @@ const DOCUMENT_CARD_TONES = {
     outerBorder: 'border-amber-200',
     outerBg: 'rgba(254,243,199,0.85)',
     innerBorder: 'border-amber-200'
-  },
-  client_data: {
-    outerBorder: 'border-lime-200',
-    outerBg: 'rgba(236,252,203,0.85)',
-    innerBorder: 'border-lime-200'
   },
   default: {
     outerBorder: 'border-slate-200',
@@ -158,6 +152,12 @@ function getDocumentIcon(docType) {
     default:
       return '📄';
   }
+}
+
+function getFileExtension(filePath) {
+  if (!filePath) return '';
+  const match = String(filePath).match(/\.([^.]+)$/);
+  return match ? match[1].toLowerCase() : '';
 }
 
 const WORKSPACE_ICON_MAP = {
@@ -1697,6 +1697,7 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
   const lastInvoiceSyncRef = useRef(null);
   useEffect(() => {
     if (!businessId) return;
+    if (window.api?.computeFinderInvoiceMax) return;
     const rows = Array.isArray(list) ? list : [];
     const maxNumber = rows.reduce((max, doc) => {
       const raw = doc?.number != null ? Number(doc.number) : null;
@@ -2067,11 +2068,30 @@ function OpenIcon({ className = 'h-4 w-4' }) {
   );
 }
 
-function RevealIcon({ className = 'h-4 w-4' }) {
+function SparklesIcon({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M5 7.5 6.4 10.6 9.5 12 6.4 13.4 5 16.5 3.6 13.4 0.5 12 3.6 10.6 5 7.5Z" />
+      <path d="M16 2.5 17.3 5.3 20 6.5 17.3 7.7 16 10.5 14.7 7.7 12 6.5 14.7 5.3 16 2.5Z" />
+      <path d="M15.5 13 16.8 15.8 19.5 17 16.8 18.2 15.5 21 14.2 18.2 11.5 17 14.2 15.8 15.5 13Z" />
+    </svg>
+  );
+}
+
+function EyeIcon({ className = 'h-4 w-4' }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M2.25 12s2.75-6.75 9.75-6.75 9.75 6.75 9.75 6.75-2.75 6.75-9.75 6.75S2.25 12 2.25 12Z" />
       <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+    </svg>
+  );
+}
+
+function RevealIcon({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6.25A2.25 2.25 0 0 1 6.25 4h4.086c.414 0 .812.165 1.105.459L13.5 6.5H19A2 2 0 0 1 21 8.5V9H4V6.25Z" fill="currentColor" opacity="0.5" />
+      <path d="M3 9.75A1.75 1.75 0 0 1 4.75 8h15.5A1.75 1.75 0 0 1 22 9.75v7.5A2.75 2.75 0 0 1 19.25 20H6A3 3 0 0 1 3 17V9.75Z" fill="currentColor" />
     </svg>
   );
 }
@@ -3998,9 +4018,9 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
     const currentVat = parseMoney(formState.vat_amount);
     const autoVat = calcAutoVat();
     if (Math.abs(currentVat - autoVat) > 0.009) {
-      handleFieldChange('vat_amount', autoVat.toFixed(2));
+      onChange('vat_amount', autoVat.toFixed(2));
     }
-  }, [calcAutoVat, parseMoney, handleFieldChange, formState.vat_amount]);
+  }, [calcAutoVat, parseMoney, onChange, formState.vat_amount]);
 
   useEffect(() => {
     const nextDiscountString = singerDiscountValueNumber > 0 ? singerDiscountValueNumber.toFixed(2) : '';
@@ -4596,7 +4616,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       </div>
 
       {showAddSingerModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/60 px-4 lg:justify-end lg:pr-10">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl">
             <div className="flex items-start justify-between">
               <div>
@@ -4711,7 +4731,7 @@ function PricingPanel({ pricingConfig, formState, onChange, pricingTotals, hasEx
       ) : null}
 
       {showEditSingerModal ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/60 px-4 lg:justify-end lg:pr-10">
           <div className="w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
             <div className="flex items-start justify-between">
               <div>
@@ -5400,41 +5420,15 @@ function DocumentsInlinePanel({
     );
   };
   const list = Array.isArray(documents) ? documents : [];
-  const excelDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
   const pdfDocs = list.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
   const defs = Array.isArray(documentDefinitions) ? documentDefinitions : [];
-  const docsByKey = new Map(
-    list.map(d => [d.definition_key || 'workbook', d])
-  );
 
-  // helpers to match PDFs to workbook by base name
-  const baseNameNoExt = (fp) => {
-    const name = fp ? String(fp).split(/[\\/]+/).pop() : '';
-    return name ? name.replace(/\.[^.]+$/, '') : '';
-  };
-  const normalizeBase = (base) => {
-    if (!base) return '';
-    let s = String(base);
-    // unify dash types
-    s = s.replace(/[–—]/g, '-');
-    // strip trailing (INV-###)
-    s = s.replace(/\s*\(INV[-\s]?\d+\)\s*$/i, '');
-    // strip trailing (n) copies
-    s = s.replace(/\s*\(\d+\)\s*$/g, '');
-    return s.trim();
-  };
-  const workbookDocsByKey = new Map(
-    excelDocs.map(d => [d.definition_key || 'workbook', d])
-  );
-  const pdfByBase = new Map(
-    pdfDocs.map(d => [normalizeBase(baseNameNoExt(d.file_path || '')), d])
-  );
-
-  // Dynamic: show all definitions that point to an .xlsx or .pdf template
-  const excelDefs = defs
+  // Only show PDF-based definitions (XLSX no longer used)
+  const pdfDefs = defs
     .filter(d => {
+      if (d?.key === 't_cs') return false;
       const pathLower = (d?.template_path || '').toLowerCase();
-      return pathLower.endsWith('.xlsx') || pathLower.endsWith('.pdf');
+      return pathLower.endsWith('.pdf');
     })
     .sort((a, b) => {
       const ao = Number.isFinite(a.sort_order) ? a.sort_order : 0;
@@ -5445,20 +5439,19 @@ function DocumentsInlinePanel({
       return al.localeCompare(bl);
   });
 
-  const excelItems = excelDefs.map(def => {
-    const rawDoc = def ? docsByKey.get(def.key) || null : null;
-    const docIsXlsx = rawDoc && (rawDoc.file_path || '').toLowerCase().endsWith('.xlsx');
-    const doc = docIsXlsx ? rawDoc : (def ? workbookDocsByKey.get(def.key) : null);
-    const pdfDirect = rawDoc && (rawDoc.file_path || '').toLowerCase().endsWith('.pdf') ? rawDoc : null;
-    const label = def.label || def.key;
-    return { def, doc, label, pdfDirect };
+  const pdfDocsByKey = new Map();
+  pdfDocs.forEach(doc => {
+    const key = doc?.definition_key || '';
+    if (!key) return;
+    if (!pdfDocsByKey.has(key)) {
+      pdfDocsByKey.set(key, doc);
+    }
   });
 
-  const pdfItems = excelItems.map(({ def, label, doc, pdfDirect }) => {
-    const wbDoc = def ? workbookDocsByKey.get(def.key) : null;
-    const wbBase = normalizeBase(baseNameNoExt(wbDoc?.file_path || ''));
-    const pdfDoc = pdfDirect || (wbDoc ? pdfByBase.get(wbBase) : null);
-    return { def, wbDoc: wbDoc || null, pdfDoc, label };
+  const pdfItems = pdfDefs.map(def => {
+    const label = def.label || def.key;
+    const pdfDoc = pdfDocsByKey.get(def.key) || null;
+    return { def, pdfDoc, label };
   });
 
   const composerStoreKey = jobsheetId != null ? `jobsheet:${jobsheetId}` : 'jobsheet:global';
@@ -5481,7 +5474,7 @@ function DocumentsInlinePanel({
     return Array.isArray(saved) ? [...saved] : [];
   });
   const [composerTemplateKey, setComposerTemplateKey] = useState('');
-  const pendingLockRef = useRef({ workbook: new Set(), pdf: new Set() });
+  const pendingLockRef = useRef({ pdf: new Set() });
   const [, forcePendingLockTick] = useState(0);
   const [composerSendMode, setComposerSendMode] = useState(() => storedComposerState?.sendMode || 'now');
   const [composerScheduleAt, setComposerScheduleAt] = useState(() => storedComposerState?.scheduleAt || '');
@@ -5590,15 +5583,36 @@ function DocumentsInlinePanel({
 
   // (Other files list removed)
 
-  // Load default next number from business settings; update when it changes
-  useEffect(() => {
-    const val = Number(lastInvoiceNumber);
-    if (Number.isInteger(val)) {
-      setDefaultNext(val + 1);
-    } else {
-      setDefaultNext(null);
+  const finderMaxRef = useRef(null);
+  const syncFinderMax = useCallback(async () => {
+    if (!numericBusinessId || !window.api?.computeFinderInvoiceMax) {
+      const fallback = Number(lastInvoiceNumber);
+      setDefaultNext(Number.isInteger(fallback) ? fallback + 1 : null);
+      return;
     }
-  }, [lastInvoiceNumber]);
+    try {
+      const result = await window.api.computeFinderInvoiceMax({ businessId: numericBusinessId });
+      const rawMax = result && result.max != null ? Number(result.max) : 0;
+      const max = Number.isInteger(rawMax) && rawMax >= 0 ? rawMax : 0;
+      if (finderMaxRef.current !== max) {
+        finderMaxRef.current = max;
+        setDefaultNext(max + 1);
+      }
+      if (window.api?.setLastInvoiceNumber) {
+        const current = Number(lastInvoiceNumber);
+        if (!Number.isInteger(current) || current !== max) {
+          await window.api.setLastInvoiceNumber(numericBusinessId, max);
+        }
+      }
+    } catch (_err) {
+      const fallback = Number(lastInvoiceNumber);
+      setDefaultNext(Number.isInteger(fallback) ? fallback + 1 : null);
+    }
+  }, [numericBusinessId, lastInvoiceNumber]);
+
+  useEffect(() => {
+    syncFinderMax();
+  }, [syncFinderMax, list.length]);
 
   // (previous simple renderRow removed; panes now render rows inline)
   
@@ -5744,15 +5758,6 @@ function DocumentsInlinePanel({
     }
   };
 
-  const pdfItemByKey = useMemo(() => {
-    const map = new Map();
-    (pdfItems || []).forEach(item => {
-      const key = item?.def?.key;
-      if (key) map.set(key, item);
-    });
-    return map;
-  }, [pdfItems]);
-
   const emailStatusByAttachment = useMemo(() => {
     const map = new Map();
     (emailLog || []).forEach(entry => {
@@ -5778,11 +5783,9 @@ function DocumentsInlinePanel({
   const statusKey = normalizeStatus(jobsheetStatus) || 'enquiry';
   const invoiceGateOpen = bypassInvoiceGate || statusKey === 'contracting' || statusKey === 'confirmed' || statusKey === 'completed';
 
-  const documentRows = useMemo(() => {
-    const baseRows = excelItems.map(({ def, doc, label }) => {
+  const baseDocumentRows = useMemo(() => (
+    pdfItems.map(({ def, pdfDoc, label }) => {
       const key = def?.key || label;
-      const pdfItem = def ? pdfItemByKey.get(def.key) || null : null;
-      const pdfDoc = pdfItem?.pdfDoc || null;
       const pdfPath = pdfDoc?.file_path ? String(pdfDoc.file_path) : null;
       const emailInfo = pdfPath ? emailStatusByAttachment.get(pdfPath) || null : null;
       const invoiceVariant = def?.invoice_variant || '';
@@ -5798,7 +5801,7 @@ function DocumentsInlinePanel({
       } else if (def?.key === 'invoice_balance') {
         mailTemplateKey = 'invoice_balance';
       }
-      const suppressEmail = key === 'client_data' || BOOKING_PACK_DEFINITION_KEYS.has(def?.key);
+      const suppressEmail = BOOKING_PACK_DEFINITION_KEYS.has(def?.key);
       return {
         key,
         def,
@@ -5807,23 +5810,22 @@ function DocumentsInlinePanel({
         variantLabel,
         isInvoiceDef,
         gateOk: isInvoiceDef ? invoiceGateOpen : true,
-        workbookDoc: doc || null,
         pdfDoc,
-        pdfItem,
         emailInfo,
-        workbookGenerated: Boolean(doc?.file_path),
         pdfExported: Boolean(pdfDoc?.file_path),
         pdfPath,
         mailTemplateKey,
         suppressEmail,
         mailScheduledAt: (emailInfo?.status && String(emailInfo.status).toLowerCase() === 'scheduled' && emailInfo.entry?.sent_at) ? emailInfo.entry.sent_at : null
       };
-    });
+    })
+  ), [pdfItems, emailStatusByAttachment, invoiceGateOpen]);
 
+  const documentRows = useMemo(() => {
     const bookingPackDocs = [];
     const orderedDocs = [];
 
-    baseRows.forEach(row => {
+    baseDocumentRows.forEach(row => {
       if (BOOKING_PACK_DEFINITION_KEYS.has(row.def?.key)) {
         bookingPackDocs.push(row);
       } else {
@@ -5833,11 +5835,10 @@ function DocumentsInlinePanel({
 
     const result = orderedDocs.map(doc => ({ type: 'doc', doc }));
     if (bookingPackDocs.length) {
-      // Ensure consistent order inside the booking pack: Booking schedule → T&Cs → Deposit invoice
+      // Ensure consistent order inside the booking pack: Booking schedule → Deposit invoice
       const packOrder = new Map([
         ['booking_schedule', 0],
-        ['t_cs', 1],
-        ['invoice_deposit', 2]
+        ['invoice_deposit', 1]
       ]);
       bookingPackDocs.sort((a, b) => {
         const ak = a?.def?.key || '';
@@ -5864,26 +5865,38 @@ function DocumentsInlinePanel({
     }
 
     return result;
-  }, [excelItems, pdfItemByKey, emailStatusByAttachment, invoiceGateOpen]);
+  }, [baseDocumentRows]);
+
+  const bookingPackGroup = useMemo(() => {
+    const entry = documentRows.find(item => item.type === 'group');
+    return entry && entry.docs ? entry : null;
+  }, [documentRows]);
+
+  const docGridColumns = useMemo(() => {
+    const cols = baseDocumentRows.map(doc => ({ type: 'doc', doc }));
+    if (bookingPackGroup) cols.push({ type: 'booking_pack', group: bookingPackGroup });
+    return cols;
+  }, [baseDocumentRows, bookingPackGroup]);
+
+  const matrixRows = useMemo(() => (
+    baseDocumentRows.filter(Boolean)
+  ), [baseDocumentRows]);
+
+  const emailActionRows = useMemo(() => (
+    docGridColumns.filter(column => {
+      if (column.type === 'booking_pack') return true;
+      return Boolean(column.doc && !column.doc.suppressEmail);
+    })
+  ), [docGridColumns]);
 
   useEffect(() => {
     const pending = pendingLockRef.current;
     if (!pending) return;
     let consumed = false;
-    documentRows.forEach(item => {
-      const row = item && item.type === 'doc' ? item.doc : null;
+    baseDocumentRows.forEach(row => {
       if (!row) return;
       const key = row.def?.key;
       if (!key) return;
-      if (pending.workbook?.has(key) && row.workbookGenerated && row.workbookDoc && !row.workbookDoc.is_locked) {
-        pending.workbook.delete(key);
-        consumed = true;
-        try {
-          onToggleLock?.(row.workbookDoc);
-        } catch (err) {
-          console.warn('Auto-lock workbook failed', err);
-        }
-      }
       if (pending.pdf?.has(key) && row.pdfExported && row.pdfDoc && !row.pdfDoc.is_locked) {
         pending.pdf.delete(key);
         consumed = true;
@@ -5897,7 +5910,7 @@ function DocumentsInlinePanel({
     if (consumed) {
       forcePendingLockTick(tick => tick + 1);
     }
-  }, [documentRows, onToggleLock, forcePendingLockTick]);
+  }, [baseDocumentRows, onToggleLock, forcePendingLockTick]);
 
   const renderActionPill = ({ label, onClick, disabled, tone = 'slate', key: keyProp, variant = 'outline' }) => {
     const base = 'inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1';
@@ -5934,6 +5947,33 @@ function DocumentsInlinePanel({
     </span>
   );
 
+  const readyIconSmall = (label) => (
+    <span
+      className="inline-flex h-7 w-7 items-center justify-center rounded-full border border-green-200 bg-green-50 text-[11px] font-semibold text-green-700"
+      title={label}
+      aria-label={label}
+    >
+      ✓
+    </span>
+  );
+
+  const gridPlaceholder = (label = '—') => (
+    <span className="text-[11px] text-slate-400">{label}</span>
+  );
+
+  const lockToggleIcon = (doc, locked, label, key) => (
+    <IconButton
+      key={key}
+      label={locked ? `Unlock ${label}` : `Lock ${label}`}
+      onClick={() => doc && onToggleLock?.(doc)}
+      disabled={!doc?.document_id}
+      size="sm"
+      className="border-slate-200 text-slate-600 hover:bg-slate-50"
+    >
+      <span aria-hidden className="text-sm leading-none">{locked ? '🔒' : '🔓'}</span>
+    </IconButton>
+  );
+
   const scheduleBalanceEmail = useCallback(async (pdfPath) => {
     try {
       if (!jobsheetSnapshot || !numericBusinessId || !numericJobsheetId) return;
@@ -5967,14 +6007,9 @@ function DocumentsInlinePanel({
   const renderDocumentRow = (row, { nested = false } = {}) => {
     if (!row) return null;
     const docKey = row.def?.key;
-    const workbookDoc = row.workbookDoc;
     const pdfDoc = row.pdfDoc;
-    const pdfItem = row.pdfItem;
-    const workbookReady = row.workbookGenerated;
     const pdfReady = row.pdfExported;
-    const workbookLocked = Boolean(workbookDoc?.is_locked);
     const pdfLocked = Boolean(pdfDoc?.is_locked);
-    const isPdfTemplate = row.def && typeof row.def.template_path === 'string' && row.def.template_path.toLowerCase().endsWith('.pdf');
     const emailInfo = row.emailInfo;
     const emailStatusKey = String(emailInfo?.status || '').toLowerCase();
     const mailReady = emailStatusKey ? !['error', 'scheduled_error'].includes(emailStatusKey) : false;
@@ -5986,37 +6021,18 @@ function DocumentsInlinePanel({
     const scheduleDateDisplay = row.mailScheduledAt ? formatTimestampDisplay(row.mailScheduledAt) : '';
     const pdfVariantRequiresNumber = row.def && (row.def.invoice_variant === 'deposit' || row.def.invoice_variant === 'balance');
 
-    const generateDisabled = isPdfTemplate
-      ? (!jobsheetId || !row.def || !row.def.template_path || definitionsLoading || !row.gateOk)
-      : (!jobsheetId || !row.def || !row.def.template_path || definitionsLoading || workbookLocked || !row.gateOk);
-    const exportDisabled = isPdfTemplate
-      ? (!row.def || !row.def.template_path || definitionsLoading || pdfLocked || !row.gateOk)
-      : (!pdfItem || pdfLocked || !row.gateOk || !workbookReady || definitionsLoading);
+    const generateDisabled = !jobsheetId || !row.def || !row.def.template_path || definitionsLoading || !row.gateOk;
+    const regenerateDisabled = generateDisabled || pdfLocked;
     const mailDisabled = !mailHasTemplate || !pdfReady;
-
-    const handleWorkbookPrimaryClick = () => {
-      if (isPdfTemplate) return;
-      if (workbookReady) {
-        if (workbookDoc?.file_path) onOpenFile?.(workbookDoc.file_path);
-        return;
-      }
-      if (generateDisabled || !row.def) return;
-      if (docKey) queueAutoLock(docKey, 'workbook');
-      handleGenerate(row.def.key);
-    };
 
     const handlePdfPrimaryClick = () => {
       if (pdfReady) {
         if (pdfDoc?.file_path) onOpenFile?.(pdfDoc.file_path);
         return;
       }
-      if (exportDisabled) return;
+      if (generateDisabled) return;
       if (docKey) queueAutoLock(docKey, 'pdf');
-      if (isPdfTemplate) {
-        handleGenerate(row.def.key);
-      } else if (pdfItem) {
-        handleExportForDef(pdfItem);
-      }
+      handleGenerate(row.def.key);
     };
 
     const handleRegenerate = async () => {
@@ -6037,11 +6053,7 @@ function DocumentsInlinePanel({
 
       if (docKey) queueAutoLock(docKey, 'pdf');
       let result = null;
-      if (isPdfTemplate) {
-        result = await handleGenerate(row.def.key);
-      } else if (pdfItem) {
-        result = await handleExportForDef(pdfItem);
-      }
+      result = await handleGenerate(row.def.key);
       await refreshJobsheetDocuments();
       const newPath = result?.file_path || result?.output_path || pdfDoc?.file_path;
       // Open after generating (prefer newly returned path)
@@ -6072,58 +6084,15 @@ function DocumentsInlinePanel({
     </button>
   );
 
-    const workbookRow = isPdfTemplate ? null : (
-      <div key="row-workbook" className="flex flex-wrap items-center gap-2 sm:flex-nowrap">
-        <span className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">XLSX</span>
-        {workbookReady ? readyIcon('Workbook ready') : renderActionPill({
-          key: `${row.key}-generate`,
-          label: 'Generate',
-          onClick: handleWorkbookPrimaryClick,
-          disabled: generateDisabled,
-          tone: 'indigo'
-        })}
-        {workbookReady ? lockToggle(workbookDoc, workbookLocked, 'Workbook', `${row.key}-workbook-lock`) : null}
-        <IconButton
-          label="Open workbook"
-          onClick={() => onOpenFile?.(workbookDoc?.file_path)}
-          disabled={!workbookDoc?.file_path}
-          size="md"
-          className="border-slate-200 text-slate-600 hover:bg-slate-50"
-        >
-          <OpenIcon className="h-4 w-4" />
-        </IconButton>
-        <IconButton
-          label="Reveal workbook"
-          onClick={() => onRevealFile?.(workbookDoc?.file_path)}
-          disabled={!workbookDoc?.file_path}
-          size="md"
-          className="border-slate-200 text-slate-600 hover:bg-slate-50"
-        >
-          <RevealIcon className="h-4 w-4" />
-        </IconButton>
-        {onDelete ? (
-          <IconButton
-            label="Delete workbook"
-            onClick={() => onDelete?.(workbookDoc)}
-            disabled={workbookDoc?.document_id == null}
-            size="md"
-            className="border-red-200 text-red-600 hover:bg-red-50"
-          >
-            <DeleteIcon className="h-4 w-4" />
-          </IconButton>
-        ) : null}
-      </div>
-    );
-
     const pdfChildren = [
       <span key="label" className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">PDF</span>,
       pdfReady ? (
         <span key="tick" className="inline-flex">{readyIcon('PDF ready')}</span>
       ) : renderActionPill({
         key: 'pdf-export',
-        label: isPdfTemplate ? 'Generate' : 'Export',
+        label: 'Generate',
         onClick: handlePdfPrimaryClick,
-        disabled: exportDisabled,
+        disabled: generateDisabled,
         tone: 'indigo'
       }),
       pdfReady ? lockToggle(pdfDoc, pdfLocked, 'PDF', `${row.key}-pdf-lock`) : null,
@@ -6135,13 +6104,13 @@ function DocumentsInlinePanel({
         size="md"
         className="border-slate-200 text-slate-600 hover:bg-slate-50"
       >
-        <OpenIcon className="h-4 w-4" />
+        <EyeIcon className="h-4 w-4" />
       </IconButton>,
       <IconButton
         key="regenerate"
         label="Regenerate PDF"
         onClick={handleRegenerate}
-        disabled={exportDisabled}
+        disabled={regenerateDisabled}
         size="md"
         className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
       >
@@ -6173,7 +6142,7 @@ function DocumentsInlinePanel({
 
     if (!pdfReady && pdfVariantRequiresNumber) {
       pdfChildren.push(
-        <label key="invoice-number" className="ml-2 flex items-center gap-1 text-[11px] text-slate-500">
+        <label key="invoice-number" className="ml-2 flex items-center gap-1 text-xs font-semibold text-slate-500">
           <span>Invoice #</span>
           <input
             type="number"
@@ -6181,7 +6150,7 @@ function DocumentsInlinePanel({
             value={overrideNumbers[row.def.key] ?? ''}
             onChange={(e) => setOverrideNumbers(prev => ({ ...prev, [row.def.key]: e.target.value }))}
             placeholder={defaultNext != null ? String(defaultNext) : 'INV #'}
-            className="w-24 rounded border border-slate-300 px-2 py-1"
+            className="w-24 rounded border border-slate-300 px-2 py-1.5 text-xs font-semibold"
           />
         </label>
       );
@@ -6239,7 +6208,6 @@ function DocumentsInlinePanel({
     })();
 
     let toneKey = row.def?.doc_type ? String(row.def.doc_type).toLowerCase() : 'default';
-    if (row.def?.key === 'client_data') toneKey = 'client_data';
     const tone = DOCUMENT_CARD_TONES[toneKey] || DOCUMENT_CARD_TONES.default;
 
     return (
@@ -6254,12 +6222,6 @@ function DocumentsInlinePanel({
         <div className="mt-3 space-y-3 text-xs text-slate-600">
           <div className={`rounded border ${tone.innerBorder} bg-white p-2 shadow-sm`}>
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:gap-4">
-              {workbookRow}
-              {workbookRow && pdfRow ? (
-                <div className="hidden sm:block" aria-hidden>
-                  <div className="h-9 w-px bg-slate-200" />
-                </div>
-              ) : null}
               {pdfRow}
             </div>
           </div>
@@ -6355,60 +6317,271 @@ function DocumentsInlinePanel({
   };
 
   const handleGenerate = (key) => onGenerate?.(key);
+  const handleGenerateMissing = async () => {
+    for (const i of pdfItems) {
+      if (!i?.def?.template_path) continue;
+      if (i?.pdfDoc?.file_path || i?.pdfDoc?.is_locked) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await handleGenerate(i.def.key);
+    }
+  };
   const canGenerateAll = Boolean(
-    jobsheetId && excelItems.some(i => {
+    jobsheetId && pdfItems.some(i => {
       const isInvoiceDef = i.def && (i.def.invoice_variant === 'deposit' || i.def.invoice_variant === 'balance');
       const gateOk = isInvoiceDef ? invoiceGateOpen : true;
-      return gateOk && i.def && i.def.template_path && !(i.doc && i.doc.file_path) && !(i.doc && i.doc.is_locked);
+      return gateOk && i.def && i.def.template_path && !(i.pdfDoc && i.pdfDoc.file_path) && !(i.pdfDoc && i.pdfDoc.is_locked);
     }) && !definitionsLoading
   );
-
-  const handleExportForDef = async (item) => {
-    if (!item) return;
-    const { def, wbDoc, pdfDoc } = item;
-    const exported = Boolean(pdfDoc && pdfDoc.file_path);
-    if (exported || (pdfDoc && pdfDoc.is_locked)) return;
-    const isInvoiceDef = def && (def.invoice_variant === 'deposit' || def.invoice_variant === 'balance');
-    if (isInvoiceDef && !invoiceGateOpen) {
-      error && console.warn('Invoice export gated: move job to Contracting or Confirmed');
-      return;
-    }
-    if (!wbDoc || !wbDoc.file_path) {
-      const proceed = window.confirm('No workbook found for this document. Generate it first?');
-      if (!proceed) return;
-      await onGenerate?.(def.key);
-      return;
-    }
-    const requested = isInvoiceDef ? Number(overrideNumbers[def.key]) : null;
-    const opts = isInvoiceDef && Number.isInteger(requested) && requested > 0 ? { requestedNumber: requested } : {};
-    const res = await onExportPdf?.(wbDoc, opts);
-    if (res && res.ok === false && /exists/i.test(res.message || '')) {
-      window.alert(res.message || 'Invoice number conflict. Choose another number.');
-    }
-
-  };
 
   const handleExportAll = async () => {
     for (const i of pdfItems) {
       const alreadyExported = Boolean(i.pdfDoc && i.pdfDoc.file_path);
-      const isPdfTemplate = i.def && (i.def.template_path || '').toLowerCase().endsWith('.pdf');
       if (alreadyExported) continue;
-      if (isPdfTemplate) {
+      if (i.def?.key) {
         // eslint-disable-next-line no-await-in-loop
         await onGenerate?.(i.def.key);
-        continue;
-      }
-      if (i.wbDoc && i.wbDoc.file_path) {
-        // eslint-disable-next-line no-await-in-loop
-        await onExportPdf?.(i.wbDoc);
-      } else if (i.def?.key) {
-        const ok = window.confirm(`No workbook found for ${i.def.label || i.def.key}. Generate it first?`);
-        if (ok) {
-          // eslint-disable-next-line no-await-in-loop
-          await onGenerate?.(i.def.key);
-        }
       }
     }
+  };
+
+  const renderGridHeaderLabel = (column) => {
+    if (!column) return '';
+    if (column.type === 'booking_pack') return column.group?.label || 'Booking pack';
+    return column.doc?.label || column.doc?.def?.key || '';
+  };
+
+  const renderPdfCell = (column, { stacked = false } = {}) => {
+    if (!column || column.type !== 'doc') return gridPlaceholder();
+    const row = column.doc;
+    const docKey = row?.def?.key;
+    const pdfDoc = row?.pdfDoc;
+    const pdfReady = row?.pdfExported;
+    const pdfLocked = Boolean(pdfDoc?.is_locked);
+    const pdfVariantRequiresNumber = row?.def && (row.def.invoice_variant === 'deposit' || row.def.invoice_variant === 'balance');
+
+    const generateDisabled = !jobsheetId || !row?.def || !row.def.template_path || definitionsLoading || !row?.gateOk;
+    const regenerateDisabled = generateDisabled || pdfLocked;
+
+    const handlePdfPrimaryClick = () => {
+      if (pdfReady) {
+        if (pdfDoc?.file_path) onOpenFile?.(pdfDoc.file_path);
+        return;
+      }
+      if (generateDisabled) return;
+      if (docKey) queueAutoLock(docKey, 'pdf');
+      onGenerate?.(row.def.key);
+    };
+
+    const handleRegenerate = async () => {
+      const hasExisting = pdfReady && pdfDoc?.file_path;
+      if (hasExisting) {
+        const confirm = window.confirm('A PDF already exists. Regenerate and overwrite?');
+        if (!confirm) return;
+      }
+      try {
+        if (pdfDoc?.document_id != null && window.api?.deleteDocument) {
+          await window.api.deleteDocument(pdfDoc.document_id, { removeFile: true });
+        } else if (pdfDoc?.file_path && window.api?.deleteDocumentByPath) {
+          await window.api.deleteDocumentByPath({ businessId: numericBusinessId, absolutePath: pdfDoc.file_path });
+        }
+      } catch (err) {
+        console.warn('Failed to remove existing PDF before regenerate', err);
+      }
+
+      if (docKey) queueAutoLock(docKey, 'pdf');
+      let result = null;
+      result = await onGenerate?.(row.def.key);
+      await onRefresh?.();
+      const newPath = result?.file_path || result?.output_path || pdfDoc?.file_path;
+      setTimeout(() => {
+        if (newPath) onOpenFile?.(newPath);
+      }, 150);
+    };
+
+    const containerClass = stacked ? 'flex flex-col items-center gap-1' : 'flex flex-col items-start gap-1';
+    const controlsClass = stacked ? 'flex flex-col items-center gap-1' : 'flex flex-wrap items-center gap-1';
+    const invoiceInput = !pdfReady && pdfVariantRequiresNumber ? (
+      <label className="ml-1 flex items-center gap-1 text-xs font-semibold text-slate-500">
+        <span>INV #</span>
+        <input
+          type="number"
+          min={1}
+          value={overrideNumbers[row.def.key] ?? ''}
+          onChange={(e) => setOverrideNumbers(prev => ({ ...prev, [row.def.key]: e.target.value }))}
+          placeholder={defaultNext != null ? String(defaultNext) : 'INV'}
+          className="w-16 rounded border border-slate-300 px-2 py-1.5 text-xs font-semibold"
+        />
+      </label>
+    ) : null;
+
+    return (
+      <div className={containerClass}>
+        <div className={controlsClass}>
+          {pdfReady ? readyIconSmall('PDF ready') : (
+            <IconButton
+              label="Generate PDF"
+              onClick={handlePdfPrimaryClick}
+              disabled={generateDisabled}
+              size="sm"
+              className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+            >
+              <SparklesIcon className="h-3.5 w-3.5" />
+            </IconButton>
+          )}
+          {pdfReady ? lockToggleIcon(pdfDoc, pdfLocked, 'PDF', `${row.key}-grid-pdf-lock`) : null}
+          <IconButton
+            label="Open PDF"
+            onClick={() => onOpenFile?.(pdfDoc?.file_path)}
+            disabled={!pdfDoc?.file_path}
+            size="sm"
+            className="border-slate-200 text-slate-600 hover:bg-slate-50"
+          >
+            <EyeIcon className="h-3.5 w-3.5" />
+          </IconButton>
+          <IconButton
+            label="Regenerate PDF"
+            onClick={handleRegenerate}
+            disabled={regenerateDisabled}
+            size="sm"
+            className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+          >
+            <span className="text-base leading-none">⟳</span>
+          </IconButton>
+          <IconButton
+            label="Reveal PDF"
+            onClick={() => onRevealFile?.(pdfDoc?.file_path)}
+            disabled={!pdfDoc?.file_path}
+            size="sm"
+            className="border-slate-200 text-slate-600 hover:bg-slate-50"
+          >
+            <RevealIcon className="h-3.5 w-3.5" />
+          </IconButton>
+          {onDelete ? (
+            <IconButton
+              label="Delete PDF"
+              onClick={() => onDelete?.(pdfDoc)}
+              disabled={pdfDoc?.document_id == null}
+              size="sm"
+              className="border-red-200 text-red-600 hover:bg-red-50"
+            >
+              <DeleteIcon className="h-3.5 w-3.5" />
+            </IconButton>
+          ) : null}
+          {invoiceInput}
+        </div>
+      </div>
+    );
+  };
+
+  const renderBookingPackEmailCell = (group) => {
+    if (!group) return gridPlaceholder();
+    const docs = Array.isArray(group.docs) ? group.docs : [];
+    const attachments = Array.isArray(group.attachments) ? group.attachments.filter(Boolean) : [];
+    const allPdfReady = docs.every(doc => doc.pdfExported);
+    const composeDisabled = !allPdfReady || !attachments.length;
+
+    let aggregatedInfo = null;
+    attachments.forEach(path => {
+      const info = emailStatusByAttachment.get(path) || null;
+      if (!info) return;
+      if (!aggregatedInfo) {
+        aggregatedInfo = info;
+        return;
+      }
+      const currentDate = aggregatedInfo.entry?.sent_at ? new Date(aggregatedInfo.entry.sent_at).valueOf() : 0;
+      const nextDate = info.entry?.sent_at ? new Date(info.entry.sent_at).valueOf() : 0;
+      if (nextDate > currentDate) {
+        aggregatedInfo = info;
+      }
+    });
+
+    const statusKey = aggregatedInfo?.status ? String(aggregatedInfo.status).toLowerCase() : '';
+    const mailReady = statusKey ? !['error', 'scheduled_error'].includes(statusKey) : false;
+    const mailBadge = statusKey ? renderEmailStatusPill(statusKey) : null;
+    const mailWhen = aggregatedInfo?.entry?.sent_at ? formatTimestampDisplay(aggregatedInfo.entry.sent_at) : '';
+    const scheduledFor = statusKey === 'scheduled' && aggregatedInfo?.entry?.sent_at
+      ? formatTimestampDisplay(aggregatedInfo.entry.sent_at)
+      : '';
+    const fallbackLabel = allPdfReady ? 'No emails' : 'PDFs not ready';
+
+    const emailButtonClass = 'inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50';
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {mailReady ? readyIconSmall('Booking pack email sent') : (
+          <button
+            type="button"
+            onClick={() => openComposer({ templateKey: group.templateKey, attachments, includeSignature: composerIncludeSignature })}
+            disabled={composeDisabled}
+            className={emailButtonClass}
+          >
+            Send
+          </button>
+        )}
+        {!mailReady ? <span className="text-xs text-slate-400">{fallbackLabel}</span> : null}
+        {scheduledFor ? <span className="text-xs text-slate-500">Scheduled {scheduledFor}</span> : null}
+        {mailBadge ? <span>{mailBadge}</span> : null}
+        {mailWhen ? <span className="text-xs text-slate-500">{mailWhen}</span> : null}
+      </div>
+    );
+  };
+
+  const renderEmailCell = (column) => {
+    if (!column) return gridPlaceholder();
+    if (column.type === 'booking_pack') return renderBookingPackEmailCell(column.group);
+    const row = column.doc;
+    if (!row || row.suppressEmail) return gridPlaceholder();
+
+    const pdfReady = row.pdfExported;
+    const pdfDoc = row.pdfDoc;
+    const emailInfo = row.emailInfo;
+    const emailStatusKey = String(emailInfo?.status || '').toLowerCase();
+    const mailReady = emailStatusKey ? !['error', 'scheduled_error'].includes(emailStatusKey) : false;
+    const mailHasTemplate = Boolean(row.mailTemplateKey);
+    const mailDisabled = !mailHasTemplate || !pdfReady;
+    const emailBadge = emailInfo ? renderEmailStatusPill(emailStatusKey) : null;
+    const emailWhen = emailInfo?.entry?.sent_at ? formatTimestampDisplay(emailInfo.entry.sent_at) : '';
+    const scheduleDateDisplay = row.mailScheduledAt ? formatTimestampDisplay(row.mailScheduledAt) : '';
+    const isBalanceInvoice = row.def && (row.def.invoice_variant || '').toLowerCase() === 'balance';
+
+    const handleMailPrimaryClick = () => {
+      if (mailReady || mailDisabled) return;
+      const key = row.mailTemplateKey || '';
+      openComposer({ templateKey: key, attachments: row.pdfPath && pdfReady ? [row.pdfPath] : [] });
+    };
+
+    const emailButtonClass = 'inline-flex items-center gap-1.5 rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-50';
+
+    return (
+      <div className="flex flex-wrap items-center gap-2">
+        {mailReady ? readyIconSmall(isBalanceInvoice ? 'Balance email scheduled' : 'Email sent') : null}
+        {isBalanceInvoice ? (
+          <button
+            type="button"
+            onClick={() => scheduleBalanceEmail(pdfDoc?.file_path || '')}
+            disabled={!pdfReady || !pdfDoc?.file_path}
+            className={emailButtonClass}
+          >
+            {emailStatusKey === 'scheduled' ? 'Reschedule' : 'Schedule'}
+          </button>
+        ) : (
+          mailReady ? null : (
+            <button
+              type="button"
+              onClick={handleMailPrimaryClick}
+              disabled={mailDisabled}
+              className={emailButtonClass}
+            >
+              Send
+            </button>
+          )
+        )}
+        {!pdfReady && !mailReady ? <span className="text-xs text-slate-400">PDF not ready</span> : null}
+        {scheduleDateDisplay ? <span className="text-xs text-slate-500">Scheduled {scheduleDateDisplay}</span> : null}
+        {emailBadge ? <span>{emailBadge}</span> : null}
+        {emailWhen ? <span className="text-xs text-slate-500">{emailWhen}</span> : null}
+      </div>
+    );
   };
 
   return (
@@ -6472,11 +6645,11 @@ function DocumentsInlinePanel({
               {renderActionPill({
                 key: 'documents-generate-missing',
                 label: 'Generate missing',
-                onClick: () => excelItems.forEach(i => (!i.doc?.file_path && !i.doc?.is_locked && i.def?.template_path) && handleGenerate(i.def.key)),
+                onClick: handleGenerateMissing,
                 disabled: !canGenerateAll,
                 tone: 'indigo'
               })}
-              {renderActionPill({ key: 'documents-export-all', label: 'Export all PDFs', onClick: handleExportAll, tone: 'indigo' })}
+              {renderActionPill({ key: 'documents-export-all', label: 'Generate all PDFs', onClick: handleExportAll, tone: 'indigo' })}
               {renderActionPill({
                 key: 'documents-new-email',
                 label: 'New email',
@@ -6490,21 +6663,75 @@ function DocumentsInlinePanel({
             </div>
           </div>
           <div className="space-y-3">
-            {documentRows.length ? documentRows.map(item => {
-                  if (item.type === 'group') {
-                    return renderBookingPackGroup(item);
-                  }
-                  if (item.type === 'doc') {
-                    return renderDocumentRow(item.doc);
-                  }
-                  return null;
-                }) : (
-                  <div className="rounded border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
-                    No document definitions configured for this business.
-                  </div>
-                )}
+            {docGridColumns.length ? (
+              <>
+                <div className="overflow-x-auto px-3 pb-3">
+                  <table className="min-w-full border-collapse text-[11px]" style={{ borderSpacing: '0 8px', borderCollapse: 'separate' }}>
+                    <tbody className="bg-white text-slate-700">
+                      {matrixRows.map(row => {
+                        const toneKey = row?.def?.doc_type ? String(row.def.doc_type).toLowerCase() : 'default';
+                        const tone = DOCUMENT_CARD_TONES[toneKey] || DOCUMENT_CARD_TONES.default;
+                        const cellGradient = `linear-gradient(90deg, ${tone.outerBg} 0%, rgba(255,255,255,0.95) 55%)`;
+                        return (
+                          <tr key={`doc-row-${row.key}`}>
+                            <td className={`border ${tone.outerBorder} px-3 py-2 text-xs font-semibold text-slate-700 rounded-l-xl`} style={{ background: tone.outerBg, width: '180px' }}>
+                              {row.label}
+                            </td>
+                            <td className={`border ${tone.outerBorder} px-3 py-2 align-top rounded-r-xl`} style={{ background: cellGradient }}>
+                              {renderPdfCell({ type: 'doc', doc: row })}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <div className="rounded border border-slate-200 bg-white px-4 py-6 text-center text-sm text-slate-500">
+                No document definitions configured for this business.
+              </div>
+            )}
           </div>
         </div>
+
+        {emailActionRows.length ? (
+          <div className="rounded border border-slate-200 bg-white">
+            <div className="border-b border-slate-200 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Email
+            </div>
+            <div className="overflow-x-auto px-3 pb-3">
+              <table className="min-w-full border-collapse text-[11px]" style={{ borderSpacing: '0 8px', borderCollapse: 'separate' }}>
+                <tbody className="bg-white text-slate-700">
+                  {(() => {
+                    const rows = [...emailActionRows];
+                    if (rows.length >= 3) {
+                      const tmp = rows[1];
+                      rows[1] = rows[2];
+                      rows[2] = tmp;
+                    }
+                    return rows;
+                  })().map(column => {
+                    const doc = column.type === 'booking_pack' ? null : column.doc;
+                    const toneKey = doc?.def?.doc_type ? String(doc.def.doc_type).toLowerCase() : 'default';
+                    const tone = DOCUMENT_CARD_TONES[toneKey] || DOCUMENT_CARD_TONES.default;
+                    const cellGradient = `linear-gradient(90deg, ${tone.outerBg} 0%, rgba(255,255,255,0.95) 55%)`;
+                    return (
+                      <tr key={`email-row-${column.type}-${column.doc?.key || 'pack'}`}>
+                        <td className={`border ${tone.outerBorder} px-3 py-2 text-xs font-semibold text-slate-700 rounded-l-xl`} style={{ background: tone.outerBg, width: '180px' }}>
+                          {renderGridHeaderLabel(column)}
+                        </td>
+                        <td className={`border ${tone.outerBorder} px-3 py-2 align-top rounded-r-xl`} style={{ background: cellGradient }}>
+                          {renderEmailCell(column)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ) : null}
 
         {/* Email history */}
         <div className="space-y-3">
@@ -7550,7 +7777,7 @@ function JobsheetEditor({
                   key={group.key}
                   id={`jobsheet-section-${group.key}`}
                   ref={el => { if (el) sectionRefs.current[group.key] = el; }}
-                  className="relative z-0 border border-indigo-200 bg-indigo-50 rounded-lg p-5 space-y-5 lg:rounded-l-none lg:border-l border-l"
+                  className="relative border border-indigo-200 bg-indigo-50 rounded-lg p-5 space-y-5 lg:rounded-l-none lg:border-l border-l"
                   style={{ scrollMarginTop: stickyTop + 8, minHeight: 'min(110vh, 1100px)' }}
                 >
                   <div className="flex items-center justify-between gap-2">
@@ -8134,9 +8361,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     }
   });
 
-  // Settings: Set last invoice number inline modal state
-  const [setLastOpen, setSetLastOpen] = useState(false);
-  const [setLastDraft, setSetLastDraft] = useState('');
   const [inlineEditorSession, setInlineEditorSession] = useState(0);
   const [updatingSavePath, setUpdatingSavePath] = useState(false);
   const [workspaceSection, setWorkspaceSection] = useState(() => {
@@ -8168,8 +8392,11 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     return false;
   });
   const [emptyingTrash, setEmptyingTrash] = useState(false);
-  const [documentsGroup, setDocumentsGroup] = useState('none');
+  const [documentsGroup, setDocumentsGroup] = useState('client');
   const [documentsSearch, setDocumentsSearch] = useState('');
+  const [documentsTypeFilter, setDocumentsTypeFilter] = useState('all');
+  const [documentsExtensionFilter, setDocumentsExtensionFilter] = useState('all');
+  const [documentsLinkFilter, setDocumentsLinkFilter] = useState('all');
   const [documentColumnsState, setDocumentColumnsState] = useState(() => {
     if (typeof window === 'undefined') return { ...DEFAULT_DOCUMENT_COLUMNS_STATE };
     try {
@@ -8381,7 +8608,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setDocumentTree(null);
       setDocumentTreeLoading(false);
       setDocumentTreeError('');
-      return;
+      return null;
     }
     setDocumentTreeLoading(true);
     setDocumentTreeError('');
@@ -8392,14 +8619,77 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       }
       const tree = await api.listDocumentTree({ businessId: business.id });
       setDocumentTree(tree || null);
+      return tree || null;
     } catch (err) {
       console.error('Failed to load document tree', err);
       setDocumentTreeError(err?.message || 'Unable to load document tree');
       setDocumentTree(null);
+      return null;
     } finally {
       setDocumentTreeLoading(false);
     }
   }, [business.id]);
+
+  const normalizeDocumentPath = useCallback((value) => {
+    return String(value || '').replace(/\\/g, '/').toLowerCase();
+  }, []);
+
+  const getFolderPath = useCallback((value) => {
+    const str = String(value || '');
+    const lastSlash = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'));
+    return lastSlash >= 0 ? str.slice(0, lastSlash) : '';
+  }, []);
+
+  const buildOrphanDocuments = useCallback((treeRoot, existingDocs) => {
+    if (!treeRoot) return [];
+    const existingPaths = new Set();
+    (existingDocs || []).forEach(doc => {
+      const key = normalizeDocumentPath(doc?.file_path);
+      if (key) existingPaths.add(key);
+    });
+
+    const files = [];
+    const collect = (node) => {
+      if (!node) return;
+      if (node.isDirectory) {
+        (node.children || []).forEach(child => collect(child));
+      } else {
+        files.push(node);
+      }
+    };
+    collect(treeRoot);
+
+    const allowedExtensions = new Set(['pdf', 'xlsx', 'xls', 'docx']);
+    const orphans = [];
+    files.forEach(node => {
+      const filePath = node?.absolutePath || '';
+      if (!filePath) return;
+      const key = normalizeDocumentPath(filePath);
+      if (!key || existingPaths.has(key)) return;
+      const extension = getFileExtension(node.name || filePath);
+      if (!allowedExtensions.has(extension)) return;
+      let docType = 'file';
+      if (extension === 'pdf') docType = 'pdf_export';
+      if (extension === 'xlsx' || extension === 'xls') docType = 'workbook';
+      if (extension === 'docx') docType = 'contract';
+      const fileName = node?.name || filePath.split(/[\\/]+/).filter(Boolean).pop() || 'Document';
+      orphans.push({
+        document_id: null,
+        doc_type: docType,
+        file_path: filePath,
+        file_name: fileName,
+        folder_path: getFolderPath(filePath),
+        display_label: fileName,
+        status: 'orphaned',
+        file_available: true,
+        created_at: node?.modified || null,
+        document_date: node?.modified || null,
+        is_orphan: true
+      });
+    });
+
+    return orphans;
+  }, [normalizeDocumentPath, getFolderPath]);
 
   const refreshDocuments = useCallback(async () => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
@@ -8418,12 +8708,15 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         }
         const response = await api.listJobsheetDocuments({ businessId: business.id });
         const docs = Array.isArray(response?.documents) ? response.documents : [];
-        setDocuments(docs);
-      }
-      if (DOCUMENT_FEATURES_ENABLED) {
-        await loadDocumentTree();
-      } else {
-        setDocumentTree(null);
+        const filtered = docs.filter(doc => doc?.definition_key !== 'client_data' && doc?.definition_key !== 't_cs');
+        let tree = null;
+        if (DOCUMENT_FEATURES_ENABLED) {
+          tree = await loadDocumentTree();
+        } else {
+          setDocumentTree(null);
+        }
+        const orphans = tree?.root ? buildOrphanDocuments(tree.root, filtered) : [];
+        setDocuments([...filtered, ...orphans]);
       }
     } catch (err) {
       console.error('Failed to refresh documents', err);
@@ -8431,7 +8724,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     } finally {
       setDocumentsLoading(false);
     }
-  }, [business.id, loadDocumentTree]);
+  }, [business.id, loadDocumentTree, buildOrphanDocuments]);
 
   const handleRefreshDocuments = useCallback(() => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
@@ -8650,6 +8943,30 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setError(err?.message || 'Unable to delete document');
     }
   }, [refreshDocuments, loadDocumentTree, business.id]);
+
+  const handleDeleteOrphanFile = useCallback(async (doc) => {
+    if (!DOCUMENT_FEATURES_ENABLED) {
+      setDocumentsError('Document generation is disabled.');
+      return;
+    }
+    if (!doc?.file_path) {
+      setDocumentsError('Document file not available');
+      return;
+    }
+    const fileName = doc.fileName || doc.displayLabel || doc.file_path;
+    const confirmDelete = window.confirm(`Move file "${fileName}" to trash?`);
+    if (!confirmDelete) return;
+    try {
+      setDocumentsError('');
+      await window.api?.deleteDocumentByPath?.({ businessId: business.id, absolutePath: doc.file_path });
+      setMessage('File moved to trash');
+      await refreshDocuments();
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to delete orphan file', err);
+      setDocumentsError(err?.message || 'Unable to delete file');
+    }
+  }, [business.id, refreshDocuments]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -8992,6 +9309,8 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       const fileSuffix = '';
       const folderPath = doc.folder_path || '';
       const fileAvailable = doc.file_available !== false && Boolean(doc.file_path);
+      const fileExtension = getFileExtension(doc.file_path || doc.file_name || '');
+      const isOrphan = Boolean(doc.is_orphan) || doc.document_id == null;
 
       return {
         ...doc,
@@ -9009,7 +9328,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         filePrefix,
         fileSuffix,
         folderPath,
-        fileAvailable
+        fileAvailable,
+        fileExtension,
+        isOrphan
       };
     });
   }, [documents]);
@@ -9086,9 +9407,42 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   const selectedCount = selectedDocuments.size;
   const documentsSearchValue = documentsSearch.trim().toLowerCase();
 
+  const documentTypeOptions = useMemo(() => {
+    const map = new Map();
+    (normalizedDocuments || []).forEach(doc => {
+      const key = doc.doc_type || 'other';
+      const label = doc.typeLabel || startCaseKey(key);
+      if (!map.has(key)) map.set(key, label);
+    });
+    return Array.from(map.entries())
+      .map(([value, label]) => ({ value, label }))
+      .sort((a, b) => a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }));
+  }, [normalizedDocuments]);
+
+  const documentExtensionOptions = useMemo(() => {
+    const set = new Set();
+    (normalizedDocuments || []).forEach(doc => {
+      if (doc.fileExtension) set.add(doc.fileExtension);
+    });
+    return Array.from(set)
+      .sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }))
+      .map(ext => ({ value: ext, label: ext.toUpperCase() }));
+  }, [normalizedDocuments]);
+
   const filteredDocuments = useMemo(() => {
-    if (!documentsSearchValue) return normalizedDocuments;
-    return normalizedDocuments.filter(doc => {
+    let list = normalizedDocuments;
+    if (documentsTypeFilter !== 'all') {
+      list = list.filter(doc => (doc.doc_type || 'other') === documentsTypeFilter);
+    }
+    if (documentsExtensionFilter !== 'all') {
+      list = list.filter(doc => doc.fileExtension === documentsExtensionFilter);
+    }
+    if (documentsLinkFilter !== 'all') {
+      const wantsOrphans = documentsLinkFilter === 'orphaned';
+      list = list.filter(doc => doc.isOrphan === wantsOrphans);
+    }
+    if (!documentsSearchValue) return list;
+    return list.filter(doc => {
       const haystack = [
         doc.typeLabel,
         doc.displayLabel,
@@ -9109,7 +9463,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       ].join(' ').toLowerCase();
       return haystack.includes(documentsSearchValue);
     });
-  }, [normalizedDocuments, documentsSearchValue]);
+  }, [normalizedDocuments, documentsSearchValue, documentsTypeFilter, documentsExtensionFilter, documentsLinkFilter]);
 
   const groupedDocuments = useMemo(() => {
     if (documentsGroup === 'none') {
@@ -9126,11 +9480,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     };
 
     filteredDocuments.forEach(doc => {
-      if (documentsGroup === 'doc_type') {
-        const key = doc.doc_type || 'unknown';
-        const entry = ensureGroup(key, doc.typeLabel || 'Other');
-        entry.items.push(doc);
-      } else if (documentsGroup === 'client') {
+      if (documentsGroup === 'client') {
         const key = (doc.displayClient && doc.displayClient !== '—') ? doc.displayClient : 'No client';
         const entry = ensureGroup(key, key);
         entry.items.push(doc);
@@ -9153,6 +9503,24 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       result.sort((a, b) => a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }));
     }
 
+    result.forEach(group => {
+      group.items.sort((a, b) => {
+        if (documentsGroup === 'client') {
+          const dateA = a.eventDateIso || '9999-99-99';
+          const dateB = b.eventDateIso || '9999-99-99';
+          if (dateA !== dateB) return dateA.localeCompare(dateB);
+        }
+        if (documentsGroup === 'event_date') {
+          const clientA = (a.displayClient || '').toLowerCase();
+          const clientB = (b.displayClient || '').toLowerCase();
+          if (clientA !== clientB) return clientA.localeCompare(clientB);
+        }
+        const nameA = (a.fileName || a.displayLabel || '').toLowerCase();
+        const nameB = (b.fileName || b.displayLabel || '').toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+    });
+
     return result;
   }, [documentsGroup, filteredDocuments]);
 
@@ -9173,8 +9541,12 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     ? `${filteredDocuments.length} item${filteredDocuments.length === 1 ? '' : 's'}`
     : `${filteredDocuments.length} items · ${documentsGroupLabel}`;
 
-  const emptyStateMessage = documentsSearchValue
-    ? 'No documents match your search.'
+  const hasDocumentsFilter = documentsSearchValue
+    || documentsTypeFilter !== 'all'
+    || documentsExtensionFilter !== 'all'
+    || documentsLinkFilter !== 'all';
+  const emptyStateMessage = hasDocumentsFilter
+    ? 'No documents match your filters.'
     : documentsGroup === 'none'
       ? 'No documents generated yet.'
       : 'No documents available in this group yet.';
@@ -9220,12 +9592,16 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
           </thead>
           <tbody className="divide-y divide-slate-200">
             {items.map((doc, index) => {
-              const rowSelected = selectedDocuments.has(doc.document_id);
+              const selectable = doc.document_id != null;
+              const rowSelected = selectable ? selectedDocuments.has(doc.document_id) : false;
               const rowClass = rowSelected
                 ? 'bg-indigo-50/80'
                 : index % 2 === 0
                   ? 'bg-white'
                   : 'bg-slate-50';
+              const rowKey = doc.document_id != null
+                ? `doc-${doc.document_id}`
+                : `file-${doc.file_path || index}`;
               const typeBadge = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
               const primaryText = doc.fileName || doc.displayLabel || typeBadge;
               const secondaryTexts = [];
@@ -9234,14 +9610,18 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
               if (typeBadge && typeBadge !== primaryText && typeBadge !== doc.displayLabel) secondaryTexts.push(typeBadge);
               const tooltipText = doc.file_path || doc.folderPath || primaryText;
               return (
-                <tr key={doc.document_id} className={`transition ${rowClass}`}>
+                <tr key={rowKey} className={`transition ${rowClass}`}>
                   <td className="align-top px-3 py-3">
                     <input
                       type="checkbox"
                       className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                       checked={rowSelected}
-                      onChange={event => toggleDocumentSelection(doc.document_id, event.target.checked)}
+                      onChange={event => {
+                        if (!selectable) return;
+                        toggleDocumentSelection(doc.document_id, event.target.checked);
+                      }}
                       aria-label="Select document"
+                      disabled={!selectable}
                     />
                   </td>
                   {activeDocumentColumns.map(column => {
@@ -9269,7 +9649,9 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                               <div className="text-[11px] text-slate-400 truncate" title={doc.folderPath}>{doc.folderPath}</div>
                             ) : null}
                           </div>
-                          {!doc.fileAvailable ? (
+                          {doc.isOrphan ? (
+                            <div className="text-xs font-medium text-indigo-500">Orphaned</div>
+                          ) : !doc.fileAvailable ? (
                             <div className="text-xs font-medium text-amber-600">Missing</div>
                           ) : null}
                         </div>
@@ -9307,60 +9689,90 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                     } else if (column.key === 'actions') {
                       const isLocked = Boolean(doc?.is_locked);
                       const isWorkbook = (doc?.doc_type || '').toLowerCase() === 'workbook';
+                      const isOrphan = Boolean(doc?.isOrphan);
                       const fileExists = doc?.fileAvailable !== false && Boolean(doc?.file_path);
                       const workbookHasPdf = isWorkbook && fileExists ? pdfBaseNames.has(baseNameNoExt(doc.file_path)) : false;
-                      cell = (
-                        <div className="flex flex-wrap justify-end gap-1.5">
-                          <IconButton
-                            label={isLocked ? 'Unlock' : 'Lock'}
-                            onClick={async () => {
-                              try {
-                                await window.api?.setDocumentLock?.(doc.document_id, !isLocked);
-                                await refreshDocuments();
-                              } catch (err) {
-                                console.error('Failed to toggle document lock', err);
-                                setError(err?.message || 'Unable to toggle document lock');
-                              }
-                            }}
-                            disabled={!doc?.document_id}
-                    className={isLocked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
-                          >
-                            <span className="text-base" aria-hidden>{isLocked ? '🔒' : '🔓'}</span>
-                          </IconButton>
-                          <IconButton
-                            label="Open document"
-                            onClick={() => handleOpenDocumentFile(doc.file_path)}
-                            disabled={!fileExists}
-                          >
-                            <OpenIcon />
-                          </IconButton>
-                          <IconButton
-                            label="Reveal document in Finder"
-                            onClick={() => handleRevealDocument(doc.file_path)}
-                            disabled={!fileExists}
-                          >
-                            <RevealIcon />
-                          </IconButton>
-                          {isWorkbook ? (
-                            <button
-                              type="button"
-                              onClick={() => handleExportWorkbookPdf(doc)}
-                              disabled={!fileExists || isLocked || workbookHasPdf}
-                              className="inline-flex items-center rounded border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                      if (isOrphan) {
+                        cell = (
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            <IconButton
+                              label="Open document"
+                              onClick={() => handleOpenDocumentFile(doc.file_path)}
+                              disabled={!fileExists}
                             >
-                              Export
-                            </button>
-                          ) : null}
-                          <IconButton
-                            label="Delete document"
-                            onClick={() => handleDeleteDocumentRecord(doc)}
-                            disabled={doc?.document_id == null}
-                            className="border-red-200 text-red-600 hover:bg-red-50"
-                          >
-                            <DeleteIcon />
-                          </IconButton>
-                        </div>
-                      );
+                              <OpenIcon />
+                            </IconButton>
+                            <IconButton
+                              label="Reveal document in Finder"
+                              onClick={() => handleRevealDocument(doc.file_path)}
+                              disabled={!fileExists}
+                            >
+                              <RevealIcon />
+                            </IconButton>
+                            <IconButton
+                              label="Delete file"
+                              onClick={() => handleDeleteOrphanFile(doc)}
+                              disabled={!fileExists}
+                              className="border-red-200 text-red-600 hover:bg-red-50"
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </div>
+                        );
+                      } else {
+                        cell = (
+                          <div className="flex flex-wrap justify-end gap-1.5">
+                            <IconButton
+                              label={isLocked ? 'Unlock' : 'Lock'}
+                              onClick={async () => {
+                                try {
+                                  await window.api?.setDocumentLock?.(doc.document_id, !isLocked);
+                                  await refreshDocuments();
+                                } catch (err) {
+                                  console.error('Failed to toggle document lock', err);
+                                  setError(err?.message || 'Unable to toggle document lock');
+                                }
+                              }}
+                              disabled={!doc?.document_id}
+                              className={isLocked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
+                            >
+                              <span className="text-base" aria-hidden>{isLocked ? '🔒' : '🔓'}</span>
+                            </IconButton>
+                            <IconButton
+                              label="Open document"
+                              onClick={() => handleOpenDocumentFile(doc.file_path)}
+                              disabled={!fileExists}
+                            >
+                              <OpenIcon />
+                            </IconButton>
+                            <IconButton
+                              label="Reveal document in Finder"
+                              onClick={() => handleRevealDocument(doc.file_path)}
+                              disabled={!fileExists}
+                            >
+                              <RevealIcon />
+                            </IconButton>
+                            {isWorkbook ? (
+                              <button
+                                type="button"
+                                onClick={() => handleExportWorkbookPdf(doc)}
+                                disabled={!fileExists || isLocked || workbookHasPdf}
+                                className="inline-flex items-center rounded border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                Export
+                              </button>
+                            ) : null}
+                            <IconButton
+                              label="Delete document"
+                              onClick={() => handleDeleteDocumentRecord(doc)}
+                              disabled={doc?.document_id == null}
+                              className="border-red-200 text-red-600 hover:bg-red-50"
+                            >
+                              <DeleteIcon />
+                            </IconButton>
+                          </div>
+                        );
+                      }
                     }
 
                     return (
@@ -9379,140 +9791,37 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         </table>
       </div>
     );
-  }, [activeDocumentColumns, handleDeleteDocumentRecord, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection]);
+  }, [activeDocumentColumns, handleDeleteDocumentRecord, handleDeleteOrphanFile, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection, pdfBaseNames, baseNameNoExt, refreshDocuments]);
 
-  // Mirror inline documents pane visually (no generation), across all files
   const documentsContent = useMemo(() => {
-    const excelDocs = filteredDocuments.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.xlsx'));
-    const pdfDocs = filteredDocuments.filter(doc => (doc?.file_path || '').toLowerCase().endsWith('.pdf'));
+    if (!filteredDocuments.length) {
+      return (
+        <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500">
+          {emptyStateMessage}
+        </div>
+      );
+    }
 
-    // No export-all in main pane
-
-    const ExcelPane = (
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-slate-700">Excel</div>
-          <div className="flex items-center gap-2 text-xs">
-            <button type="button" onClick={handleRefreshDocuments} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-          </div>
-        </div>
-        <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
-          {excelDocs.map(doc => {
-            const label = doc.fileName || doc.displayLabel || 'Workbook';
-            const locked = Boolean(doc?.is_locked);
-            const generated = Boolean(doc?.fileAvailable);
-            const hasPdf = doc?.fileAvailable ? pdfBaseNames.has(baseNameNoExt(doc.file_path)) : false;
-            return (
-              <div key={`xl:${doc.document_id || doc.file_path}`} className="flex items-center justify-between rounded px-2 py-2">
-                <div className="min-w-0">
-                  <div className={`flex items-center gap-2 text-sm font-medium truncate ${generated ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
-                    <span aria-hidden>{generated ? '✅' : '❌'}</span>
-                    <span className="truncate" title={doc.file_path}>{label}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <IconButton
-                    label={locked ? 'Unlock workbook' : 'Lock workbook'}
-                    onClick={async () => {
-                      try {
-                        await window.api?.setDocumentLock?.(doc.document_id, !locked);
-                        // Notify without triggering full refresh in main pane
-                        window.api?.notifyJobsheetChange?.({
-                          type: 'document-lock-toggled',
-                          businessId: business.id,
-                          jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
-                          documentId: doc.document_id,
-                          locked: !locked
-                        });
-                      } catch (err) {
-                        console.error('Failed to toggle lock', err);
-                        setError(err?.message || 'Unable to toggle lock');
-                      }
-                    }}
-                    disabled={!generated || !doc?.document_id}
-                    className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
-                  >
-                    <span className="text-base" aria-hidden>{locked ? '🔒' : '🔓'}</span>
-                  </IconButton>
-                  {/* Export removed in main pane */}
-                  <div className="flex items-center gap-1.5">
-                    <IconButton label="Open" onClick={() => handleOpenDocumentFile(doc.file_path)} disabled={!generated}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
-                    <IconButton label="Reveal in Finder" onClick={() => handleRevealDocument(doc.file_path)} disabled={!generated}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
-                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!generated || doc?.document_id == null} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          {excelDocs.length === 0 ? (
-            <div className="px-2 py-2 text-sm text-slate-500">No Excel workbooks.</div>
-          ) : null}
-        </div>
-      </div>
-    );
-
-    const PdfPane = (
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="text-sm font-semibold text-slate-700">PDFs</div>
-          <div className="flex items-center gap-2 text-xs">
-            <button type="button" onClick={handleRefreshDocuments} className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">Refresh</button>
-          </div>
-        </div>
-        <div className="rounded border border-slate-200 bg-white p-2 space-y-1">
-          {pdfDocs.map(doc => {
-            const label = doc.displayLabel || doc.fileName || 'PDF';
-            const exported = Boolean(doc?.fileAvailable);
-            const locked = Boolean(doc?.is_locked);
-            return (
-              <div key={`pdf:${doc.document_id || doc.file_path}`} className="flex items-center justify-between rounded px-2 py-2">
-                <div className="min-w-0">
-                  <div className={`flex items-center gap-2 text-sm font-medium truncate ${exported ? 'text-slate-700' : 'text-slate-300 opacity-70'}`}>
-                    <span aria-hidden>{exported ? '✅' : '❌'}</span>
-                    <span className="truncate" title={doc.file_path}>{label}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <IconButton label={locked ? 'Unlock PDF' : 'Lock PDF'} onClick={async () => {
-                    try {
-                      await window.api?.setDocumentLock?.(doc.document_id, !locked);
-                      window.api?.notifyJobsheetChange?.({
-                        type: 'document-lock-toggled',
-                        businessId: business.id,
-                        jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
-                        documentId: doc.document_id,
-                        locked: !locked
-                      });
-                    } catch (err) { console.error('Failed to toggle lock', err); setError(err?.message || 'Unable to toggle lock'); }
-                  }} disabled={!exported || !doc?.document_id} className={locked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}><span className="text-base" aria-hidden>{locked ? '🔒' : '🔓'}</span></IconButton>
-                  <div className="flex items-center gap-1.5">
-                    <IconButton label="Open" onClick={() => handleOpenDocumentFile(doc.file_path)} disabled={!exported}><OpenIcon className="h-3.5 w-3.5" /></IconButton>
-                    <IconButton label="Reveal in Finder" onClick={() => handleRevealDocument(doc.file_path)} disabled={!exported}><RevealIcon className="h-3.5 w-3.5" /></IconButton>
-                    <IconButton label="Delete" onClick={() => handleDeleteDocumentRecord(doc)} disabled={!exported || doc?.document_id == null} className="border-red-200 text-red-600 hover:bg-red-50"><DeleteIcon className="h-3.5 w-3.5" /></IconButton>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-          {pdfDocs.length === 0 ? (
-            <div className="px-2 py-2 text-sm text-slate-500">No PDFs.</div>
-          ) : null}
-        </div>
-      </div>
-    );
+    if (documentsGroup === 'none') {
+      return renderDocumentTable(filteredDocuments);
+    }
 
     return (
       <div className="space-y-4">
-        {ExcelPane}
-        {PdfPane}
+        {groupedDocuments.map(group => (
+          <div key={group.key} className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-700">{group.label}</div>
+              <div className="text-xs text-slate-500">
+                {group.items.length} item{group.items.length === 1 ? '' : 's'}
+              </div>
+            </div>
+            {renderDocumentTable(group.items)}
+          </div>
+        ))}
       </div>
     );
-  }, [filteredDocuments, handleRefreshDocuments, handleOpenDocumentFile, handleRevealDocument, handleDeleteDocumentRecord, pdfBaseNames, baseNameNoExt, setError, refreshDocuments]);
-
-  const documentTreeRoot = documentTree?.root || null;
-  const documentTreeTrash = documentTree?.trash || null;
-  const documentTreePath = documentTree?.rootPath || business.save_path || '';
-  const documentsConfigured = Boolean((business.save_path || '').trim());
+  }, [documentsGroup, filteredDocuments, groupedDocuments, emptyStateMessage, renderDocumentTable]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -9879,157 +10188,178 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
 
             {workspaceSection === 'documents' ? (
               <section className="space-y-4">
-                <div className="grid gap-4 lg:grid-cols-[320px,1fr]">
-                  <DocumentTreeView
-                    root={documentTreeRoot}
-                    trash={documentTreeTrash}
-                    rootPath={documentTreePath}
-                    loading={documentTreeLoading}
-                    error={documentTreeError}
-                    onRefresh={loadDocumentTree}
-                    onOpen={handleOpenTreeNode}
-                    onReveal={handleRevealTreeNode}
-                    onDeleteFolder={handleDeleteTreeFolder}
-                    onDeleteFile={handleDeleteTreeFile}
-                    onEmptyTrash={handleEmptyTrash}
-                    emptyingTrash={emptyingTrash}
-                    isConfigured={documentsConfigured}
-                    collapsed={documentTreeCollapsed}
-                    onCollapsedChange={value => setDocumentTreeCollapsed(Boolean(value))}
-                    persist={persistUi}
-                    persistKey={`ui:${business.id}:documents`}
-                  />
-                  <div className="space-y-4">
-                    <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-4">
-                      <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                        <div>
-                          <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-                          <p className="text-sm text-slate-500">
-                            {headerSubtitle}
-                            <span className="ml-2 inline-block align-middle text-xs text-slate-400 w-[64px]">
-                              {showDocumentsLoading ? 'Loading…' : '\u00A0'}
-                            </span>
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={handleRefreshDocuments}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                          >
-                            Refresh list
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleOpenDocumentsFolder}
-                            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                          >
-                            Open folder
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleUnlockSelected}
-                            disabled={!canUnlockSelected}
-                            className="inline-flex items-center rounded border border-green-200 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            Unlock selected
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleDeleteSelected}
-                            disabled={!canDeleteSelected}
-                            className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            Delete selected
-                          </button>
-                        </div>
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-4">
+                    <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+                      <div>
+                        <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
+                        <p className="text-sm text-slate-500">
+                          Search and filter everything in the documents folder, including unlinked files.
+                          <span className="ml-2 inline-block align-middle text-xs text-slate-400 w-[64px]">
+                            {showDocumentsLoading ? 'Loading…' : '\u00A0'}
+                          </span>
+                        </p>
+                        <p className="text-xs text-slate-400">{headerSubtitle}</p>
                       </div>
-                      <div className="grid gap-3 md:grid-cols-[minmax(0,1fr),200px,auto]">
-                        <div className="flex items-center gap-2">
-                          <label className="sr-only" htmlFor="documents-search">Search documents</label>
-                          <input
-                            id="documents-search"
-                            type="search"
-                            value={documentsSearch}
-                            onChange={event => setDocumentsSearch(event.target.value)}
-                            placeholder="Search documents"
-                            className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          />
-                          {documentsSearchValue ? (
-                            <button
-                              type="button"
-                              onClick={() => setDocumentsSearch('')}
-                              className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-                            >
-                              Clear
-                            </button>
-                          ) : null}
-                        </div>
-                        <div>
-                          <label className="sr-only" htmlFor="documents-group">Group documents</label>
-                          <select
-                            id="documents-group"
-                            value={documentsGroup}
-                            onChange={event => setDocumentsGroup(event.target.value)}
-                            className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                          >
-                            {DOCUMENT_GROUP_OPTIONS.map(option => (
-                              <option key={option.value} value={option.value}>{option.label}</option>
-                            ))}
-                          </select>
-                        </div>
-                        <div className="relative" ref={columnsMenuRef}>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleRefreshDocuments}
+                          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          Refresh list
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleOpenDocumentsFolder}
+                          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          Open folder
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleUnlockSelected}
+                          disabled={!canUnlockSelected}
+                          className="inline-flex items-center rounded border border-green-200 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Unlock selected
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDeleteSelected}
+                          disabled={!canDeleteSelected}
+                          className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Delete selected
+                        </button>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex min-w-[220px] flex-1 items-center gap-2">
+                        <label className="sr-only" htmlFor="documents-search">Search documents</label>
+                        <input
+                          id="documents-search"
+                          type="search"
+                          value={documentsSearch}
+                          onChange={event => setDocumentsSearch(event.target.value)}
+                          placeholder="Search all documents"
+                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        />
+                        {documentsSearchValue ? (
                           <button
                             type="button"
-                            onClick={() => setColumnsMenuOpen(prev => !prev)}
-                            className="inline-flex w-full items-center justify-between gap-2 rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                            onClick={() => setDocumentsSearch('')}
+                            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
                           >
-                            Columns
-                            <span aria-hidden="true">▾</span>
+                            Clear
                           </button>
-                          {columnsMenuOpen ? (
-                            <div
-                              ref={columnsMenuContentRef}
-                              className={`absolute right-0 z-20 w-52 rounded border border-slate-200 bg-white p-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
-                            >
-                              <div className="space-y-1">
-                                {DOCUMENT_COLUMNS.filter(column => !column.always).map(column => {
-                                  const checked = documentColumnsState[column.key] !== false;
-                                  return (
-                                    <label
-                                      key={column.key}
-                                      className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-100"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                        checked={checked}
-                                        onChange={() => handleToggleColumn(column.key)}
-                                      />
-                                      <span>{column.label}</span>
-                                    </label>
-                                  );
-                                })}
-                              </div>
+                        ) : null}
+                      </div>
+                      <div className="min-w-[150px]">
+                        <label className="sr-only" htmlFor="documents-group">Group documents</label>
+                        <select
+                          id="documents-group"
+                          value={documentsGroup}
+                          onChange={event => setDocumentsGroup(event.target.value)}
+                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          {DOCUMENT_GROUP_OPTIONS.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="min-w-[150px]">
+                        <label className="sr-only" htmlFor="documents-type">Document type filter</label>
+                        <select
+                          id="documents-type"
+                          value={documentsTypeFilter}
+                          onChange={event => setDocumentsTypeFilter(event.target.value)}
+                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          <option value="all">All types</option>
+                          {documentTypeOptions.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="min-w-[130px]">
+                        <label className="sr-only" htmlFor="documents-extension">File extension filter</label>
+                        <select
+                          id="documents-extension"
+                          value={documentsExtensionFilter}
+                          onChange={event => setDocumentsExtensionFilter(event.target.value)}
+                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          <option value="all">All files</option>
+                          {documentExtensionOptions.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="min-w-[130px]">
+                        <label className="sr-only" htmlFor="documents-link">Link filter</label>
+                        <select
+                          id="documents-link"
+                          value={documentsLinkFilter}
+                          onChange={event => setDocumentsLinkFilter(event.target.value)}
+                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        >
+                          <option value="all">All links</option>
+                          <option value="linked">Linked</option>
+                          <option value="orphaned">Orphaned</option>
+                        </select>
+                      </div>
+                      <div className="relative min-w-[120px]" ref={columnsMenuRef}>
+                        <button
+                          type="button"
+                          onClick={() => setColumnsMenuOpen(prev => !prev)}
+                          className="inline-flex w-full items-center justify-between gap-2 rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                        >
+                          Columns
+                          <span aria-hidden="true">▾</span>
+                        </button>
+                        {columnsMenuOpen ? (
+                          <div
+                            ref={columnsMenuContentRef}
+                            className={`absolute right-0 z-20 w-52 rounded border border-slate-200 bg-white p-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
+                          >
+                            <div className="space-y-1">
+                              {DOCUMENT_COLUMNS.filter(column => !column.always).map(column => {
+                                const checked = documentColumnsState[column.key] !== false;
+                                return (
+                                  <label
+                                    key={column.key}
+                                    className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-100"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                                      checked={checked}
+                                      onChange={() => handleToggleColumn(column.key)}
+                                    />
+                                    <span>{column.label}</span>
+                                  </label>
+                                );
+                              })}
                             </div>
-                          ) : null}
-                        </div>
+                          </div>
+                        ) : null}
                       </div>
-                      {selectedCount ? (
-                        <div className="text-xs text-slate-500">{selectedCount} selected</div>
-                      ) : null}
                     </div>
-                    <div className="space-y-3">
-                      {documentsError ? (
-                        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-                          {documentsError}
-                        </div>
-                      ) : null}
-                      {documentsLoading && !documentsError ? (
-                        <div className="text-sm text-slate-500">Loading documents…</div>
-                      ) : null}
-                      {documentsContent}
-                    </div>
+                    {selectedCount ? (
+                      <div className="text-xs text-slate-500">{selectedCount} selected</div>
+                    ) : null}
+                  </div>
+                  <div className="space-y-3">
+                    {documentsError ? (
+                      <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                        {documentsError}
+                      </div>
+                    ) : null}
+                    {documentsLoading && !documentsError ? (
+                      <div className="text-sm text-slate-500">Loading documents…</div>
+                    ) : null}
+                    {documentsContent}
                   </div>
                 </div>
               </section>
@@ -10106,98 +10436,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                     </button>
                   </div>
                 </div>
-
-                <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
-                  <div>
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Last invoice number</div>
-                    <div className="mt-1 text-sm text-slate-700">{business.last_invoice_number ?? '—'}</div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          const result = await window.api?.computeFinderInvoiceMax?.({ businessId: business.id });
-                          const max = result && Number.isInteger(Number(result.max)) ? Number(result.max) : 0;
-                          await window.api?.setLastInvoiceNumber?.(business.id, max);
-                          const list = await window.api?.businessSettings?.();
-                          if (Array.isArray(list)) {
-                            const refreshed = list.find(b => b.id === business.id);
-                            if (refreshed && typeof onBusinessUpdate === 'function') {
-                              onBusinessUpdate(refreshed);
-                            }
-                          }
-                          setMessage(`Reset last invoice number to ${max} (Finder)`);
-                          setTimeout(() => setMessage(''), 2000);
-                        } catch (err) {
-                          console.error('Failed to reset counter', err);
-                          setError(err?.message || 'Unable to reset counter');
-                        }
-                      }}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                    >
-                      Reset to max (Finder)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSetLastDraft(business.last_invoice_number != null ? String(business.last_invoice_number) : '0');
-                        setSetLastOpen(true);
-                      }}
-                      className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                    >
-                      Set last…
-                    </button>
-                  </div>
-                </div>
-
-                {setLastOpen ? (
-                  <div className="rounded border border-slate-200 p-4 flex flex-col gap-3">
-                    <div className="text-sm text-slate-700">Set last invoice number</div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min={0}
-                        value={setLastDraft}
-                        onChange={e => setSetLastDraft(e.target.value)}
-                        className="w-32 rounded border border-slate-300 px-2 py-1 text-sm"
-                      />
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          const val = Number(setLastDraft);
-                          if (!Number.isInteger(val) || val < 0) { setError('Enter a non-negative integer'); return; }
-                          try {
-                            await window.api?.setLastInvoiceNumber?.(business.id, val);
-                            const list = await window.api?.businessSettings?.();
-                            if (Array.isArray(list)) {
-                              const refreshed = list.find(b => b.id === business.id);
-                              if (refreshed && typeof onBusinessUpdate === 'function') {
-                                onBusinessUpdate(refreshed);
-                              }
-                            }
-                            setSetLastOpen(false);
-                            setMessage(`Set last invoice number to ${val}`);
-                            setTimeout(() => setMessage(''), 2000);
-                          } catch (err) {
-                            console.error('Failed to set counter', err);
-                            setError(err?.message || 'Unable to set counter');
-                          }
-                        }}
-                        className="inline-flex items-center rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-500"
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setSetLastOpen(false)}
-                        className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
 
                 <p className="text-xs text-slate-500">
                   Template management has moved to the “Templates” tab for a simpler workflow. Use it to copy placeholders and replace template files in one place.
@@ -11448,7 +11686,9 @@ function JobsheetEditorWindow({
         throw new Error('Unable to load document definitions: API unavailable');
       }
       const data = await api.getDocumentDefinitions(numericBusinessId, { includeInactive: true });
-      const list = Array.isArray(data) ? data.map(def => ({ ...def })) : [];
+      const list = Array.isArray(data)
+        ? data.map(def => ({ ...def })).filter(def => def?.key !== 'client_data' && def?.key !== 't_cs')
+        : [];
       setDocumentDefinitions(list);
 
       if (!list.length) {
@@ -11517,6 +11757,7 @@ function JobsheetEditorWindow({
 
       const filterForJobsheet = (docs) => {
         return docs.filter(doc => {
+          if (doc?.definition_key === 'client_data' || doc?.definition_key === 't_cs') return false;
           const docJobsheetId = doc?.jobsheet_id != null ? Number(doc.jobsheet_id) : null;
           if (docJobsheetId != null && docJobsheetId === normalizedJobsheetId) {
             return true;

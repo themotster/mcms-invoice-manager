@@ -3,14 +3,14 @@
     {
       "id": "service__akiva",
       "name": "Akiva",
-      "fee": 400,
+      "fee": 450,
       "defaultIncluded": true,
       "availability": "Yes",
       "comments": "",
       "defaultCost": 400,
       "serviceFees": {
         "service": {
-          "fee": 400,
+          "fee": 450,
           "defaultIncluded": true
         },
         "dinner": {
@@ -18,7 +18,7 @@
           "defaultIncluded": true
         },
         "service_plus_dinner": {
-          "fee": 525,
+          "fee": 550,
           "defaultIncluded": true
         }
       }
@@ -26,14 +26,14 @@
     {
       "id": "service__ashley",
       "name": "Ashley",
-      "fee": 375,
+      "fee": 450,
       "defaultIncluded": false,
       "availability": "",
       "comments": "",
       "defaultCost": 0,
       "serviceFees": {
         "service": {
-          "fee": 375,
+          "fee": 450,
           "defaultIncluded": false
         },
         "dinner": {
@@ -41,7 +41,7 @@
           "defaultIncluded": false
         },
         "service_plus_dinner": {
-          "fee": 525,
+          "fee": 550,
           "defaultIncluded": false
         }
       }
@@ -49,11 +49,24 @@
     {
       "id": "pool-1759934830204-hsj2o5",
       "name": "Ben",
-      "fee": 500,
+      "fee": 450,
       "defaultIncluded": false,
       "availability": "",
       "comments": "",
-      "serviceFees": {}
+      "serviceFees": {
+        "service": {
+          "fee": 450,
+          "defaultIncluded": false
+        },
+        "dinner": {
+          "fee": 500,
+          "defaultIncluded": false
+        },
+        "service_plus_dinner": {
+          "fee": 550,
+          "defaultIncluded": false
+        }
+      }
     },
     {
       "id": "dinner__bremner",
@@ -107,7 +120,7 @@
           "defaultIncluded": false
         },
         "dinner": {
-          "fee": 550,
+          "fee": 500,
           "defaultIncluded": false
         },
         "service_plus_dinner": {
@@ -119,22 +132,22 @@
     {
       "id": "service__guy",
       "name": "Guy",
-      "fee": 400,
+      "fee": 450,
       "defaultIncluded": true,
       "availability": "Yes",
       "comments": "",
       "defaultCost": 400,
       "serviceFees": {
         "service": {
-          "fee": 400,
+          "fee": 450,
           "defaultIncluded": true
         },
         "dinner": {
-          "fee": 550,
+          "fee": 500,
           "defaultIncluded": true
         },
         "service_plus_dinner": {
-          "fee": 575,
+          "fee": 550,
           "defaultIncluded": true
         }
       }
@@ -142,14 +155,14 @@
     {
       "id": "service__harry",
       "name": "Harry",
-      "fee": 400,
+      "fee": 450,
       "defaultIncluded": true,
       "availability": "Yes",
       "comments": "or 375 if needs be",
       "defaultCost": 400,
       "serviceFees": {
         "service": {
-          "fee": 400,
+          "fee": 450,
           "defaultIncluded": true
         },
         "dinner": {
@@ -157,7 +170,7 @@
           "defaultIncluded": true
         },
         "service_plus_dinner": {
-          "fee": 525,
+          "fee": 550,
           "defaultIncluded": true
         }
       }
@@ -165,14 +178,14 @@
     {
       "id": "service__leib",
       "name": "Leib",
-      "fee": 400,
+      "fee": 450,
       "defaultIncluded": true,
       "availability": "Yes",
       "comments": "",
       "defaultCost": 400,
       "serviceFees": {
         "service": {
-          "fee": 400,
+          "fee": 450,
           "defaultIncluded": true
         },
         "dinner": {
@@ -180,7 +193,7 @@
           "defaultIncluded": true
         },
         "service_plus_dinner": {
-          "fee": 525,
+          "fee": 550,
           "defaultIncluded": true
         }
       }
@@ -194,6 +207,10 @@
       "comments": "",
       "defaultCost": 0,
       "serviceFees": {
+        "service": {
+          "fee": 0,
+          "defaultIncluded": false
+        },
         "dinner": {
           "fee": 800,
           "defaultIncluded": false
@@ -207,22 +224,22 @@
     {
       "id": "service__motti",
       "name": "Motti",
-      "fee": 1175,
+      "fee": 2050,
       "defaultIncluded": true,
       "availability": "Yes",
       "comments": "",
       "defaultCost": 1175,
       "serviceFees": {
         "service": {
-          "fee": 1175,
+          "fee": 2050,
           "defaultIncluded": true
         },
         "dinner": {
-          "fee": 1525,
+          "fee": 2350,
           "defaultIncluded": true
         },
         "service_plus_dinner": {
-          "fee": 1825,
+          "fee": 2650,
           "defaultIncluded": true
         }
       }
@@ -245,14 +262,14 @@
     {
       "id": "service__yossi",
       "name": "Yossi",
-      "fee": 400,
+      "fee": 450,
       "defaultIncluded": false,
       "availability": "",
       "comments": "",
       "defaultCost": 0,
       "serviceFees": {
         "service": {
-          "fee": 400,
+          "fee": 450,
           "defaultIncluded": false
         },
         "dinner": {
@@ -260,7 +277,7 @@
           "defaultIncluded": false
         },
         "service_plus_dinner": {
-          "fee": 500,
+          "fee": 550,
           "defaultIncluded": false
         }
       }
