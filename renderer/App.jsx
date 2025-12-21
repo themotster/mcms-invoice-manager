@@ -163,7 +163,6 @@ function getFileExtension(filePath) {
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
   planner: '🗓️',
-  documents: '🗃️',
   invoices: '🧾',
   templates: '📁',
   settings: '⚙️'
@@ -172,7 +171,6 @@ const WORKSPACE_ICON_MAP = {
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
   { key: 'planner', label: 'Planner', description: 'Upcoming reminders', icon: WORKSPACE_ICON_MAP.planner },
-  { key: 'documents', label: 'Documents', description: 'Browse and manage files', icon: WORKSPACE_ICON_MAP.documents },
   { key: 'invoices', label: 'Invoice Log', description: 'Issued invoices and status', icon: WORKSPACE_ICON_MAP.invoices },
   { key: 'templates', label: 'Templates', description: 'Manage document templates', icon: WORKSPACE_ICON_MAP.templates },
   { key: 'settings', label: 'Settings', description: 'Business preferences', icon: WORKSPACE_ICON_MAP.settings }
@@ -1829,7 +1827,19 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
               const variant = detectVariant(doc);
               const variantLabel = variant === 'deposit' ? 'Deposit' : (variant === 'balance' ? 'Balance' : '');
               const clientBase = doc.display_client_name || doc.client_name || '—';
-              const amountLabel = toCurrency(doc.total_amount ?? doc.balance_due);
+              const totalValue = Number(doc.total_amount);
+              const balanceValue = Number(doc.balance_due);
+              let displayAmount = doc.total_amount ?? doc.balance_due;
+              if (variant === 'deposit') {
+                if (Number.isFinite(totalValue) && Number.isFinite(balanceValue) && totalValue > balanceValue) {
+                  displayAmount = totalValue - balanceValue;
+                }
+              } else if (variant === 'balance') {
+                if (Number.isFinite(balanceValue) && balanceValue > 0) {
+                  displayAmount = balanceValue;
+                }
+              }
+              const amountLabel = toCurrency(displayAmount);
               const clientParts = [clientBase];
               if (variantLabel) clientParts.push(variantLabel);
               if (amountLabel) clientParts.push(amountLabel);
@@ -8602,6 +8612,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   // Stop auto-scroll on tab switch; scroll only on explicit actions (open/create)
 
   useEffect(() => {
+    if (workspaceSection !== 'documents') return () => {};
     if (!DOCUMENT_FEATURES_ENABLED) return () => {};
     if (!window.api) return () => {};
     window.api.watchDocuments?.({ businessId: business.id }).catch(err => {
@@ -8614,7 +8625,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     return () => {
       unsubscribe?.();
     };
-  }, [business.id, refreshDocuments]);
+  }, [business.id, refreshDocuments, workspaceSection]);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -10603,185 +10614,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                       </div>
                     );
                   })}
-                </div>
-              </section>
-            ) : null}
-
-            {workspaceSection === 'documents' ? (
-              <section className="space-y-4">
-                <div className="space-y-4">
-                  <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-4">
-                    <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-                      <div>
-                        <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-                        <p className="text-sm text-slate-500">
-                          Search and filter everything in the documents folder, including unlinked files.
-                          <span className="ml-2 inline-block align-middle text-xs text-slate-400 w-[64px]">
-                            {showDocumentsLoading ? 'Loading…' : '\u00A0'}
-                          </span>
-                        </p>
-                        <p className="text-xs text-slate-400">{headerSubtitle}</p>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={handleRefreshDocuments}
-                          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                        >
-                          Refresh list
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleOpenDocumentsFolder}
-                          className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                        >
-                          Open folder
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleUnlockSelected}
-                          disabled={!canUnlockSelected}
-                          className="inline-flex items-center rounded border border-green-200 px-3 py-1.5 text-xs font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          Unlock selected
-                        </button>
-                        <button
-                          type="button"
-                          onClick={handleDeleteSelected}
-                          disabled={!canDeleteSelected}
-                          className="inline-flex items-center rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
-                        >
-                          Delete selected
-                        </button>
-                      </div>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <div className="flex min-w-[220px] flex-1 items-center gap-2">
-                        <label className="sr-only" htmlFor="documents-search">Search documents</label>
-                        <input
-                          id="documents-search"
-                          type="search"
-                          value={documentsSearch}
-                          onChange={event => setDocumentsSearch(event.target.value)}
-                          placeholder="Search all documents"
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        />
-                        {documentsSearchValue ? (
-                          <button
-                            type="button"
-                            onClick={() => setDocumentsSearch('')}
-                            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-                          >
-                            Clear
-                          </button>
-                        ) : null}
-                      </div>
-                      <div className="min-w-[150px]">
-                        <label className="sr-only" htmlFor="documents-group">Group documents</label>
-                        <select
-                          id="documents-group"
-                          value={documentsGroup}
-                          onChange={event => setDocumentsGroup(event.target.value)}
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        >
-                          {DOCUMENT_GROUP_OPTIONS.map(option => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="min-w-[150px]">
-                        <label className="sr-only" htmlFor="documents-type">Document type filter</label>
-                        <select
-                          id="documents-type"
-                          value={documentsTypeFilter}
-                          onChange={event => setDocumentsTypeFilter(event.target.value)}
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        >
-                          <option value="all">All types</option>
-                          {documentTypeOptions.map(option => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="min-w-[130px]">
-                        <label className="sr-only" htmlFor="documents-extension">File extension filter</label>
-                        <select
-                          id="documents-extension"
-                          value={documentsExtensionFilter}
-                          onChange={event => setDocumentsExtensionFilter(event.target.value)}
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        >
-                          <option value="all">All files</option>
-                          {documentExtensionOptions.map(option => (
-                            <option key={option.value} value={option.value}>{option.label}</option>
-                          ))}
-                        </select>
-                      </div>
-                      <div className="min-w-[130px]">
-                        <label className="sr-only" htmlFor="documents-link">Link filter</label>
-                        <select
-                          id="documents-link"
-                          value={documentsLinkFilter}
-                          onChange={event => setDocumentsLinkFilter(event.target.value)}
-                          className="w-full rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                        >
-                          <option value="all">All links</option>
-                          <option value="linked">Linked</option>
-                          <option value="orphaned">Orphaned</option>
-                        </select>
-                      </div>
-                      <div className="relative min-w-[120px]" ref={columnsMenuRef}>
-                        <button
-                          type="button"
-                          onClick={() => setColumnsMenuOpen(prev => !prev)}
-                          className="inline-flex w-full items-center justify-between gap-2 rounded border border-slate-300 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                        >
-                          Columns
-                          <span aria-hidden="true">▾</span>
-                        </button>
-                        {columnsMenuOpen ? (
-                          <div
-                            ref={columnsMenuContentRef}
-                            className={`absolute right-0 z-20 w-52 rounded border border-slate-200 bg-white p-2 shadow-lg ${columnsMenuAbove ? 'bottom-full mb-2' : 'top-full mt-2'}`}
-                          >
-                            <div className="space-y-1">
-                              {DOCUMENT_COLUMNS.filter(column => !column.always).map(column => {
-                                const checked = documentColumnsState[column.key] !== false;
-                                return (
-                                  <label
-                                    key={column.key}
-                                    className="flex items-center gap-2 rounded px-2 py-1 text-sm text-slate-600 hover:bg-slate-100"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                                      checked={checked}
-                                      onChange={() => handleToggleColumn(column.key)}
-                                    />
-                                    <span>{column.label}</span>
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                    </div>
-                    {selectedCount ? (
-                      <div className="text-xs text-slate-500">{selectedCount} selected</div>
-                    ) : null}
-                  </div>
-                  <div className="space-y-3">
-                    {documentsError ? (
-                      <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
-                        {documentsError}
-                      </div>
-                    ) : null}
-                    {documentsLoading && !documentsError ? (
-                      <div className="text-sm text-slate-500">Loading documents…</div>
-                    ) : null}
-                    {documentsContent}
-                  </div>
                 </div>
               </section>
             ) : null}
