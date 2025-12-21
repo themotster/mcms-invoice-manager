@@ -51,84 +51,13 @@ let plannerSchedulerRunning = false;
 let loginPreference = null;
 let db = null;
 let documentService = null;
-let helperLogPath = null;
 let pendingUiAction = null;
-let helperPrefWatcher = null;
 let backgroundModeEnabled = false;
 let startHiddenOnLogin = false;
 let isQuitting = false;
 
 const SHARED_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Booking Manager');
 const PENDING_UI_ACTION_PATH = path.join(SHARED_SUPPORT_DIR, 'pending-ui-action.json');
-
-const HELPER_APP_BUNDLE = 'AhMen Reminders.app';
-
-function getAppBundlePaths(execPath) {
-  if (!execPath) return { outer: null, inner: null };
-  const parts = execPath.split(path.sep);
-  const appIndexes = [];
-  parts.forEach((part, idx) => {
-    if (part && part.endsWith('.app')) appIndexes.push(idx);
-  });
-  if (!appIndexes.length) return { outer: null, inner: null };
-  const outer = parts.slice(0, appIndexes[0] + 1).join(path.sep);
-  const inner = parts.slice(0, appIndexes[appIndexes.length - 1] + 1).join(path.sep);
-  return { outer, inner };
-}
-
-const execPath = process.execPath || '';
-const bundlePaths = getAppBundlePaths(execPath);
-const isNestedBundle = Boolean(bundlePaths.outer && bundlePaths.inner && bundlePaths.outer !== bundlePaths.inner);
-const isLoginItemBundle = isNestedBundle && execPath.includes(`${path.sep}LoginItems${path.sep}`);
-const helperNamePattern = /ahmen reminders/i;
-const helperIdentity = [
-  (app.getName ? app.getName() : ''),
-  execPath,
-  (app.getPath ? app.getPath('exe') : ''),
-  (process.resourcesPath || '')
-].filter(Boolean).join(' | ').toLowerCase();
-const isHelperBundle = isLoginItemBundle || helperNamePattern.test(helperIdentity);
-
-let RUN_BACKGROUND = process.argv.includes('--background') || process.argv.includes('--helper') || isHelperBundle || process.env.AHMEN_HELPER === '1';
-let helperMode = RUN_BACKGROUND;
-const HELPER_USER_DATA = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Reminders');
-
-if (helperMode) {
-  try {
-    app.disableHardwareAcceleration();
-  } catch (_err) {}
-  try {
-    app.setPath('userData', HELPER_USER_DATA);
-  } catch (_err) {}
-}
-
-function logHelper(message, detail = null) {
-  if (!helperMode) return;
-  try {
-    if (!helperLogPath) {
-      helperLogPath = path.join(app.getPath('userData'), 'ahmen-helper.log');
-    }
-    const stamp = new Date().toISOString();
-    const suffix = detail ? ` ${JSON.stringify(detail)}` : '';
-    fs.appendFileSync(helperLogPath, `[${stamp}] ${message}${suffix}\n`, 'utf8');
-  } catch (_err) {}
-}
-
-if (helperMode) {
-  process.on('uncaughtException', (err) => {
-    logHelper('Uncaught exception', { error: err?.stack || err?.message || String(err) });
-  });
-  process.on('unhandledRejection', (err) => {
-    logHelper('Unhandled rejection', { error: err?.stack || err?.message || String(err) });
-  });
-  process.on('exit', (code) => {
-    logHelper('Process exit', { code });
-  });
-  app.on('before-quit', () => logHelper('Helper before-quit'));
-  app.on('will-quit', () => logHelper('Helper will-quit'));
-  app.on('quit', (_event, code) => logHelper('Helper quit', { code }));
-  app.on('window-all-closed', () => logHelper('Helper window-all-closed', { runBackground: RUN_BACKGROUND }));
-}
 
 function setBackgroundMode(enabled, { startHidden = false } = {}) {
   backgroundModeEnabled = !!enabled;
@@ -162,28 +91,19 @@ function ensureServices() {
       documentService = require('./documentService');
     }
   } catch (err) {
-    logHelper('Failed to load services', { error: err?.message || String(err) });
+    console.error('Failed to load services', err);
     throw err;
   }
   return { db, documentService };
 }
 
-if (helperMode) {
-  if (!isDev) {
-    const gotSingleInstanceLock = app.requestSingleInstanceLock();
-    if (!gotSingleInstanceLock) {
-      app.quit();
-    }
-  }
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
 } else {
-  const gotSingleInstanceLock = app.requestSingleInstanceLock();
-  if (!gotSingleInstanceLock) {
-    app.quit();
-  } else {
-    app.on('second-instance', () => {
-      showMainWindow();
-    });
-  }
+  app.on('second-instance', () => {
+    showMainWindow();
+  });
 }
 
 function broadcastDocumentsChange(payload = {}) {
@@ -214,7 +134,7 @@ function writePendingUiAction(payload = {}) {
     fs.writeFileSync(PENDING_UI_ACTION_PATH, JSON.stringify(data), 'utf8');
     return true;
   } catch (err) {
-    logHelper('Failed to write pending UI action', { error: err?.message || String(err) });
+    console.warn('Failed to write pending UI action', err);
     return false;
   }
 }
@@ -362,42 +282,7 @@ function createTrayIcon() {
   return img;
 }
 
-function findMainAppBundlePath() {
-  if (bundlePaths.outer && bundlePaths.inner && bundlePaths.outer !== bundlePaths.inner) {
-    return bundlePaths.outer;
-  }
-  return bundlePaths.inner || null;
-}
-
-function openMainAppFromHelper() {
-  const target = findMainAppBundlePath();
-  if (!target || target === bundlePaths.inner) return false;
-  try {
-    shell.openPath(target);
-    return true;
-  } catch (_) {
-    return false;
-  }
-}
-
-function sendUiAction(payload = {}) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('ui-action', payload);
-  }
-}
-
 function showMainWindow({ openPlanner = false } = {}) {
-  if (helperMode) {
-    if (openPlanner) {
-      writePendingUiAction({ type: 'open-planner' });
-    }
-    if (openMainAppFromHelper()) return;
-    const fallbackPath = path.join('/Applications', 'AhMen Booking Manager.app');
-    if (fs.existsSync(fallbackPath)) {
-      try { shell.openPath(fallbackPath); } catch (_) {}
-    }
-    return;
-  }
   if (backgroundModeEnabled && app.dock && process.platform === 'darwin') {
     try { app.dock.show(); } catch (_) {}
   }
@@ -423,7 +308,6 @@ function ensureTray() {
   if (tray) return;
   tray = new Tray(createTrayIcon());
   tray.setToolTip('AhMen Reminders');
-  if (helperMode) logHelper('Tray created');
   const showTrayMenu = () => {
     try {
       tray.popUpContextMenu();
@@ -484,27 +368,6 @@ function writeLoginPreference(openAtLogin) {
   } catch (_err) {}
 }
 
-function startHelperPreferenceWatcher() {
-  if (!helperMode || helperPrefWatcher) return;
-  helperPrefWatcher = setInterval(() => {
-    const pref = readLoginPreference();
-    if (pref === false) {
-      logHelper('Helper disabled via preference');
-      app.quit();
-    }
-  }, 2000);
-}
-
-function getHelperAppPath() {
-  if (!app.isPackaged) return null;
-  try {
-    const contentsPath = path.resolve(process.resourcesPath, '..');
-    const helperPath = path.join(contentsPath, 'Library', 'LoginItems', HELPER_APP_BUNDLE);
-    if (fs.existsSync(helperPath)) return helperPath;
-  } catch (_err) {}
-  return null;
-}
-
 function applyLoginItemSetting(openAtLogin) {
   try {
     app.setLoginItemSettings({
@@ -514,64 +377,8 @@ function applyLoginItemSetting(openAtLogin) {
   } catch (_err) {}
 }
 
-function launchHelperNow() {
-  const helperPath = getHelperAppPath();
-  if (helperPath) {
-    try {
-      shell.openPath(helperPath);
-      return true;
-    } catch (err) {
-      try {
-        const child = spawn('open', ['-g', helperPath], { detached: true, stdio: 'ignore' });
-        child.unref();
-        return true;
-      } catch (fallbackErr) {
-        console.error('Failed to launch helper', err || fallbackErr);
-        logHelper('Failed to launch helper', { error: (err || fallbackErr)?.message || String(err || fallbackErr) });
-        return false;
-      }
-    }
-  }
-  if (!app.isPackaged) {
-    try {
-      const env = { ...process.env, AHMEN_HELPER: '1' };
-      delete env.ELECTRON_RUN_AS_NODE;
-      const child = spawn(process.execPath, [process.cwd(), '--helper'], {
-        detached: true,
-        stdio: 'ignore',
-        env,
-        cwd: process.cwd()
-      });
-      child.unref();
-      return true;
-    } catch (err) {
-      console.error('Failed to launch dev helper', err);
-      logHelper('Failed to launch dev helper', { error: err?.message || String(err) });
-      return false;
-    }
-  }
-  return false;
-}
-
-function stopHelperNow() {
-  if (process.platform !== 'darwin') return false;
-  const helperPath = getHelperAppPath();
-  const patterns = [];
-  if (helperPath) patterns.push(helperPath);
-  if (!app.isPackaged) patterns.push('Electron . --helper');
-  patterns.push('AhMen Reminders.app/Contents/MacOS/AhMen Reminders');
-  let stopped = false;
-  patterns.forEach(pattern => {
-    try {
-      spawn('pkill', ['-f', pattern], { stdio: 'ignore' });
-      stopped = true;
-    } catch (_err) {}
-  });
-  return stopped;
-}
-
 function ensureLoginItemDefault() {
-  if (isMCMS || helperMode) return;
+  if (isMCMS) return;
   if (loginPreference !== null) return;
   loginPreference = readLoginPreference();
   if (loginPreference === null) {
@@ -588,10 +395,9 @@ async function startPlannerScheduler() {
   try {
     ensureServices();
   } catch (err) {
-    logHelper('Planner scheduler failed to start', { error: err?.message || String(err) });
+    console.error('Planner scheduler failed to start', err);
     return;
   }
-  logHelper('Planner scheduler started');
 
   const tick = async () => {
     if (plannerSchedulerRunning) return;
@@ -605,8 +411,7 @@ async function startPlannerScheduler() {
         const result = await documentService.listPlannerItems({
           businessId,
           includeCompleted: true,
-          sync: true,
-          skipFileScan: helperMode
+          sync: true
         });
         const items = Array.isArray(result?.items) ? result.items : [];
         const now = new Date();
@@ -679,7 +484,6 @@ async function startPlannerScheduler() {
       updateTrayBadge(dueCount);
     } catch (err) {
       console.error('Planner scheduler error', err);
-      logHelper('Planner scheduler error', { error: err?.message || String(err) });
     } finally {
       plannerSchedulerRunning = false;
     }
@@ -915,43 +719,30 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
 }
 
 app.whenReady().then(() => {
-  if (helperMode) {
-    const pref = loginPreference === null ? readLoginPreference() : loginPreference;
-    if (pref === false) {
-      logHelper('Helper disabled on startup');
-      app.quit();
-      return;
-    }
-    logHelper('Helper mode active');
-    ensureTray();
-    startPlannerScheduler();
-    startHelperPreferenceWatcher();
+  watchPendingUiAction();
+  if (isMCMS) {
+    setBackgroundMode(false, { startHidden: false });
+    createWindow();
   } else {
-    watchPendingUiAction();
-    if (isMCMS) {
-      setBackgroundMode(false, { startHidden: false });
-      createWindow();
-    } else {
-      ensureLoginItemDefault();
-      try {
-        const pref = loginPreference === null ? readLoginPreference() : loginPreference;
-        const settings = app.getLoginItemSettings();
-        const openedAtLogin = !!(pref && settings?.wasOpenedAtLogin);
-        setBackgroundMode(!!pref, { startHidden: openedAtLogin });
-        if (!openedAtLogin) {
-          createWindow();
-        } else {
-          try { if (app.dock) app.dock.hide(); } catch (_) {}
-        }
-      } catch (_err) {
+    ensureLoginItemDefault();
+    try {
+      const pref = loginPreference === null ? readLoginPreference() : loginPreference;
+      const settings = app.getLoginItemSettings();
+      const openedAtLogin = !!(pref && settings?.wasOpenedAtLogin);
+      setBackgroundMode(!!pref, { startHidden: openedAtLogin });
+      if (!openedAtLogin) {
         createWindow();
+      } else {
+        try { if (app.dock) app.dock.hide(); } catch (_) {}
       }
+    } catch (_err) {
+      createWindow();
     }
   }
 
-  if (!helperMode && FORCE_MAIN_SCHEDULER) {
+  if (FORCE_MAIN_SCHEDULER && !backgroundModeEnabled) {
     try {
-      ensureServices();
+      startPlannerScheduler();
     } catch (err) {
       console.error('Failed to start main scheduler', err);
     }

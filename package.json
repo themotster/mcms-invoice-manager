@@ -18,7 +18,7 @@
     "mcms:dev": "npm run build:mcms:dev && concurrently \"npm:mcms:watch\" \"npm:mcms:start\"",
     "pack:mcms": "npm run build:mcms && electron-packager . 'MCMS Invoice Manager' --platform=darwin --arch=$(node -p \"process.arch\") --out=release --icon=icons/mcms.icns --overwrite",
     "open:mcms": "open -n ./release/MCMS\\ Invoice\\ Manager-darwin-*/MCMS\\ Invoice\\ Manager.app",
-    "pack:mac": "node scripts/pack_mac_with_helper.js",
+    "pack:mac": "node scripts/pack_mac.js",
     "open:mac": "open -n ./release/AhMen\\ Booking\\ Manager-darwin-*/AhMen\\ Booking\\ Manager.app",
     "clean:release": "rm -rf release/*",
     "pack:mac:clean": "npm run clean:release && npm run pack:mac",

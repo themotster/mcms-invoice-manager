@@ -4267,7 +4267,6 @@ async function listPlannerItems(options = {}) {
   if (!Number.isInteger(businessId)) throw new Error('businessId is required');
   const includeCompleted = options.includeCompleted === true;
   const sync = options.sync !== false;
-  const skipFileScan = options.skipFileScan === true || options.skip_file_scan === true;
   const horizonMonthsRaw = options.horizonMonths ?? options.horizon_months;
   const horizonMonths = Number.isFinite(Number(horizonMonthsRaw)) ? Math.max(0, Number(horizonMonthsRaw)) : 2;
   const todayKey = new Date().toISOString().slice(0, 10);
@@ -4330,25 +4329,23 @@ async function listPlannerItems(options = {}) {
     let fallbackInvoiceNumber = null;
     if (!balanceDoc || !balanceDoc.file_path) {
       try {
-        if (!skipFileScan) {
-          const files = await module.exports.listJobFolderFiles({
-            businessId,
-            jobsheetId,
-            extensionPattern: '\\.(pdf)$'
-          });
-          const balanceMatch = (files || []).find(file => (
-            /balance/i.test(file?.name || '')
-            || /invoice[_\s-]*balance/i.test(file?.name || '')
-            || /bal[-_\s]*inv/i.test(file?.name || '')
-          ));
-          if (balanceMatch?.path) {
-            fallbackInvoicePath = balanceMatch.path;
-            const name = String(balanceMatch.name || '');
-            const numMatch = name.match(/inv[\-\s]?(\d+)/i);
-            if (numMatch && numMatch[1]) {
-              const parsed = Number(numMatch[1]);
-              if (Number.isFinite(parsed)) fallbackInvoiceNumber = parsed;
-            }
+        const files = await module.exports.listJobFolderFiles({
+          businessId,
+          jobsheetId,
+          extensionPattern: '\\.(pdf)$'
+        });
+        const balanceMatch = (files || []).find(file => (
+          /balance/i.test(file?.name || '')
+          || /invoice[_\s-]*balance/i.test(file?.name || '')
+          || /bal[-_\s]*inv/i.test(file?.name || '')
+        ));
+        if (balanceMatch?.path) {
+          fallbackInvoicePath = balanceMatch.path;
+          const name = String(balanceMatch.name || '');
+          const numMatch = name.match(/inv[\-\s]?(\d+)/i);
+          if (numMatch && numMatch[1]) {
+            const parsed = Number(numMatch[1]);
+            if (Number.isFinite(parsed)) fallbackInvoiceNumber = parsed;
           }
         }
       } catch (_) {}

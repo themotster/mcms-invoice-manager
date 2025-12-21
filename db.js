@@ -21,9 +21,6 @@ const isPackaged = (() => {
 
 const envDbPath = process.env.AHMEN_DB_PATH || process.env.INVOICE_MASTER_DB_PATH;
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000');
-const isHelperProcess = process.argv.includes('--helper')
-  || process.argv.includes('--background')
-  || /ahmen reminders/i.test(process.execPath || '');
 
 const normalizeDbPath = (value) => {
   if (!value) return null;
@@ -48,7 +45,7 @@ const isValidSqliteFile = (filePath) => {
   }
 };
 
-if (isPackaged && !isHelperProcess) {
+if (isPackaged) {
   try {
     fs.mkdirSync(sharedSupportDir, { recursive: true });
     const legacyPath = normalizeDbPath(settings.db_path);
@@ -69,12 +66,9 @@ const pushCandidate = (value) => {
   if (!candidatePaths.includes(value)) candidatePaths.push(value);
 };
 
-if (isHelperProcess) {
-  pushCandidate(sharedDbPath);
-}
 pushCandidate(normalizedEnv);
 if (isPackaged) pushCandidate(sharedDbPath);
-if (!isHelperProcess) pushCandidate(normalizedSettings);
+pushCandidate(normalizedSettings);
 if (!candidatePaths.length) pushCandidate(sharedDbPath);
 
 const ensureDbFile = (targetPath) => {
@@ -739,10 +733,6 @@ function initializeDatabase() {
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
 
-    if (isHelperProcess) {
-      return;
-    }
-
     // Template path columns removed; definitions manage their own template_path now.
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_type TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_value REAL', logDuplicateColumn);
@@ -773,9 +763,7 @@ function initializeDatabase() {
 
     seedBusinesses();
     syncLegacyBusinessesTable();
-    if (!isHelperProcess) {
-      seedMergeFieldDefaults();
-    }
+    seedMergeFieldDefaults();
     db.run(
       `UPDATE ${MERGE_FIELD_TABLE}
        SET placeholder = 'TOTAL_FEES', updated_at = datetime('now')
