@@ -57,7 +57,6 @@ let startHiddenOnLogin = false;
 let isQuitting = false;
 
 const SHARED_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Booking Manager');
-const PENDING_UI_ACTION_PATH = path.join(SHARED_SUPPORT_DIR, 'pending-ui-action.json');
 
 function setBackgroundMode(enabled, { startHidden = false } = {}) {
   backgroundModeEnabled = !!enabled;
@@ -125,52 +124,6 @@ function dispatchUiAction(payload = null) {
     } catch (_err) {}
   }
   pendingUiAction = payload;
-}
-
-function writePendingUiAction(payload = {}) {
-  try {
-    fs.mkdirSync(SHARED_SUPPORT_DIR, { recursive: true });
-    const data = { ...payload, ts: Date.now() };
-    fs.writeFileSync(PENDING_UI_ACTION_PATH, JSON.stringify(data), 'utf8');
-    return true;
-  } catch (err) {
-    console.warn('Failed to write pending UI action', err);
-    return false;
-  }
-}
-
-function consumePendingUiAction() {
-  try {
-    if (!fs.existsSync(PENDING_UI_ACTION_PATH)) return null;
-    const raw = fs.readFileSync(PENDING_UI_ACTION_PATH, 'utf8');
-    fs.unlinkSync(PENDING_UI_ACTION_PATH);
-    const parsed = JSON.parse(raw || '{}');
-    if (parsed && parsed.type) {
-      dispatchUiAction(parsed);
-      return parsed;
-    }
-  } catch (err) {
-    console.warn('Failed to consume pending UI action', err);
-  }
-  return null;
-}
-
-function watchPendingUiAction() {
-  try {
-    fs.mkdirSync(SHARED_SUPPORT_DIR, { recursive: true });
-    consumePendingUiAction();
-    const watcher = fs.watch(SHARED_SUPPORT_DIR, (event, filename) => {
-      if (!filename) return;
-      if (String(filename) === path.basename(PENDING_UI_ACTION_PATH)) {
-        consumePendingUiAction();
-      }
-    });
-    watcher.on('error', (err) => {
-      console.warn('Pending UI action watcher error', err);
-    });
-  } catch (err) {
-    console.warn('Failed to watch pending UI action file', err);
-  }
 }
 
 function getStateStorePath() {
@@ -719,7 +672,6 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
 }
 
 app.whenReady().then(() => {
-  watchPendingUiAction();
   if (isMCMS) {
     setBackgroundMode(false, { startHidden: false });
     createWindow();
