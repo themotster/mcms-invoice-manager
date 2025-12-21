@@ -162,6 +162,7 @@ function getFileExtension(filePath) {
 
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
+  planner: '🗓️',
   documents: '🗃️',
   invoices: '🧾',
   templates: '📁',
@@ -170,6 +171,7 @@ const WORKSPACE_ICON_MAP = {
 
 const WORKSPACE_SECTIONS = [
   { key: 'jobsheets', label: 'Jobsheets', description: 'Bookings and statuses', icon: WORKSPACE_ICON_MAP.jobsheets },
+  { key: 'planner', label: 'Planner', description: 'Upcoming reminders', icon: WORKSPACE_ICON_MAP.planner },
   { key: 'documents', label: 'Documents', description: 'Browse and manage files', icon: WORKSPACE_ICON_MAP.documents },
   { key: 'invoices', label: 'Invoice Log', description: 'Issued invoices and status', icon: WORKSPACE_ICON_MAP.invoices },
   { key: 'templates', label: 'Templates', description: 'Manage document templates', icon: WORKSPACE_ICON_MAP.templates },
@@ -222,6 +224,14 @@ const STATUS_STYLES = {
   confirmed: 'bg-green-100 text-green-800 border border-green-200',
   completed: 'bg-gray-200 text-gray-700 border border-gray-300'
 };
+
+const PLANNER_ACTION_LABELS = {
+  balance_send: 'Send balance invoice',
+  balance_due: 'Balance due',
+  payment_check: 'Check payment',
+  thank_you: 'Send thank you'
+};
+
 
 const STATUS_ROW_CLASSES = {
   enquiry: 'bg-yellow-100',
@@ -2607,7 +2617,8 @@ function JobsheetList({
   statusUpdatingId,
   sortConfig,
   onSort,
-  activeJobsheetId = null
+  activeJobsheetId = null,
+  urgentJobsheetIds = null
 }) {
   const [searchValue, setSearchValue] = useState('');
   const [statusFilters, setStatusFilters] = useState(() => new Set());
@@ -3201,16 +3212,18 @@ function JobsheetList({
                   const baseRowClass = STATUS_ROW_CLASSES[statusKey] || 'bg-white';
                   const activeRowClass = ACTIVE_STATUS_ROW_CLASSES[statusKey] || baseRowClass;
                   const numericRowId = sheet.jobsheet_id != null ? Number(sheet.jobsheet_id) : null;
+                  const isUrgent = numericRowId != null && urgentJobsheetIds instanceof Set && urgentJobsheetIds.has(numericRowId);
                   const isActive = numericRowId != null && activeJobsheetId != null && Number(activeJobsheetId) === numericRowId;
                   const rowBackground = isActive ? activeRowClass : baseRowClass;
                   const baseCellClass = 'px-4 py-3 text-sm';
                   const verticalBorder = 'border-y border-transparent';
                   const firstCellExtras = isActive ? "relative before:absolute before:inset-y-2 before:left-1 before:w-1 before:rounded-full before:bg-indigo-600 before:content-[''] before:block rounded-l-xl shadow-[0_0_0_2px_rgba(79,70,229,0.25)]" : 'rounded-l-xl';
                   const lastCellExtras = isActive ? 'rounded-r-xl shadow-[0_0_0_2px_rgba(79,70,229,0.25)]' : 'rounded-r-xl';
+                  const urgentRowClass = isUrgent ? 'urgent-row' : '';
                   const currency = toCurrency((Number(sheet.pricing_total) || (Number(sheet.ahmen_fee) || 0) + (Number(sheet.production_fees) || 0)));
                   const isArchived = Boolean(sheet.archived_at);
                   return (
-                    <tr key={sheet.jobsheet_id || sheet.client_name} onClick={() => onOpen(sheet.jobsheet_id)} className={`cursor-pointer ${isArchived ? 'opacity-70' : ''}`}>
+                    <tr key={sheet.jobsheet_id || sheet.client_name} onClick={() => onOpen(sheet.jobsheet_id)} className={`cursor-pointer ${urgentRowClass} ${isArchived ? 'opacity-70' : ''}`}>
                       {effectiveColumns.map((col, idx) => {
                         const alignClass = col.align === 'right' ? 'text-right' : (col.align === 'center' ? 'text-center' : 'text-left');
                         const isFirst = idx === 0;
@@ -5694,6 +5707,36 @@ function DocumentsInlinePanel({
     }, 3500);
   };
 
+  const handleRelinkPdf = useCallback(async (row) => {
+    if (!row?.def?.key || !numericBusinessId || !numericJobsheetId) return;
+    const hasExisting = Boolean(row?.pdfDoc?.file_path);
+    if (hasExisting) {
+      const confirmReplace = window.confirm('Replace the linked PDF? The existing file will not be deleted.');
+      if (!confirmReplace) return;
+    }
+    try {
+      const selected = await window.api?.chooseFile?.({
+        title: 'Select PDF to link',
+        defaultPath: documentFolder || undefined,
+        filters: [{ name: 'PDF', extensions: ['pdf'] }]
+      });
+      if (!selected) return;
+      const result = await window.api?.linkPdfToDefinition?.({
+        businessId: numericBusinessId,
+        jobsheetId: numericJobsheetId,
+        definitionKey: row.def.key,
+        filePath: selected
+      });
+      if (result && result.ok === false) {
+        throw new Error(result.error || 'Unable to link PDF');
+      }
+      pushToast('PDF linked', 'success');
+      await onRefresh?.();
+    } catch (err) {
+      pushToast(err?.message || 'Unable to link PDF', 'error');
+    }
+  }, [documentFolder, numericBusinessId, numericJobsheetId, onRefresh]);
+
   const handleResetFinderMax = useCallback(async () => {
     try {
       if (!window.api?.computeFinderInvoiceMax || !window.api?.setLastInvoiceNumber) {
@@ -6084,6 +6127,7 @@ function DocumentsInlinePanel({
     </button>
   );
 
+    const showRelink = true;
     const pdfChildren = [
       <span key="label" className="w-12 text-xs font-semibold uppercase tracking-wide text-slate-500">PDF</span>,
       pdfReady ? (
@@ -6116,6 +6160,17 @@ function DocumentsInlinePanel({
       >
         <span className="text-2xl font-semibold leading-none">⟳</span>
       </IconButton>,
+      showRelink ? (
+        <IconButton
+          key="relink"
+          label="Relink PDF"
+          onClick={() => handleRelinkPdf(row)}
+          size="md"
+          className="border-slate-200 text-slate-600 hover:bg-slate-50"
+        >
+          <span className="text-sm" aria-hidden>🔗</span>
+        </IconButton>
+      ) : null,
       <IconButton
         key="reveal"
         label="Reveal PDF"
@@ -6358,6 +6413,7 @@ function DocumentsInlinePanel({
     const pdfReady = row?.pdfExported;
     const pdfLocked = Boolean(pdfDoc?.is_locked);
     const pdfVariantRequiresNumber = row?.def && (row.def.invoice_variant === 'deposit' || row.def.invoice_variant === 'balance');
+    const showRelink = true;
 
     const generateDisabled = !jobsheetId || !row?.def || !row.def.template_path || definitionsLoading || !row?.gateOk;
     const regenerateDisabled = generateDisabled || pdfLocked;
@@ -6447,6 +6503,16 @@ function DocumentsInlinePanel({
           >
             <span className="text-base leading-none">⟳</span>
           </IconButton>
+          {showRelink ? (
+            <IconButton
+              label="Relink PDF"
+              onClick={() => handleRelinkPdf(row)}
+              size="sm"
+              className="border-slate-200 text-slate-600 hover:bg-slate-50"
+            >
+              <span className="text-sm" aria-hidden>🔗</span>
+            </IconButton>
+          ) : null}
           <IconButton
             label="Reveal PDF"
             onClick={() => onRevealFile?.(pdfDoc?.file_path)}
@@ -8397,6 +8463,10 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   const [documentsTypeFilter, setDocumentsTypeFilter] = useState('all');
   const [documentsExtensionFilter, setDocumentsExtensionFilter] = useState('all');
   const [documentsLinkFilter, setDocumentsLinkFilter] = useState('all');
+  const [plannerItems, setPlannerItems] = useState([]);
+  const [plannerLoading, setPlannerLoading] = useState(false);
+  const [plannerError, setPlannerError] = useState('');
+  const [plannerBusyKey, setPlannerBusyKey] = useState('');
   const [documentColumnsState, setDocumentColumnsState] = useState(() => {
     if (typeof window === 'undefined') return { ...DEFAULT_DOCUMENT_COLUMNS_STATE };
     try {
@@ -8429,6 +8499,8 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       return window.localStorage.getItem(PERSIST_UI_KEY) === 'true';
     } catch (_err) { return false; }
   });
+  const [startAtLogin, setStartAtLogin] = useState(false);
+  const [loginSettingsLoading, setLoginSettingsLoading] = useState(false);
 
   const applyStoredScroll = useCallback(() => {
     // Keep available for targeted restores, but do not auto-apply on tab switch.
@@ -8726,6 +8798,48 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     }
   }, [business.id, loadDocumentTree, buildOrphanDocuments]);
 
+  const refreshPlanner = useCallback(async () => {
+    setPlannerLoading(true);
+    setPlannerError('');
+    try {
+      const api = window.api;
+      if (!api || typeof api.listPlannerItems !== 'function') {
+        throw new Error('Planner API unavailable');
+      }
+      const result = await api.listPlannerItems({
+        businessId: business.id,
+        includeCompleted: false,
+        horizonMonths: 2
+      });
+      const items = Array.isArray(result?.items) ? result.items : [];
+      setPlannerItems(items);
+    } catch (err) {
+      console.error('Failed to load planner', err);
+      setPlannerError(err?.message || 'Unable to load planner');
+    } finally {
+      setPlannerLoading(false);
+    }
+  }, [business.id]);
+
+  const handleTestNotification = useCallback(async () => {
+    const api = window.api;
+    if (!api || typeof api.testNotification !== 'function') {
+      setPlannerError('Notifications are unavailable.');
+      return;
+    }
+    setPlannerError('');
+    try {
+      const result = await api.testNotification();
+      if (result && result.ok === false) {
+        throw new Error(result.error || 'Unable to show notification');
+      }
+      setMessage('Test notification sent');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      setPlannerError(err?.message || 'Unable to show notification');
+    }
+  }, [setMessage]);
+
   const handleRefreshDocuments = useCallback(() => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
     refreshDocuments();
@@ -8980,9 +9094,49 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   }, [workspaceSection]);
 
   useEffect(() => {
+    if (workspaceSection === 'planner') {
+      refreshPlanner();
+    }
+  }, [workspaceSection, refreshPlanner]);
+
+  useEffect(() => {
+    refreshPlanner();
+  }, [refreshPlanner]);
+
+  useEffect(() => {
+    if (!window.api || typeof window.api.onUiAction !== 'function') return () => {};
+    const unsubscribe = window.api.onUiAction(payload => {
+      if (payload?.type === 'open-planner') {
+        setWorkspaceSection('planner');
+      }
+    });
+    return () => unsubscribe?.();
+  }, []);
+
+  useEffect(() => {
     setError('');
     refreshJobsheets();
   }, [refreshJobsheets]);
+
+  useEffect(() => {
+    let mounted = true;
+    const loadLoginSettings = async () => {
+      const api = window.api;
+      if (!api || typeof api.getLoginItemSettings !== 'function') return;
+      setLoginSettingsLoading(true);
+      try {
+        const result = await api.getLoginItemSettings();
+        if (!mounted) return;
+        setStartAtLogin(Boolean(result?.openAtLogin));
+      } catch (err) {
+        console.error('Failed to load login settings', err);
+      } finally {
+        if (mounted) setLoginSettingsLoading(false);
+      }
+    };
+    loadLoginSettings();
+    return () => { mounted = false; };
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -9068,6 +9222,10 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
       if (!payload || payload.businessId !== business.id) return;
+      if (payload.type === 'planner-updated') {
+        refreshPlanner();
+        return;
+      }
       if (payload.type === 'document-lock-toggled' && payload.documentId != null && typeof payload.locked === 'boolean') {
         const docId = Number(payload.documentId);
         setDocuments(prev => prev.map(d => (
@@ -9136,7 +9294,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       }
     });
     return () => unsubscribe?.();
-  }, [business.id, refreshJobsheets, refreshDocuments, loadDocumentTree, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible]);
+  }, [business.id, refreshJobsheets, refreshDocuments, loadDocumentTree, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible, refreshPlanner]);
 
   const handleChangeDocumentsFolder = useCallback(async () => {
     const api = window.api;
@@ -9210,6 +9368,23 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setUpdatingSavePath(false);
     }
   }, [business, onBusinessUpdate]);
+
+  const handleToggleStartAtLogin = useCallback(async (nextValue) => {
+    const api = window.api;
+    if (!api || typeof api.setLoginItemSettings !== 'function') return;
+    setLoginSettingsLoading(true);
+    try {
+      const result = await api.setLoginItemSettings({ openAtLogin: !!nextValue });
+      setStartAtLogin(Boolean(result?.openAtLogin));
+      setMessage('Startup preference updated');
+      setTimeout(() => setMessage(''), 1500);
+    } catch (err) {
+      console.error('Failed to update login preference', err);
+      setError(err?.message || 'Unable to update startup preference');
+    } finally {
+      setLoginSettingsLoading(false);
+    }
+  }, []);
 
   const handleDeleteSelected = useCallback(async () => {
     if (!selectedDocuments.size) return;
@@ -9289,6 +9464,111 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setError(err?.message || 'Unable to unlock selected documents');
     }
   }, [selectedDocuments, normalizedDocuments, refreshDocuments]);
+
+  const completedPlannerStatuses = useMemo(() => new Set(['sent', 'done', 'completed', 'dismissed']), []);
+
+  const filteredPlannerItems = useMemo(() => {
+    const items = Array.isArray(plannerItems) ? plannerItems : [];
+    return items.filter(item => {
+      const status = String(item.status || 'pending').toLowerCase();
+      return !completedPlannerStatuses.has(status);
+    });
+  }, [plannerItems, completedPlannerStatuses]);
+
+  const groupedPlannerItems = useMemo(() => {
+    const groups = new Map();
+    filteredPlannerItems.forEach(item => {
+      const jobId = Number(item.jobsheet_id);
+      if (!Number.isInteger(jobId)) return;
+      const group = groups.get(jobId) || {
+        jobsheet_id: jobId,
+        client_name: item.client_name || '',
+        event_type: item.event_type || '',
+        event_date: item.event_date || '',
+        items: []
+      };
+      group.items.push(item);
+      groups.set(jobId, group);
+    });
+    const list = Array.from(groups.values());
+    list.forEach(group => {
+      group.items.sort((a, b) => String(a.scheduled_for || '').localeCompare(String(b.scheduled_for || '')));
+    });
+    list.sort((a, b) => {
+      const aDate = a.items[0]?.scheduled_for || '';
+      const bDate = b.items[0]?.scheduled_for || '';
+      return String(aDate).localeCompare(String(bDate));
+    });
+    return list;
+  }, [filteredPlannerItems]);
+
+  const plannerUrgentCount = useMemo(() => {
+    const items = Array.isArray(filteredPlannerItems) ? filteredPlannerItems : [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    let count = 0;
+    items.forEach(item => {
+      const dueDate = parseDateValue(item.scheduled_for);
+      if (!dueDate) return;
+      const dueStart = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+      const diffDays = Math.round((dueStart - today) / (24 * 60 * 60 * 1000));
+      if (diffDays <= 7) count += 1;
+    });
+    return count;
+  }, [filteredPlannerItems]);
+
+  const plannerUrgentJobsheetIds = useMemo(() => {
+    const items = Array.isArray(filteredPlannerItems) ? filteredPlannerItems : [];
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const ids = new Set();
+    items.forEach(item => {
+      const dueDate = parseDateValue(item.scheduled_for);
+      const jobId = Number(item.jobsheet_id);
+      if (!dueDate || !Number.isInteger(jobId)) return;
+      const dueStart = new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate());
+      const diffDays = Math.round((dueStart - today) / (24 * 60 * 60 * 1000));
+      if (diffDays <= 7) ids.add(jobId);
+    });
+    return ids;
+  }, [filteredPlannerItems]);
+
+  const handlePlannerSend = useCallback(async (item) => {
+    if (!item) return;
+    if (item.requires_approval) {
+      const ok = window.confirm('Send this email now?');
+      if (!ok) return;
+    }
+    const api = window.api;
+    if (!api || typeof api.sendPlannerEmail !== 'function') return;
+    const busyKey = `send:${item.action_key}-${item.jobsheet_id}-${item.scheduled_for}`;
+    setPlannerBusyKey(busyKey);
+    setPlannerError('');
+    try {
+      await api.sendPlannerEmail({
+        businessId: business.id,
+        jobsheetId: item.jobsheet_id,
+        actionKey: item.action_key
+      });
+      await api.updatePlannerAction({
+        businessId: business.id,
+        jobsheetId: item.jobsheet_id,
+        actionKey: item.action_key,
+        scheduled_for: item.scheduled_for,
+        status: 'sent',
+        last_email_at: new Date().toISOString()
+      });
+      setMessage('Email sent');
+      setTimeout(() => setMessage(''), 1500);
+      refreshPlanner();
+    } catch (err) {
+      console.error('Failed to send planner email', err);
+      setPlannerError(err?.message || 'Unable to send email');
+    } finally {
+      setPlannerBusyKey('');
+    }
+  }, [business.id, refreshPlanner]);
+
 
   const normalizedDocuments = useMemo(() => {
     return (documents || []).map(doc => {
@@ -9947,6 +10227,12 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     }, 250);
   }, [inlineEditorTargetId, scrollInlineEditorIntoView]);
 
+  const handleOpenPlannerJobsheet = useCallback((jobsheetId) => {
+    if (!jobsheetId) return;
+    setWorkspaceSection('jobsheets');
+    handleOpenExisting(jobsheetId);
+  }, [handleOpenExisting]);
+
   const handleDelete = useCallback(async (jobsheetId) => {
     if (!jobsheetId) return;
     const confirmed = window.confirm('Delete this jobsheet? This cannot be undone.');
@@ -10085,6 +10371,8 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
               {WORKSPACE_SECTIONS.map(section => {
                 const isActive = workspaceSection === section.key;
                 const icon = section.icon ?? getWorkspaceIcon(section.key);
+                const badgeCount = section.key === 'planner' ? plannerUrgentCount : 0;
+                const badgeLabel = badgeCount > 99 ? '99+' : String(badgeCount);
                 return (
                   <button
                     key={section.key}
@@ -10098,7 +10386,14 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                       {icon}
                     </span>
                     <span className="flex-1">
-                      <span className="block text-sm font-semibold">{section.label}</span>
+                      <span className="flex items-start justify-between gap-2">
+                        <span className="block text-sm font-semibold">{section.label}</span>
+                        {badgeCount > 0 ? (
+                          <span className="inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-red-500 px-1 text-[11px] font-semibold text-white">
+                            {badgeLabel}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="mt-1 block text-xs text-slate-500">{section.description}</span>
                     </span>
                   </button>
@@ -10137,6 +10432,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                   sortConfig={sortConfig}
                   onSort={handleSort}
                   activeJobsheetId={activeJobsheetId}
+                  urgentJobsheetIds={plannerUrgentJobsheetIds}
                 />
                 <div id="inline-jobsheet-editor">
                   <InlineJobsheetEditorPanel
@@ -10183,6 +10479,131 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                     </div>
                   </div>
                 ) : null}
+              </section>
+            ) : null}
+
+            {workspaceSection === 'planner' ? (
+              <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-700">Planner</h2>
+                    <p className="text-sm text-slate-500">Upcoming balance reminders and actions.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleTestNotification}
+                      className="rounded border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                    >
+                      Test notification
+                    </button>
+                    <button
+                      type="button"
+                      onClick={refreshPlanner}
+                      disabled={plannerLoading}
+                      className="rounded border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-60"
+                    >
+                      {plannerLoading ? 'Refreshing…' : 'Refresh'}
+                    </button>
+                  </div>
+                </div>
+
+                {plannerError ? (
+                  <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">
+                    {plannerError}
+                  </div>
+                ) : null}
+
+                {plannerLoading && !plannerError ? (
+                  <div className="text-sm text-slate-500">Loading planner…</div>
+                ) : null}
+
+                <div className="space-y-3">
+                  {groupedPlannerItems.length === 0 ? (
+                    <div className="rounded border border-slate-200 px-4 py-6 text-center text-sm text-slate-500">
+                      No upcoming actions.
+                    </div>
+                  ) : null}
+                  {groupedPlannerItems.map(group => {
+                    const groupKey = `planner-${group.jobsheet_id}`;
+                    return (
+                      <div key={groupKey} className="rounded-lg border border-slate-200 bg-white">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
+                          <div>
+                            <div className="text-sm font-semibold text-slate-800">{group.client_name || '—'}</div>
+                            <div className="text-xs text-slate-500">
+                              {group.event_type || '—'} · {group.event_date ? formatCompactDate(group.event_date) : '—'}
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleOpenPlannerJobsheet(group.jobsheet_id)}
+                            className="rounded border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50"
+                          >
+                            Open jobsheet
+                          </button>
+                        </div>
+                        <div className="divide-y divide-slate-200">
+                          {group.items.map(item => {
+                            const statusKey = String(item.status || 'pending').toLowerCase();
+                            const isCompleted = completedPlannerStatuses.has(statusKey);
+                            const actionLabel = PLANNER_ACTION_LABELS[item.action_key] || startCaseKey(item.action_key || 'action');
+                            const rowKey = `${item.action_key}-${item.jobsheet_id}-${item.scheduled_for}`;
+                            const isBusy = plannerBusyKey === `send:${rowKey}`;
+                            const dueDate = parseDateValue(item.scheduled_for);
+                            const today = new Date();
+                            today.setHours(0, 0, 0, 0);
+                            const dueStart = dueDate ? new Date(dueDate.getFullYear(), dueDate.getMonth(), dueDate.getDate()) : null;
+                            const diffDays = dueStart ? Math.round((dueStart - today) / (24 * 60 * 60 * 1000)) : null;
+                            const isOverdue = diffDays != null && diffDays < 0;
+                            const urgency = (!isCompleted && diffDays != null)
+                              ? (diffDays < 0
+                                ? { label: 'Overdue', className: 'bg-red-100 text-red-700 border-red-200', rowClass: 'border-l-4 border-red-400 bg-red-50' }
+                                : diffDays <= 7
+                                  ? { label: 'Due soon', className: 'bg-red-100 text-red-700 border-red-200', rowClass: 'border-l-4 border-red-400 bg-red-50' }
+                                  : diffDays <= 14
+                                    ? { label: 'Upcoming', className: 'bg-yellow-100 text-yellow-700 border-yellow-200', rowClass: 'border-l-4 border-yellow-400 bg-yellow-50' }
+                                    : { label: 'Later', className: 'bg-green-100 text-green-700 border-green-200', rowClass: 'border-l-4 border-green-400 bg-green-50' })
+                              : null;
+                            const rowToneClass = urgency ? urgency.rowClass : 'border-l-4 border-transparent';
+                            const rawAmount = item.balance_amount != null && item.balance_amount !== '' ? Number(item.balance_amount) : NaN;
+                            const amountLabel = Number.isFinite(rawAmount) ? toCurrency(rawAmount) : '';
+                            const missingNote = item.needs_email
+                              ? 'Missing client email'
+                              : (item.needs_invoice ? 'Missing invoice PDF' : '');
+                            const meta = [];
+                            meta.push(formatCompactDate(item.scheduled_for));
+                            if (item.invoice_number) meta.push(`INV-${item.invoice_number}`);
+                            if (amountLabel) meta.push(amountLabel);
+                            if (item.scheduled_email_at) meta.push(`Scheduled ${formatCompactDate(item.scheduled_email_at)}`);
+                            return (
+                              <div key={rowKey} className={`flex flex-wrap items-center gap-3 px-4 py-2 text-sm ${rowToneClass}`}>
+                                <div className={`font-medium ${isCompleted ? 'text-slate-400 line-through' : 'text-slate-700'}`}>{actionLabel}</div>
+                                <div className="text-xs text-slate-500">{meta.join(' · ')}</div>
+                              {urgency ? (
+                                <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold ${urgency.className}`}>
+                                  {urgency.label}
+                                </span>
+                              ) : null}
+                                {missingNote ? <div className="text-xs text-rose-600">{missingNote}</div> : null}
+                                {item.can_send && !isCompleted ? (
+                                  <button
+                                    type="button"
+                                    disabled={isBusy}
+                                    onClick={() => handlePlannerSend(item)}
+                                    className="ml-auto rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+                                  >
+                                    Send
+                                  </button>
+                                ) : null}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </section>
             ) : null}
 
@@ -10408,6 +10829,23 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                   <label className="inline-flex items-center gap-2 text-sm text-slate-600">
                     <input type="checkbox" checked={persistUi} onChange={e => setPersistUi(e.target.checked)} />
                     <span>{persistUi ? 'Enabled' : 'Disabled'}</span>
+                  </label>
+                </div>
+
+                <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-semibold text-slate-700">Run reminders in background</h3>
+                    <p className="text-xs text-slate-500">Starts a menu bar helper at login for notifications and scheduled emails.</p>
+                    <p className="text-xs text-slate-500">Only sends emails you explicitly schedule.</p>
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-600">
+                    <input
+                      type="checkbox"
+                      checked={startAtLogin}
+                      disabled={loginSettingsLoading}
+                      onChange={e => handleToggleStartAtLogin(e.target.checked)}
+                    />
+                    <span>{startAtLogin ? 'Enabled' : 'Disabled'}</span>
                   </label>
                 </div>
 
@@ -11781,7 +12219,7 @@ function JobsheetEditorWindow({
             hintPaths: filtered.map(doc => doc?.file_path).filter(Boolean)
           });
 
-          if (syncResult?.added > 0) {
+          if ((syncResult?.added || 0) > 0 || (syncResult?.updated || 0) > 0) {
             documentsList = await fetchDocuments();
             filtered = filterForJobsheet(documentsList);
 

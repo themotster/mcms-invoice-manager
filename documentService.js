@@ -36,6 +36,18 @@ const IS_MAIN_PROCESS = PROCESS_TYPE === 'browser' || PROCESS_TYPE === undefined
 const SCHEDULED_EMAIL_POLL_INTERVAL_MS = 60 * 1000;
 const SCHEDULED_EMAIL_BATCH_SIZE = 10;
 
+const SCHEDULED_WORKER_OVERRIDE = String(process.env.AHMEN_SCHEDULED_WORKER || '').trim() === '1';
+const SCHEDULED_WORKER_ENABLED = (() => {
+  if (!IS_MAIN_PROCESS) return false;
+  if (SCHEDULED_WORKER_OVERRIDE) return true;
+  const argv = Array.isArray(process.argv) ? process.argv.join(' ') : '';
+  if (argv.includes('--background') || argv.includes('--helper')) return true;
+  const execPath = process.execPath || '';
+  if (execPath.includes(`${path.sep}LoginItems${path.sep}`)) return true;
+  if (/ahmen reminders/i.test(execPath)) return true;
+  return false;
+})();
+
 let scheduledMailWorkerStarted = false;
 let scheduledMailWorkerExecuting = false;
 let ElectronBrowserWindow = null;
@@ -273,7 +285,7 @@ function broadcastJobsheetChange(payload) {
 }
 
 function ensureScheduledMailWorker() {
-  if (!IS_MAIN_PROCESS) return;
+  if (!SCHEDULED_WORKER_ENABLED) return;
   if (scheduledMailWorkerStarted) return;
   scheduledMailWorkerStarted = true;
 
@@ -320,6 +332,14 @@ async function processScheduledEmail(entry) {
     if (entry.email_log_id) {
       await db.updateEmailLogStatus({ id: entry.email_log_id, status: 'sent', sent_at: new Date() });
     }
+    try {
+      await sendInternalNotice({
+        businessId: entry.business_id,
+        jobsheetId: entry.jobsheet_id,
+        subject: `Scheduled email sent · ${entry.subject || 'Email'}`,
+        body: `Scheduled email sent to ${escapeHtml(entry.to_address || '')}.<br>Subject: ${escapeHtml(entry.subject || '')}`
+      });
+    } catch (_) {}
     broadcastJobsheetChange({
       type: 'email-log-updated',
       businessId: entry.business_id != null ? Number(entry.business_id) : null,
@@ -455,6 +475,97 @@ function formatDateHuman(dateInput) {
     month: 'long',
     year: 'numeric'
   }).format(date);
+}
+
+const MAIL_TOKEN_REGEX = /{{\s*([a-zA-Z0-9_.-]+)(?:\|([^}]+))?\s*}}/g;
+const SIG_START = '<!--__IM_SIG_START__-->';
+const SIG_END = '<!--__IM_SIG_END__-->';
+
+function parseIsoDateParts(value) {
+  if (!value) return null;
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return { year, month, day };
+}
+
+function formatDateKey(parts) {
+  if (!parts) return '';
+  const pad = (val) => String(val).padStart(2, '0');
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}`;
+}
+
+function normalizeDateKey(value) {
+  const parts = parseIsoDateParts(value);
+  return formatDateKey(parts);
+}
+
+function addDaysISO(dateStr, offset) {
+  if (!dateStr) return '';
+  const base = new Date(dateStr);
+  if (Number.isNaN(base.valueOf())) return '';
+  base.setDate(base.getDate() + offset);
+  return base.toISOString().slice(0, 10);
+}
+
+function addMonthsISO(dateStr, offset) {
+  if (!dateStr) return '';
+  const parts = parseIsoDateParts(dateStr);
+  if (!parts) return '';
+  const date = new Date(parts.year, parts.month - 1 + Number(offset || 0), parts.day);
+  if (Number.isNaN(date.valueOf())) return '';
+  return date.toISOString().slice(0, 10);
+}
+
+function buildMailTokenMap(snapshot = {}) {
+  const js = snapshot || {};
+  const firstName = (() => {
+    const raw = String(js.client_name || '').trim();
+    if (!raw) return '';
+    return raw.split(/\s+/)[0] || '';
+  })();
+  const money = (val) => {
+    const num = Number(val);
+    if (!Number.isFinite(num)) return '';
+    return formatCurrencyGBP(num);
+  };
+
+  return {
+    client_name: js.client_name || '',
+    client_first_name: firstName,
+    client_email: js.client_email || '',
+    event_type: js.event_type || '',
+    event_date: formatDisplayDate(js.event_date || ''),
+    balance_due_date: formatDisplayDate(js.balance_due_date || ''),
+    balance_reminder_date: formatDisplayDate(js.balance_reminder_date || ''),
+    balance_amount: money(js.balance_amount),
+    total_amount: money(js.total_amount),
+    today: formatDisplayDate(new Date())
+  };
+}
+
+function renderMailTemplate(template, tokenMap = {}) {
+  if (!template) return '';
+  return String(template).replace(MAIL_TOKEN_REGEX, (_match, key, fallback) => {
+    const normalizedKey = String(key || '').trim().toLowerCase();
+    const value = tokenMap[normalizedKey];
+    if (value != null && value !== '') return String(value);
+    return fallback != null ? String(fallback) : '';
+  });
+}
+
+function appendSignatureHtml(bodyHtml, signatureHtml) {
+  const trimmedBody = (bodyHtml || '').trim();
+  if (!signatureHtml) return trimmedBody;
+  const wrappedSig = `${SIG_START}${signatureHtml}${SIG_END}`;
+  if (!trimmedBody) return wrappedSig;
+  if (/(<br\s*\/?>|<\/p>)$/i.test(trimmedBody)) {
+    return `${trimmedBody}${wrappedSig}`;
+  }
+  return `${trimmedBody}<br><br>${wrappedSig}`;
 }
 
 async function ensureDirectoryExists(targetPath) {
@@ -2611,16 +2722,36 @@ async function listJobsheetDocuments(options = {}) {
   const documents = await db.getDocuments({ businessId });
   const enriched = await filterDocumentsByExistingFiles(documents, { includeMissing: false });
 
-  // Deduplicate by exact file_path (keep the latest document_id) and clean DB for duplicates
+  // Deduplicate by exact file_path (prefer definition_key and non-pdf_export rows)
   try {
+    const preferDoc = (left, right) => {
+      const leftHasDef = Boolean(left?.definition_key);
+      const rightHasDef = Boolean(right?.definition_key);
+      if (leftHasDef !== rightHasDef) return leftHasDef ? left : right;
+
+      const leftType = String(left?.doc_type || '').toLowerCase();
+      const rightType = String(right?.doc_type || '').toLowerCase();
+      const leftIsExport = leftType === 'pdf_export';
+      const rightIsExport = rightType === 'pdf_export';
+      if (leftIsExport !== rightIsExport) return leftIsExport ? right : left;
+
+      const leftId = Number(left?.document_id);
+      const rightId = Number(right?.document_id);
+      if (Number.isFinite(leftId) && Number.isFinite(rightId)) {
+        return leftId >= rightId ? left : right;
+      }
+      if (Number.isFinite(leftId)) return left;
+      if (Number.isFinite(rightId)) return right;
+      return left;
+    };
+
     const byPath = new Map();
     for (const doc of enriched) {
       const fp = doc?.file_path;
       if (!fp) continue;
       const existing = byPath.get(fp);
-      if (!existing || Number(doc.document_id) > Number(existing.document_id)) {
-        byPath.set(fp, doc);
-      }
+      if (!existing) { byPath.set(fp, doc); continue; }
+      byPath.set(fp, preferDoc(existing, doc));
     }
     const dups = [];
     for (const doc of enriched) {
@@ -3342,6 +3473,7 @@ async function syncJobsheetOutputs(options = {}) {
 
   const results = [];
   let added = 0;
+  let updated = 0;
 
   for (const dir of directories) {
     if (!dir) continue;
@@ -3377,6 +3509,22 @@ async function syncJobsheetOutputs(options = {}) {
       try {
         const existing = await db.getDocumentByFilePath(businessId, absolutePath);
         if (existing) {
+          if (Number.isInteger(jobsheetId)) {
+            const existingJobId = existing?.jobsheet_id != null ? Number(existing.jobsheet_id) : null;
+            const canRelink = existingJobId !== jobsheetId && isSubPath(resolvedDir, absolutePath);
+            if (existingJobId == null || existingJobId === jobsheetId || canRelink) {
+              const patch = {};
+              if ((existingJobId == null || canRelink) && Number.isInteger(jobsheetId)) patch.jobsheet_id = jobsheetId;
+              if (!existing.client_name && snapshot.client_name) patch.client_name = snapshot.client_name;
+              if (!existing.event_name && snapshot.event_type) patch.event_name = snapshot.event_type;
+              if (!existing.event_date && snapshot.event_date) patch.event_date = snapshot.event_date;
+              if (Object.keys(patch).length) {
+                await db.updateDocumentStatus(existing.document_id, patch);
+                updated += 1;
+                results.push({ document_id: existing.document_id, file_path: absolutePath, updated: true });
+              }
+            }
+          }
           continue;
         }
 
@@ -3410,7 +3558,7 @@ async function syncJobsheetOutputs(options = {}) {
     }
   }
 
-  return { added, records: results };
+  return { added, updated, records: results };
 }
 
 
@@ -4084,6 +4232,360 @@ async function scheduleMailViaGraph(options = {}) {
   ensureScheduledMailWorker();
 
   return { ok: true, scheduled_email_id: scheduledId, email_log_id: emailLogId };
+}
+
+function isBalanceInvoiceDocument(doc) {
+  if (!doc) return false;
+  const docType = String(doc.doc_type || '').toLowerCase();
+  const defKey = String(doc.definition_key || '').toLowerCase();
+  const variant = String(doc.invoice_variant || doc.definition_invoice_variant || '').toLowerCase();
+  if (defKey === 'invoice_balance') return true;
+  if (docType === 'invoice' && variant === 'balance') return true;
+  const name = String(doc.file_path || doc.definition_label || doc.label || '').toLowerCase();
+  return docType === 'invoice' && /balance/.test(name);
+}
+
+function getDocumentSortDate(doc) {
+  if (!doc) return 0;
+  const raw = doc.document_date || doc.created_at || doc.updated_at || '';
+  const date = raw ? new Date(raw) : null;
+  if (date && !Number.isNaN(date.valueOf())) return date.valueOf();
+  const id = Number(doc.document_id);
+  return Number.isFinite(id) ? id : 0;
+}
+
+function pickLatestDocument(list = []) {
+  if (!Array.isArray(list) || !list.length) return null;
+  return list.reduce((best, current) => {
+    if (!best) return current;
+    return getDocumentSortDate(current) >= getDocumentSortDate(best) ? current : best;
+  }, null);
+}
+
+async function listPlannerItems(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id);
+  if (!Number.isInteger(businessId)) throw new Error('businessId is required');
+  const includeCompleted = options.includeCompleted === true;
+  const sync = options.sync !== false;
+  const horizonMonthsRaw = options.horizonMonths ?? options.horizon_months;
+  const horizonMonths = Number.isFinite(Number(horizonMonthsRaw)) ? Math.max(0, Number(horizonMonthsRaw)) : 2;
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const horizonDate = horizonMonths > 0 ? addMonthsISO(todayKey, horizonMonths) : todayKey;
+
+  const [jobsheets, documents, existingActions, scheduledEmails] = await Promise.all([
+    db.getAhmenJobsheets({ businessId, includeArchived: false }),
+    db.getDocuments({ businessId }),
+    db.listPlannerActions({ business_id: businessId }),
+    db.listScheduledEmails({ business_id: businessId, status: 'pending', limit: 1000 })
+  ]);
+
+  const actionMap = new Map();
+  (existingActions || []).forEach(action => {
+    const dateKey = normalizeDateKey(action.scheduled_for);
+    if (!dateKey) return;
+    const key = `${action.jobsheet_id}|${action.action_key}|${dateKey}`;
+    actionMap.set(key, action);
+  });
+
+  const docsByJobsheet = new Map();
+  (documents || []).forEach(doc => {
+    const id = Number(doc.jobsheet_id);
+    if (!Number.isInteger(id)) return;
+    const list = docsByJobsheet.get(id) || [];
+    list.push(doc);
+    docsByJobsheet.set(id, list);
+  });
+
+  const scheduledByJobsheet = new Map();
+  (scheduledEmails || []).forEach(entry => {
+    const id = Number(entry.jobsheet_id);
+    if (!Number.isInteger(id)) return;
+    const sendAt = normalizeDateKey(entry.send_at || entry.scheduled_for || '');
+    if (!sendAt) return;
+    const current = scheduledByJobsheet.get(id);
+    if (!current || sendAt < current) {
+      scheduledByJobsheet.set(id, sendAt);
+    }
+  });
+
+  const completedStatuses = new Set(['sent', 'done', 'completed', 'dismissed']);
+  const items = [];
+
+  for (const js of jobsheets || []) {
+    const jobsheetId = Number(js?.jobsheet_id);
+    if (!Number.isInteger(jobsheetId)) continue;
+    const statusKey = String(js?.status || '').toLowerCase();
+    if (statusKey === 'completed') continue;
+    const eventDate = normalizeDateKey(js.event_date);
+    if (!eventDate) continue;
+
+    const balanceDue = normalizeDateKey(js.balance_due_date) || addDaysISO(eventDate, -10);
+    const balanceSend = normalizeDateKey(js.balance_reminder_date) || addDaysISO(eventDate, -20);
+    const paymentCheck = balanceDue ? addDaysISO(balanceDue, 1) : '';
+
+    const jobDocs = docsByJobsheet.get(jobsheetId) || [];
+    const balanceDoc = pickLatestDocument(jobDocs.filter(isBalanceInvoiceDocument));
+    let fallbackInvoicePath = '';
+    let fallbackInvoiceNumber = null;
+    if (!balanceDoc || !balanceDoc.file_path) {
+      try {
+        const files = await module.exports.listJobFolderFiles({
+          businessId,
+          jobsheetId,
+          extensionPattern: '\\.(pdf)$'
+        });
+        const balanceMatch = (files || []).find(file => (
+          /balance/i.test(file?.name || '')
+          || /invoice[_\s-]*balance/i.test(file?.name || '')
+          || /bal[-_\s]*inv/i.test(file?.name || '')
+        ));
+        if (balanceMatch?.path) {
+          fallbackInvoicePath = balanceMatch.path;
+          const name = String(balanceMatch.name || '');
+          const numMatch = name.match(/inv[\-\s]?(\d+)/i);
+          if (numMatch && numMatch[1]) {
+            const parsed = Number(numMatch[1]);
+            if (Number.isFinite(parsed)) fallbackInvoiceNumber = parsed;
+          }
+        }
+      } catch (_) {}
+    }
+    const isPaid = balanceDoc ? (String(balanceDoc.status || '').toLowerCase() === 'paid' || !!balanceDoc.paid_at) : false;
+
+    const buildAction = async (action_key, scheduled_for, extra = {}) => {
+      if (!scheduled_for) return null;
+      const dateKey = normalizeDateKey(scheduled_for);
+      if (!dateKey) return null;
+      if (horizonDate && dateKey > horizonDate) return null;
+      const mapKey = `${jobsheetId}|${action_key}|${dateKey}`;
+      const existing = actionMap.get(mapKey) || null;
+      if (!existing && sync) {
+        try {
+          await db.upsertPlannerAction({
+            business_id: businessId,
+            jobsheet_id: jobsheetId,
+            action_key,
+            scheduled_for: dateKey,
+            status: 'pending'
+          });
+        } catch (_err) {}
+      }
+      const status = existing?.status || 'pending';
+      if (!includeCompleted && completedStatuses.has(String(status).toLowerCase())) return null;
+      return {
+        action_id: existing?.action_id || null,
+        business_id: businessId,
+        jobsheet_id: jobsheetId,
+        action_key,
+        scheduled_for: dateKey,
+        status,
+        last_notified_at: existing?.last_notified_at || null,
+        last_email_at: existing?.last_email_at || null,
+        last_error: existing?.last_error || null,
+        ...extra
+      };
+    };
+
+    const clientEmail = String(js.client_email || '').trim();
+    const balanceAmount = Number(js.balance_amount || 0);
+    const balanceItem = balanceDoc || {};
+    const invoiceNumber = balanceItem?.number ?? fallbackInvoiceNumber ?? null;
+    const invoicePath = balanceItem?.file_path || fallbackInvoicePath || '';
+    const scheduledEmailAt = scheduledByJobsheet.get(jobsheetId) || '';
+    const hasScheduledEmail = !!scheduledEmailAt;
+    const common = {
+      client_name: js.client_name || '',
+      client_email: clientEmail,
+      event_type: js.event_type || '',
+      event_date: js.event_date || '',
+      balance_due_date: balanceDue || '',
+      balance_reminder_date: balanceSend || '',
+      balance_amount: Number.isFinite(balanceAmount) ? balanceAmount : 0,
+      invoice_number: invoiceNumber,
+      invoice_path: invoicePath,
+      paid: isPaid,
+      scheduled_email_at: scheduledEmailAt
+    };
+
+    const balanceSendAction = await buildAction('balance_send', balanceSend, {
+      ...common,
+      can_send: !!clientEmail && !!invoicePath && !isPaid && !hasScheduledEmail,
+      needs_email: !clientEmail && !hasScheduledEmail,
+      needs_invoice: !invoicePath && !hasScheduledEmail,
+      auto_send: true
+    });
+    if (balanceSendAction) items.push(balanceSendAction);
+
+    if (!isPaid && balanceDue) {
+      const balanceDueAction = await buildAction('balance_due', balanceDue, {
+        ...common,
+        auto_send: false,
+        info_only: true
+      });
+      if (balanceDueAction) items.push(balanceDueAction);
+    }
+
+    if (!isPaid && paymentCheck) {
+      const paymentCheckAction = await buildAction('payment_check', paymentCheck, {
+        ...common,
+        auto_send: false,
+        requires_approval: true,
+        can_send: !!clientEmail,
+        needs_email: !clientEmail
+      });
+      if (paymentCheckAction) items.push(paymentCheckAction);
+    }
+
+    if (isPaid) {
+      const paidDate = normalizeDateKey(balanceItem?.paid_at) || balanceDue || eventDate;
+      const thankAction = await buildAction('thank_you', paidDate, {
+        ...common,
+        auto_send: false,
+        requires_approval: true,
+        can_send: !!clientEmail,
+        needs_email: !clientEmail
+      });
+      if (thankAction) items.push(thankAction);
+    }
+  }
+
+  items.sort((a, b) => {
+    if (a.scheduled_for === b.scheduled_for) {
+      return (a.client_name || '').localeCompare(b.client_name || '');
+    }
+    return String(a.scheduled_for || '').localeCompare(String(b.scheduled_for || ''));
+  });
+
+  return { items };
+}
+
+async function sendPlannerEmail(options = {}) {
+  const businessId = Number(options.businessId ?? options.business_id);
+  const jobsheetId = Number(options.jobsheetId ?? options.jobsheet_id);
+  const actionKeyRaw = String(options.action_key || options.actionKey || '').toLowerCase();
+  if (!Number.isInteger(businessId) || !Number.isInteger(jobsheetId)) {
+    throw new Error('businessId and jobsheetId are required');
+  }
+  if (!actionKeyRaw) throw new Error('actionKey is required');
+
+  const jobsheet = await db.getAhmenJobsheet(jobsheetId);
+  if (!jobsheet) throw new Error('Jobsheet not found');
+  const to = String(jobsheet.client_email || '').trim();
+  if (!to) throw new Error('Client email missing on jobsheet');
+
+  const templateKey = actionKeyRaw === 'payment_check'
+    ? 'payment_reminder'
+    : (actionKeyRaw === 'thank_you' ? 'thank_you' : 'invoice_balance');
+
+  const [templates, defaults, signatureResult] = await Promise.all([
+    module.exports.getMailTemplates({ businessId }),
+    module.exports.getDefaultMailTemplates({ businessId }),
+    module.exports.getMailSignature({ businessId })
+  ]);
+
+  const def = (defaults && defaults[templateKey]) || {};
+  const custom = (templates && templates[templateKey]) || {};
+  const tpl = { ...def, ...custom };
+  const tokens = buildMailTokenMap(jobsheet || {});
+  const subject = renderMailTemplate(tpl.subject || '', tokens);
+  const bodyRaw = renderMailTemplate(tpl.body || '', tokens);
+  const signature = signatureResult?.signature || '';
+  const bodyWithSignature = appendSignatureHtml(bodyRaw, signature);
+  const body = normalizeEmailHtmlPreserveSignature(bodyWithSignature, {
+    baseFamily: 'Arial, Helvetica, sans-serif',
+    baseSize: '10pt',
+    baseLineHeight: '1.45'
+  });
+
+  let attachments = [];
+  if (templateKey === 'invoice_balance' || templateKey === 'payment_reminder') {
+    const resolved = await resolveTemplateDefaultAttachments({ businessId, jobsheetId, templateKey: 'invoice_balance' });
+    attachments = Array.isArray(resolved?.attachments) ? resolved.attachments : [];
+    if (templateKey === 'invoice_balance' && !attachments.length) {
+      throw new Error('Balance invoice PDF not found. Generate it before sending.');
+    }
+  }
+
+  await sendMailViaGraph({
+    to,
+    subject,
+    body,
+    is_html: true,
+    attachments,
+    business_id: businessId,
+    jobsheet_id: jobsheetId
+  });
+
+  return { ok: true };
+}
+
+async function sendInternalNotice(options = {}) {
+  const subject = String(options.subject || '').trim();
+  const body = String(options.body || '').trim();
+  if (!subject && !body) return { ok: true };
+  const businessId = options.businessId ?? options.business_id ?? null;
+  const jobsheetId = options.jobsheetId ?? options.jobsheet_id ?? null;
+  await sendMailViaGraph({
+    to: 'motti@ahmen.co.uk',
+    subject: subject || 'AhMen reminder',
+    body: body || '',
+    is_html: true,
+    business_id: businessId,
+    jobsheet_id: jobsheetId,
+    skipLog: true
+  });
+  return { ok: true };
+}
+
+async function updatePlannerAction(options = {}) {
+  const actionId = options.action_id ?? options.actionId;
+  const businessId = Number(options.businessId ?? options.business_id);
+  const jobsheetId = Number(options.jobsheetId ?? options.jobsheet_id);
+  const status = options.status || null;
+  const completedAt = options.completed_at ?? options.completedAt ?? null;
+  const lastNotifiedAt = options.last_notified_at ?? options.lastNotifiedAt ?? null;
+  const lastEmailAt = options.last_email_at ?? options.lastEmailAt ?? null;
+  const lastError = options.last_error ?? options.lastError ?? null;
+
+  if (actionId != null) {
+    const result = await db.updatePlannerActionById({
+      action_id: actionId,
+      status,
+      completed_at: completedAt,
+      last_notified_at: lastNotifiedAt,
+      last_email_at: lastEmailAt,
+      last_error: lastError
+    });
+    broadcastJobsheetChange({
+      type: 'planner-updated',
+      businessId: Number.isInteger(businessId) ? businessId : null,
+      jobsheetId: Number.isInteger(jobsheetId) ? jobsheetId : null
+    });
+    return result;
+  }
+
+  const actionKey = String(options.action_key || options.actionKey || '').trim();
+  const scheduledFor = normalizeDateKey(options.scheduled_for || options.scheduledFor || '');
+  if (!Number.isInteger(businessId) || !Number.isInteger(jobsheetId) || !actionKey || !scheduledFor) {
+    throw new Error('action_id or full planner key is required');
+  }
+  const result = await db.upsertPlannerAction({
+    business_id: businessId,
+    jobsheet_id: jobsheetId,
+    action_key: actionKey,
+    scheduled_for: scheduledFor,
+    status,
+    completed_at: completedAt,
+    last_notified_at: lastNotifiedAt,
+    last_email_at: lastEmailAt,
+    last_error: lastError
+  });
+  broadcastJobsheetChange({
+    type: 'planner-updated',
+    businessId,
+    jobsheetId
+  });
+  return result;
 }
 
 async function resolveTemplateDefaultAttachments(options = {}) {
@@ -5170,6 +5672,10 @@ module.exports = {
   getBookingPackPdfs,
   sendMailViaGraph,
   scheduleMailViaGraph,
+  listPlannerItems,
+  sendPlannerEmail,
+  updatePlannerAction,
+  sendInternalNotice,
   resolveTemplateDefaultAttachments,
   buildGigInfoHtml,
   buildPersonnelLogHtml,
@@ -5349,34 +5855,37 @@ module.exports = {
       }
     }
 
-    // Invoice PDFs in business root
-    for (const d of docsUpdated) {
-      if ((d.doc_type || '').toLowerCase() !== 'invoice') continue;
-      if (d.is_locked) continue;
-      const num = d.number != null ? Number(d.number) : null;
-      if (!Number.isInteger(num)) continue;
-      const dir = path.resolve(business.save_path);
-      const dateToken = formatDateISO(d.document_date || js.event_date || new Date().toISOString());
-      const base = [
-        `INV-${num}`,
-        clientSafe || null,
-        dateToken || null
-      ].filter(Boolean).map(sanitizeFilenameSegment).join(' - ');
-      const ext = (d.file_path || '').toLowerCase().endsWith('.xlsx') ? '.xlsx' : '.pdf';
-      let expectedPath = path.join(dir, `${base}${ext}`);
-      let k = 2;
-      while (await pathExists(expectedPath)) {
-        expectedPath = path.join(dir, `${base} (${k})${ext}`);
-        k += 1; if (k > 1000) break;
-      }
-      const cur = d.file_path || '';
-      if (!cur) continue;
-      const curAbs = path.resolve(cur);
-      if (path.resolve(expectedPath) !== curAbs) {
-        try {
-          await fs.promises.rename(curAbs, expectedPath);
-          await db.setDocumentFilePath(d.document_id, expectedPath);
-        } catch (_) {}
+    const renameInvoicesToRoot = options.renameInvoicesToRoot === true;
+    if (renameInvoicesToRoot) {
+      // Invoice PDFs in business root
+      for (const d of docsUpdated) {
+        if ((d.doc_type || '').toLowerCase() !== 'invoice') continue;
+        if (d.is_locked) continue;
+        const num = d.number != null ? Number(d.number) : null;
+        if (!Number.isInteger(num)) continue;
+        const dir = path.resolve(business.save_path);
+        const dateToken = formatDateISO(d.document_date || js.event_date || new Date().toISOString());
+        const base = [
+          `INV-${num}`,
+          clientSafe || null,
+          dateToken || null
+        ].filter(Boolean).map(sanitizeFilenameSegment).join(' - ');
+        const ext = (d.file_path || '').toLowerCase().endsWith('.xlsx') ? '.xlsx' : '.pdf';
+        let expectedPath = path.join(dir, `${base}${ext}`);
+        let k = 2;
+        while (await pathExists(expectedPath)) {
+          expectedPath = path.join(dir, `${base} (${k})${ext}`);
+          k += 1; if (k > 1000) break;
+        }
+        const cur = d.file_path || '';
+        if (!cur) continue;
+        const curAbs = path.resolve(cur);
+        if (path.resolve(expectedPath) !== curAbs) {
+          try {
+            await fs.promises.rename(curAbs, expectedPath);
+            await db.setDocumentFilePath(d.document_id, expectedPath);
+          } catch (_) {}
+        }
       }
     }
 
@@ -6238,5 +6747,122 @@ module.exports = {
     }
 
     return { ok: true, cleared_missing: clearedMissing, orphan_count: orphanRecords.length, deleted, records };
+  },
+  linkPdfToDefinition: async (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id ?? options.id);
+    const jobsheetId = Number(options.jobsheetId ?? options.jobsheet_id);
+    const definitionKey = String(options.definitionKey ?? options.definition_key ?? '').trim();
+    const rawPath = options.filePath ?? options.file_path;
+    if (!Number.isInteger(businessId) || !Number.isInteger(jobsheetId)) {
+      throw new Error('businessId and jobsheetId are required');
+    }
+    if (!definitionKey) {
+      throw new Error('definitionKey is required');
+    }
+    if (!rawPath || typeof rawPath !== 'string') {
+      throw new Error('filePath is required');
+    }
+
+    const resolvedPath = path.resolve(rawPath);
+    await ensureFileAccessible(resolvedPath);
+
+    const [definition, jobsheet, allDocs] = await Promise.all([
+      db.getDocumentDefinition(businessId, definitionKey),
+      db.getAhmenJobsheet(jobsheetId),
+      db.getDocuments({ businessId })
+    ]);
+
+    const docType = (definition?.doc_type || 'pdf_export').toLowerCase();
+    const invoiceVariant = definition?.invoice_variant || null;
+    const status = docType === 'invoice' ? 'issued' : 'exported';
+
+    let docDate = new Date().toISOString();
+    try {
+      const stats = await fs.promises.stat(resolvedPath);
+      if (stats?.mtime instanceof Date && !Number.isNaN(stats.mtime.valueOf())) {
+        docDate = stats.mtime.toISOString();
+      }
+    } catch (_) {}
+
+    const invoiceNumberMatch = docType === 'invoice'
+      ? String(path.basename(resolvedPath)).match(/inv[\-\s]?(\d+)/i)
+      : null;
+    const parsedNumber = invoiceNumberMatch && invoiceNumberMatch[1]
+      ? Number(invoiceNumberMatch[1])
+      : null;
+
+    const existingForDef = (allDocs || []).find(doc => (
+      Number(doc?.jobsheet_id) === jobsheetId && doc?.definition_key === definitionKey
+    ));
+
+    const patch = {
+      file_path: resolvedPath,
+      status,
+      jobsheet_id: jobsheetId,
+      definition_key: definitionKey,
+      doc_type: docType,
+      invoice_variant: invoiceVariant,
+      client_name: jobsheet?.client_name || undefined,
+      event_name: jobsheet?.event_type || undefined,
+      event_date: jobsheet?.event_date || undefined,
+      document_date: docDate
+    };
+
+    if (existingForDef?.document_id != null) {
+      await db.updateDocumentStatus(existingForDef.document_id, patch);
+      if (Number.isInteger(parsedNumber) && docType === 'invoice') {
+        try { await db.setDocumentNumber(existingForDef.document_id, parsedNumber); } catch (_) {}
+      }
+      broadcastJobsheetChange({
+        type: 'documents-updated',
+        businessId,
+        jobsheetId,
+        documentIds: [existingForDef.document_id]
+      });
+      return { ok: true, updated: true, document_id: existingForDef.document_id };
+    }
+
+    const existingByPath = await db.getDocumentByFilePath(businessId, resolvedPath);
+    if (existingByPath?.document_id != null) {
+      await db.updateDocumentStatus(existingByPath.document_id, patch);
+      if (Number.isInteger(parsedNumber) && docType === 'invoice') {
+        try { await db.setDocumentNumber(existingByPath.document_id, parsedNumber); } catch (_) {}
+      }
+      broadcastJobsheetChange({
+        type: 'documents-updated',
+        businessId,
+        jobsheetId,
+        documentIds: [existingByPath.document_id]
+      });
+      return { ok: true, updated: true, document_id: existingByPath.document_id };
+    }
+
+    const insert = await db.addDocument({
+      business_id: businessId,
+      jobsheet_id: jobsheetId,
+      doc_type: docType,
+      status,
+      total_amount: null,
+      balance_due: null,
+      due_date: null,
+      file_path: resolvedPath,
+      client_name: jobsheet?.client_name || null,
+      event_name: jobsheet?.event_type || null,
+      event_date: jobsheet?.event_date || null,
+      document_date: docDate,
+      definition_key: definitionKey,
+      invoice_variant: invoiceVariant
+    });
+    const insertedId = insert?.id || null;
+    if (insertedId != null && Number.isInteger(parsedNumber) && docType === 'invoice') {
+      try { await db.setDocumentNumber(insertedId, parsedNumber); } catch (_) {}
+    }
+    broadcastJobsheetChange({
+      type: 'documents-updated',
+      businessId,
+      jobsheetId,
+      documentIds: insertedId != null ? [insertedId] : []
+    });
+    return { ok: true, added: true, document_id: insertedId };
   }
 };

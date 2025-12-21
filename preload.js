@@ -6,6 +6,7 @@ const ahmenCosting = require(path.join(__dirname, 'ahmenCosting.js'));
 
 const jobsheetListeners = new Set();
 const documentListeners = new Set();
+const uiActionListeners = new Set();
 
 ipcRenderer.on('jobsheet-change', (_event, payload) => {
   jobsheetListeners.forEach(callback => {
@@ -23,6 +24,16 @@ ipcRenderer.on('documents-change', (_event, payload) => {
       callback(payload);
     } catch (err) {
       console.error('Documents change listener error', err);
+    }
+  });
+});
+
+ipcRenderer.on('ui-action', (_event, payload) => {
+  uiActionListeners.forEach(callback => {
+    try {
+      callback(payload);
+    } catch (err) {
+      console.error('UI action listener error', err);
     }
   });
 });
@@ -90,11 +101,17 @@ contextBridge.exposeInMainWorld('api', {
     if (!res || res.ok !== true) throw new Error(res?.message || 'Unable to send email');
     return res;
   },
+  listPlannerItems: async (options) => await documentService.listPlannerItems(options || {}),
+  sendPlannerEmail: async (options) => await documentService.sendPlannerEmail(options || {}),
+  updatePlannerAction: async (options) => await documentService.updatePlannerAction(options || {}),
   scheduleMailViaGraph: async (options) => {
     const res = await ipcRenderer.invoke('schedule-mail-via-graph', options || {});
     if (!res || res.ok !== true) throw new Error(res?.message || 'Unable to schedule email');
     return res;
   },
+  getLoginItemSettings: async () => await ipcRenderer.invoke('get-login-item-settings'),
+  setLoginItemSettings: async (options) => await ipcRenderer.invoke('set-login-item-settings', options || {}),
+  testNotification: async () => await ipcRenderer.invoke('test-notification'),
   resolveTemplateDefaultAttachments: async (options) => await documentService.resolveTemplateDefaultAttachments(options || {}),
   listJobFolderFiles: async (options) => await documentService.listJobFolderFiles(options || {}),
   renameJobsheetArtifacts: async (options) => await documentService.renameJobsheetArtifacts(options || {}),
@@ -144,6 +161,7 @@ contextBridge.exposeInMainWorld('api', {
   deleteDocumentFolder: async (options) => await db.deleteDocumentFolder(options || {}),
   deleteDocumentByPath: async (options) => await db.deleteDocumentByPath(options || {}),
   emptyDocumentsTrash: async (options) => await db.emptyDocumentsTrash(options || {}),
+  linkPdfToDefinition: async (options) => await documentService.linkPdfToDefinition(options || {}),
   chooseDirectory: async (options) => await ipcRenderer.invoke('choose-directory', options || {}),
   chooseFile: async (options) => await ipcRenderer.invoke('choose-file', options || {}),
   openPath: async (targetPath) => await ipcRenderer.invoke('open-path', targetPath),
@@ -170,5 +188,10 @@ contextBridge.exposeInMainWorld('api', {
     if (typeof callback !== 'function') return () => {};
     documentListeners.add(callback);
     return () => documentListeners.delete(callback);
+  },
+  onUiAction: (callback) => {
+    if (typeof callback !== 'function') return () => {};
+    uiActionListeners.add(callback);
+    return () => uiActionListeners.delete(callback);
   }
 });

@@ -2,9 +2,102 @@ const sqlite3 = require('sqlite3').verbose();
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const os = require('os');
 
 const settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json')));
-const db = new sqlite3.Database(settings.db_path);
+const sharedSupportDir = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Booking Manager');
+const sharedDbPath = path.join(sharedSupportDir, 'invoice_master.db');
+
+const isPackaged = (() => {
+  try {
+    // Only available in Electron main process.
+    // eslint-disable-next-line global-require
+    const { app } = require('electron');
+    return Boolean(app && app.isPackaged);
+  } catch (_err) {
+    return false;
+  }
+})();
+
+const envDbPath = process.env.AHMEN_DB_PATH || process.env.INVOICE_MASTER_DB_PATH;
+const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000');
+const isHelperProcess = process.argv.includes('--helper')
+  || process.argv.includes('--background')
+  || /ahmen reminders/i.test(process.execPath || '');
+
+const normalizeDbPath = (value) => {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (trimmed === ':memory:') return trimmed;
+  return path.resolve(trimmed);
+};
+
+const isValidSqliteFile = (filePath) => {
+  try {
+    const stats = fs.statSync(filePath);
+    if (!stats.isFile()) return false;
+    if (stats.size < SQLITE_HEADER.length) return false;
+    const fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.alloc(SQLITE_HEADER.length);
+    fs.readSync(fd, buffer, 0, SQLITE_HEADER.length, 0);
+    fs.closeSync(fd);
+    return buffer.equals(SQLITE_HEADER);
+  } catch (_err) {
+    return false;
+  }
+};
+
+if (isPackaged) {
+  try {
+    fs.mkdirSync(sharedSupportDir, { recursive: true });
+    const legacyPath = normalizeDbPath(settings.db_path);
+    if (legacyPath && fs.existsSync(legacyPath) && isValidSqliteFile(legacyPath) && !fs.existsSync(sharedDbPath)) {
+      fs.copyFileSync(legacyPath, sharedDbPath);
+      console.log(`Migrated database to ${sharedDbPath}`);
+    }
+  } catch (err) {
+    console.error('Failed to migrate database', err);
+  }
+}
+
+const candidatePaths = [];
+const normalizedEnv = normalizeDbPath(envDbPath);
+const normalizedSettings = normalizeDbPath(settings.db_path);
+if (normalizedEnv) candidatePaths.push(normalizedEnv);
+if (isPackaged) candidatePaths.push(sharedDbPath);
+if (normalizedSettings) candidatePaths.push(normalizedSettings);
+if (!candidatePaths.length) candidatePaths.push(sharedDbPath);
+
+const ensureDbFile = (targetPath) => {
+  if (!targetPath || targetPath === ':memory:') return true;
+  try {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    if (fs.existsSync(targetPath) && !isValidSqliteFile(targetPath)) {
+      const backupPath = `${targetPath}.corrupt-${Date.now()}`;
+      try {
+        fs.renameSync(targetPath, backupPath);
+        console.warn(`Moved invalid database to ${backupPath}`);
+      } catch (err) {
+        console.error('Failed to move invalid database', err);
+        return false;
+      }
+    }
+    return true;
+  } catch (err) {
+    console.error(`DB path not writable: ${targetPath}`, err);
+    return false;
+  }
+};
+
+let dbPath = candidatePaths.find(p => ensureDbFile(p)) || ':memory:';
+
+const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, err => {
+  if (err) {
+    console.error('Failed to open database', err);
+  }
+});
+db.configure('busyTimeout', 5000);
 const mergeFieldDefaults = require('./config/mergeFields.json');
 
 function escapeLikePattern(value) {
@@ -451,6 +544,30 @@ function initializeDatabase() {
 
     db.run('ALTER TABLE scheduled_emails ADD COLUMN is_html INTEGER DEFAULT 1', logDuplicateColumn);
 
+    db.run(`CREATE TABLE IF NOT EXISTS planner_actions (
+      action_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      business_id INTEGER NOT NULL,
+      jobsheet_id INTEGER NOT NULL,
+      action_key TEXT NOT NULL,
+      scheduled_for TEXT NOT NULL,
+      status TEXT DEFAULT 'pending',
+      completed_at TEXT,
+      last_notified_at TEXT,
+      last_email_at TEXT,
+      last_error TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      FOREIGN KEY (business_id) REFERENCES business_settings(id),
+      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id),
+      UNIQUE (business_id, jobsheet_id, action_key, scheduled_for)
+    )`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_planner_actions_status_date
+      ON planner_actions (status, scheduled_for)`);
+
+    db.run(`CREATE INDEX IF NOT EXISTS idx_planner_actions_business
+      ON planner_actions (business_id, jobsheet_id)`);
+
   db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
     definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
     business_id INTEGER NOT NULL,
@@ -614,6 +731,10 @@ function initializeDatabase() {
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
 
+    if (isHelperProcess) {
+      return;
+    }
+
     // Template path columns removed; definitions manage their own template_path now.
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_type TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_value REAL', logDuplicateColumn);
@@ -644,7 +765,9 @@ function initializeDatabase() {
 
     seedBusinesses();
     syncLegacyBusinessesTable();
-    seedMergeFieldDefaults();
+    if (!isHelperProcess) {
+      seedMergeFieldDefaults();
+    }
     db.run(
       `UPDATE ${MERGE_FIELD_TABLE}
        SET placeholder = 'TOTAL_FEES', updated_at = datetime('now')
@@ -2722,14 +2845,17 @@ function deleteAhmenJobsheet(jobsheetId) {
       return;
     }
 
-    db.run(
-      'DELETE FROM ahmen_jobsheets WHERE jobsheet_id = ?',
-      [id],
-      function (err) {
-        if (err) reject(err);
-        else resolve(this.changes);
-      }
-    );
+    db.serialize(() => {
+      db.run('DELETE FROM planner_actions WHERE jobsheet_id = ?', [id], () => {});
+      db.run(
+        'DELETE FROM ahmen_jobsheets WHERE jobsheet_id = ?',
+        [id],
+        function (err) {
+          if (err) reject(err);
+          else resolve(this.changes);
+        }
+      );
+    });
   });
 }
 
@@ -2752,7 +2878,7 @@ async function deleteJobsheetCompletely(options = {}) {
     );
   });
 
-  const results = { filesTrashed: 0, documentsRemoved: 0, emailsRemoved: 0, scheduledRemoved: 0, overridesRemoved: 0, jobsheetsRemoved: 0, fileErrors: [] };
+  const results = { filesTrashed: 0, documentsRemoved: 0, emailsRemoved: 0, scheduledRemoved: 0, plannerRemoved: 0, overridesRemoved: 0, jobsheetsRemoved: 0, fileErrors: [] };
 
   if (removeFiles && docs.length) {
     for (const row of docs) {
@@ -2776,6 +2902,11 @@ async function deleteJobsheetCompletely(options = {}) {
   await new Promise((resolve, reject) => {
     db.run(`DELETE FROM email_log WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
       if (err) reject(err); else { results.emailsRemoved = this.changes || 0; resolve(); }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    db.run(`DELETE FROM planner_actions WHERE jobsheet_id = ?`, [jobsheetId], function (err) {
+      if (err) reject(err); else { results.plannerRemoved = this.changes || 0; resolve(); }
     });
   });
   await new Promise((resolve, reject) => {
@@ -3575,6 +3706,14 @@ module.exports = {
       if (data.file_path !== undefined) {
         updates.push('file_path = ?');
         params.push(data.file_path);
+      }
+      if (data.definition_key !== undefined) {
+        updates.push('definition_key = ?');
+        params.push(data.definition_key);
+      }
+      if (data.doc_type !== undefined) {
+        updates.push('doc_type = ?');
+        params.push(data.doc_type);
       }
       if (data.jobsheet_id !== undefined) {
         const jid = data.jobsheet_id == null ? null : Number(data.jobsheet_id);
@@ -4573,6 +4712,111 @@ module.exports.listScheduledEmails = ({ status = null, limit = 100, jobsheet_id 
       (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
+      }
+    );
+  });
+};
+
+module.exports.listPlannerActions = ({ business_id = null, jobsheet_id = null, status = null, action_key = null, after = null, before = null, limit = 500 } = {}) => {
+  return new Promise((resolve, reject) => {
+    const where = [];
+    const params = [];
+    if (Number.isInteger(business_id)) { where.push('business_id = ?'); params.push(Number(business_id)); }
+    if (Number.isInteger(jobsheet_id)) { where.push('jobsheet_id = ?'); params.push(Number(jobsheet_id)); }
+    if (status) { where.push('status = ?'); params.push(String(status)); }
+    if (action_key) { where.push('action_key = ?'); params.push(String(action_key)); }
+    const afterVal = toSqliteDateTime(after);
+    if (afterVal) { where.push('scheduled_for >= ?'); params.push(afterVal); }
+    const beforeVal = toSqliteDateTime(before);
+    if (beforeVal) { where.push('scheduled_for <= ?'); params.push(beforeVal); }
+    const limitVal = Number(limit) || 500;
+    params.push(limitVal);
+    db.all(
+      `SELECT * FROM planner_actions
+       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+       ORDER BY scheduled_for ASC
+       LIMIT ?`,
+      params,
+      (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      }
+    );
+  });
+};
+
+module.exports.upsertPlannerAction = ({
+  business_id,
+  jobsheet_id,
+  action_key,
+  scheduled_for,
+  status = null,
+  completed_at = null,
+  last_notified_at = null,
+  last_email_at = null,
+  last_error = null
+}) => {
+  return new Promise((resolve, reject) => {
+    const bizId = Number(business_id);
+    const jobId = Number(jobsheet_id);
+    if (!Number.isInteger(bizId) || !Number.isInteger(jobId)) {
+      reject(new Error('business_id and jobsheet_id are required'));
+      return;
+    }
+    const key = String(action_key || '').trim();
+    if (!key) { reject(new Error('action_key is required')); return; }
+    const scheduledFor = toSqliteDateTime(scheduled_for);
+    if (!scheduledFor) { reject(new Error('scheduled_for is invalid')); return; }
+    const completedAt = toSqliteDateTime(completed_at);
+    const notifiedAt = toSqliteDateTime(last_notified_at);
+    const emailedAt = toSqliteDateTime(last_email_at);
+    const statusVal = status ? String(status) : null;
+    const errorText = last_error != null ? String(last_error).slice(0, 500) : null;
+    db.run(
+      `INSERT INTO planner_actions (business_id, jobsheet_id, action_key, scheduled_for, status, completed_at, last_notified_at, last_email_at, last_error, created_at, updated_at)
+       VALUES (?, ?, ?, ?, COALESCE(?, 'pending'), ?, ?, ?, ?, datetime('now'), datetime('now'))
+       ON CONFLICT(business_id, jobsheet_id, action_key, scheduled_for)
+       DO UPDATE SET
+         status = COALESCE(excluded.status, planner_actions.status),
+         completed_at = COALESCE(excluded.completed_at, planner_actions.completed_at),
+         last_notified_at = COALESCE(excluded.last_notified_at, planner_actions.last_notified_at),
+         last_email_at = COALESCE(excluded.last_email_at, planner_actions.last_email_at),
+         last_error = COALESCE(excluded.last_error, planner_actions.last_error),
+         updated_at = datetime('now')`,
+      [bizId, jobId, key, scheduledFor, statusVal, completedAt, notifiedAt, emailedAt, errorText],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ ok: true, id: this.lastID });
+      }
+    );
+  });
+};
+
+module.exports.updatePlannerActionById = ({ action_id, status = null, completed_at = null, last_notified_at = null, last_email_at = null, last_error = null } = {}) => {
+  return new Promise((resolve, reject) => {
+    const id = Number(action_id);
+    if (!Number.isInteger(id) || id <= 0) {
+      reject(new Error('Invalid action id'));
+      return;
+    }
+    const statusVal = status ? String(status) : null;
+    const completedAt = toSqliteDateTime(completed_at);
+    const notifiedAt = toSqliteDateTime(last_notified_at);
+    const emailedAt = toSqliteDateTime(last_email_at);
+    const errorText = last_error != null ? String(last_error).slice(0, 500) : null;
+    db.run(
+      `UPDATE planner_actions
+       SET status = COALESCE(?, status),
+           completed_at = COALESCE(?, completed_at),
+           last_notified_at = COALESCE(?, last_notified_at),
+           last_email_at = COALESCE(?, last_email_at),
+           last_error = COALESCE(?, last_error),
+           updated_at = datetime('now')
+       WHERE action_id = ?`,
+      [statusVal, completedAt, notifiedAt, emailedAt, errorText, id],
+      function (err) {
+        if (err) reject(err);
+        else resolve({ updated: this.changes || 0 });
       }
     );
   });

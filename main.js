@@ -1,9 +1,8 @@
-const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, globalShortcut } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, clipboard, globalShortcut, Tray, Menu, Notification, nativeImage } = require('electron');
 const { execFile, spawn } = require('child_process');
+const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const documentService = require('./documentService');
-const db = require('./db');
 
 const isMCMS = (() => {
   // 1) Explicit env override
@@ -27,6 +26,7 @@ const isMCMS = (() => {
 const isDev = !app.isPackaged || String(process.env.NODE_ENV || '').toLowerCase() !== 'production';
 // Only force devtools when explicitly requested (DEVTOOLS=1)
 const FORCE_DEVTOOLS = String(process.env.DEVTOOLS || '') === '1';
+const FORCE_MAIN_SCHEDULER = String(process.env.AHMEN_SCHEDULED_WORKER || '') === '1';
 
 // Mitigate “white screen” on some GPUs
 if (String(process.env.ELECTRON_DISABLE_GPU || '') === '1') {
@@ -45,6 +45,101 @@ const DEFAULT_JOBSHEET_WINDOW_STATE = {
 
 let mainWindow = null;
 let jobsheetWindow = null;
+let tray = null;
+let plannerSchedulerStarted = false;
+let plannerSchedulerRunning = false;
+let loginPreference = null;
+let db = null;
+let documentService = null;
+let helperLogPath = null;
+let pendingUiAction = null;
+let helperPrefWatcher = null;
+
+const SHARED_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Booking Manager');
+const PENDING_UI_ACTION_PATH = path.join(SHARED_SUPPORT_DIR, 'pending-ui-action.json');
+
+const HELPER_APP_BUNDLE = 'AhMen Reminders.app';
+
+function getAppBundlePaths(execPath) {
+  if (!execPath) return { outer: null, inner: null };
+  const parts = execPath.split(path.sep);
+  const appIndexes = [];
+  parts.forEach((part, idx) => {
+    if (part && part.endsWith('.app')) appIndexes.push(idx);
+  });
+  if (!appIndexes.length) return { outer: null, inner: null };
+  const outer = parts.slice(0, appIndexes[0] + 1).join(path.sep);
+  const inner = parts.slice(0, appIndexes[appIndexes.length - 1] + 1).join(path.sep);
+  return { outer, inner };
+}
+
+const execPath = process.execPath || '';
+const bundlePaths = getAppBundlePaths(execPath);
+const isNestedBundle = Boolean(bundlePaths.outer && bundlePaths.inner && bundlePaths.outer !== bundlePaths.inner);
+const isLoginItemBundle = isNestedBundle && execPath.includes(`${path.sep}LoginItems${path.sep}`);
+const helperNamePattern = /ahmen reminders/i;
+const helperIdentity = [
+  (app.getName ? app.getName() : ''),
+  execPath,
+  (app.getPath ? app.getPath('exe') : ''),
+  (process.resourcesPath || '')
+].filter(Boolean).join(' | ').toLowerCase();
+const isHelperBundle = isLoginItemBundle || helperNamePattern.test(helperIdentity);
+
+let RUN_BACKGROUND = process.argv.includes('--background') || process.argv.includes('--helper') || isHelperBundle || process.env.AHMEN_HELPER === '1';
+let helperMode = RUN_BACKGROUND;
+const HELPER_USER_DATA = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Reminders');
+
+if (helperMode) {
+  try {
+    app.setPath('userData', HELPER_USER_DATA);
+  } catch (_err) {}
+}
+
+function logHelper(message, detail = null) {
+  if (!helperMode) return;
+  try {
+    if (!helperLogPath) {
+      helperLogPath = path.join(app.getPath('userData'), 'ahmen-helper.log');
+    }
+    const stamp = new Date().toISOString();
+    const suffix = detail ? ` ${JSON.stringify(detail)}` : '';
+    fs.appendFileSync(helperLogPath, `[${stamp}] ${message}${suffix}\n`, 'utf8');
+  } catch (_err) {}
+}
+
+function ensureServices() {
+  try {
+    if (!db) {
+      db = require('./db');
+    }
+    if (!documentService) {
+      documentService = require('./documentService');
+    }
+  } catch (err) {
+    logHelper('Failed to load services', { error: err?.message || String(err) });
+    throw err;
+  }
+  return { db, documentService };
+}
+
+if (helperMode) {
+  if (!isDev) {
+    const gotSingleInstanceLock = app.requestSingleInstanceLock();
+    if (!gotSingleInstanceLock) {
+      app.quit();
+    }
+  }
+} else {
+  const gotSingleInstanceLock = app.requestSingleInstanceLock();
+  if (!gotSingleInstanceLock) {
+    app.quit();
+  } else {
+    app.on('second-instance', () => {
+      showMainWindow();
+    });
+  }
+}
 
 function broadcastDocumentsChange(payload = {}) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -52,6 +147,64 @@ function broadcastDocumentsChange(payload = {}) {
   }
   if (jobsheetWindow && !jobsheetWindow.isDestroyed()) {
     jobsheetWindow.webContents.send('documents-change', payload);
+  }
+}
+
+function dispatchUiAction(payload = null) {
+  if (!payload) return;
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send('ui-action', payload);
+      pendingUiAction = null;
+      return;
+    } catch (_err) {}
+  }
+  pendingUiAction = payload;
+}
+
+function writePendingUiAction(payload = {}) {
+  try {
+    fs.mkdirSync(SHARED_SUPPORT_DIR, { recursive: true });
+    const data = { ...payload, ts: Date.now() };
+    fs.writeFileSync(PENDING_UI_ACTION_PATH, JSON.stringify(data), 'utf8');
+    return true;
+  } catch (err) {
+    logHelper('Failed to write pending UI action', { error: err?.message || String(err) });
+    return false;
+  }
+}
+
+function consumePendingUiAction() {
+  try {
+    if (!fs.existsSync(PENDING_UI_ACTION_PATH)) return null;
+    const raw = fs.readFileSync(PENDING_UI_ACTION_PATH, 'utf8');
+    fs.unlinkSync(PENDING_UI_ACTION_PATH);
+    const parsed = JSON.parse(raw || '{}');
+    if (parsed && parsed.type) {
+      dispatchUiAction(parsed);
+      return parsed;
+    }
+  } catch (err) {
+    console.warn('Failed to consume pending UI action', err);
+  }
+  return null;
+}
+
+function watchPendingUiAction() {
+  try {
+    fs.mkdirSync(SHARED_SUPPORT_DIR, { recursive: true });
+    consumePendingUiAction();
+    const watcher = fs.watch(SHARED_SUPPORT_DIR, (event, filename) => {
+      if (!filename) return;
+      if (String(filename) === path.basename(PENDING_UI_ACTION_PATH)) {
+        consumePendingUiAction();
+      }
+    });
+    watcher.on('error', (err) => {
+      console.warn('Pending UI action watcher error', err);
+    });
+  } catch (err) {
+    console.warn('Failed to watch pending UI action file', err);
   }
 }
 
@@ -121,6 +274,370 @@ function persistJobsheetWindowState(state) {
   } catch (err) {
     console.warn('Failed to persist jobsheet window state', err);
   }
+}
+
+function parseDateKey(value) {
+  if (!value) return null;
+  const match = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  return { year, month, day };
+}
+
+function toLocalDateFromKey(dateKey, hour = 9, minute = 0) {
+  const parts = parseDateKey(dateKey);
+  if (!parts) return null;
+  return new Date(parts.year, parts.month - 1, parts.day, hour, minute, 0, 0);
+}
+
+function parseSqlDateTime(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(raw)) {
+    const parsed = new Date(`${raw.replace(' ', 'T')}Z`);
+    return Number.isNaN(parsed.valueOf()) ? null : parsed;
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.valueOf()) ? null : parsed;
+}
+
+function createTrayIcon() {
+  const trayPath = path.join(__dirname, 'icons', 'ahmen-tray.png');
+  let img = nativeImage.createFromPath(trayPath);
+  if (img.isEmpty()) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2L12.4 14H10.8L9.9 11.4H6.1L5.2 14H3.6L8 2Z" fill="black"/><rect x="6.7" y="8.6" width="2.6" height="1.2" fill="white"/></svg>`;
+    const dataUrl = `data:image/svg+xml;base64,${Buffer.from(svg).toString('base64')}`;
+    img = nativeImage.createFromDataURL(dataUrl);
+  }
+  img.setTemplateImage(true);
+  return img;
+}
+
+function findMainAppBundlePath() {
+  if (bundlePaths.outer && bundlePaths.inner && bundlePaths.outer !== bundlePaths.inner) {
+    return bundlePaths.outer;
+  }
+  return bundlePaths.inner || null;
+}
+
+function openMainAppFromHelper() {
+  const target = findMainAppBundlePath();
+  if (!target || target === bundlePaths.inner) return false;
+  try {
+    shell.openPath(target);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function sendUiAction(payload = {}) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('ui-action', payload);
+  }
+}
+
+function showMainWindow({ openPlanner = false } = {}) {
+  if (helperMode) {
+    if (openPlanner) {
+      writePendingUiAction({ type: 'open-planner' });
+    }
+    if (openMainAppFromHelper()) return;
+    const fallbackPath = path.join('/Applications', 'AhMen Booking Manager.app');
+    if (fs.existsSync(fallbackPath)) {
+      try { shell.openPath(fallbackPath); } catch (_) {}
+    }
+    return;
+  }
+  if (RUN_BACKGROUND && app.dock && process.platform === 'darwin') {
+    try { app.dock.show(); } catch (_) {}
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.once('did-finish-load', () => {
+        if (openPlanner) dispatchUiAction({ type: 'open-planner' });
+        if (pendingUiAction) {
+          dispatchUiAction(pendingUiAction);
+        }
+      });
+    }
+  } else {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    if (openPlanner) dispatchUiAction({ type: 'open-planner' });
+  }
+}
+
+function ensureTray() {
+  if (tray) return;
+  tray = new Tray(createTrayIcon());
+  tray.setToolTip('AhMen Reminders');
+  const showTrayMenu = () => {
+    try {
+      tray.popUpContextMenu();
+    } catch (_) {}
+  };
+  tray.on('click', () => {
+    if (helperMode) {
+      showTrayMenu();
+      return;
+    }
+    showMainWindow({ openPlanner: true });
+  });
+  tray.on('right-click', showTrayMenu);
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Open AhMen', click: () => showMainWindow() },
+    { type: 'separator' },
+    { role: 'quit' }
+  ]));
+}
+
+function updateTrayBadge(count) {
+  if (!tray) return;
+  const numeric = Number(count) || 0;
+  if (process.platform === 'darwin') {
+    tray.setTitle(numeric > 0 ? ` ${numeric}` : '');
+  }
+  tray.setToolTip(numeric > 0 ? `AhMen Reminders (${numeric} due)` : 'AhMen Reminders');
+}
+
+function getLoginPreferencePath() {
+  try {
+    return path.join(SHARED_SUPPORT_DIR, 'login-item.json');
+  } catch (_err) {
+    return null;
+  }
+}
+
+function readLoginPreference() {
+  const prefPath = getLoginPreferencePath();
+  const legacyPaths = [
+    path.join(os.homedir(), 'Library', 'Application Support', 'invoice-master-dashboard', 'login-item.json')
+  ];
+  const paths = [prefPath, ...legacyPaths].filter(Boolean);
+  for (const candidate of paths) {
+    if (!candidate) continue;
+    try {
+      if (!fs.existsSync(candidate)) continue;
+      const raw = fs.readFileSync(candidate, 'utf-8');
+      const parsed = JSON.parse(raw || '{}');
+      if (typeof parsed?.openAtLogin === 'boolean') return parsed.openAtLogin;
+    } catch (_err) {}
+  }
+  return null;
+}
+
+function writeLoginPreference(openAtLogin) {
+  const prefPath = getLoginPreferencePath();
+  if (!prefPath) return;
+  try {
+    fs.mkdirSync(path.dirname(prefPath), { recursive: true });
+    fs.writeFileSync(prefPath, JSON.stringify({ openAtLogin: !!openAtLogin }, null, 2), 'utf-8');
+  } catch (_err) {}
+}
+
+function startHelperPreferenceWatcher() {
+  if (!helperMode || helperPrefWatcher) return;
+  helperPrefWatcher = setInterval(() => {
+    const pref = readLoginPreference();
+    if (pref === false) {
+      logHelper('Helper disabled via preference');
+      app.quit();
+    }
+  }, 2000);
+}
+
+function getHelperAppPath() {
+  if (!app.isPackaged) return null;
+  try {
+    const contentsPath = path.resolve(process.resourcesPath, '..');
+    const helperPath = path.join(contentsPath, 'Library', 'LoginItems', HELPER_APP_BUNDLE);
+    if (fs.existsSync(helperPath)) return helperPath;
+  } catch (_err) {}
+  return null;
+}
+
+function applyLoginItemSetting(openAtLogin) {
+  try {
+    const helperPath = getHelperAppPath();
+    app.setLoginItemSettings({
+      openAtLogin: !!openAtLogin,
+      openAsHidden: true,
+      path: helperPath || undefined,
+      args: helperPath ? ['--helper'] : ['--background', '--helper']
+    });
+  } catch (_err) {}
+}
+
+function launchHelperNow() {
+  const helperPath = getHelperAppPath();
+  if (helperPath) {
+    try {
+      shell.openPath(helperPath);
+      return true;
+    } catch (err) {
+      try {
+        const child = spawn('open', ['-g', helperPath], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return true;
+      } catch (fallbackErr) {
+        console.error('Failed to launch helper', err || fallbackErr);
+        logHelper('Failed to launch helper', { error: (err || fallbackErr)?.message || String(err || fallbackErr) });
+        return false;
+      }
+    }
+  }
+  if (!app.isPackaged) {
+    try {
+      const env = { ...process.env, AHMEN_HELPER: '1' };
+      delete env.ELECTRON_RUN_AS_NODE;
+      const child = spawn(process.execPath, [process.cwd(), '--helper'], {
+        detached: true,
+        stdio: 'ignore',
+        env,
+        cwd: process.cwd()
+      });
+      child.unref();
+      return true;
+    } catch (err) {
+      console.error('Failed to launch dev helper', err);
+      logHelper('Failed to launch dev helper', { error: err?.message || String(err) });
+      return false;
+    }
+  }
+  return false;
+}
+
+function stopHelperNow() {
+  if (process.platform !== 'darwin') return false;
+  const helperPath = getHelperAppPath();
+  const patterns = [];
+  if (helperPath) patterns.push(helperPath);
+  if (!app.isPackaged) patterns.push('Electron . --helper');
+  patterns.push('AhMen Reminders.app/Contents/MacOS/AhMen Reminders');
+  let stopped = false;
+  patterns.forEach(pattern => {
+    try {
+      spawn('pkill', ['-f', pattern], { stdio: 'ignore' });
+      stopped = true;
+    } catch (_err) {}
+  });
+  return stopped;
+}
+
+function ensureLoginItemDefault() {
+  if (isMCMS || helperMode) return;
+  if (loginPreference !== null) return;
+  loginPreference = readLoginPreference();
+  if (loginPreference === null) {
+    loginPreference = true;
+    writeLoginPreference(true);
+  }
+  applyLoginItemSetting(loginPreference);
+}
+
+async function startPlannerScheduler() {
+  if (plannerSchedulerStarted) return;
+  plannerSchedulerStarted = true;
+  if (isMCMS) return;
+  const { db, documentService } = ensureServices();
+  logHelper('Planner scheduler started');
+
+  const tick = async () => {
+    if (plannerSchedulerRunning) return;
+    plannerSchedulerRunning = true;
+    try {
+      const businesses = await db.businessSettings();
+      let dueCount = 0;
+      for (const business of businesses || []) {
+        const businessId = Number(business?.id);
+        if (!Number.isInteger(businessId)) continue;
+        const result = await documentService.listPlannerItems({ businessId, includeCompleted: true, sync: true });
+        const items = Array.isArray(result?.items) ? result.items : [];
+        const now = new Date();
+        for (const item of items) {
+          const status = String(item.status || 'pending').toLowerCase();
+          const actionKey = String(item.action_key || '').toLowerCase();
+          const scheduledFor = item.scheduled_for || '';
+          const dueAt = toLocalDateFromKey(scheduledFor, 9, 0);
+          if (!dueAt) continue;
+          const isDue = now >= dueAt;
+          if (actionKey === 'balance_send') {
+            if (['sent', 'done', 'completed', 'dismissed'].includes(status)) continue;
+            const msToDue = dueAt.getTime() - now.getTime();
+            const isDueSoon = msToDue > 0 && msToDue <= 24 * 60 * 60 * 1000;
+            if (item.scheduled_email_at) {
+              continue;
+            }
+            if (!isDue && !isDueSoon) continue;
+            dueCount += 1;
+            const lastNotified = parseSqlDateTime(item.last_notified_at);
+            if (!lastNotified || now - lastNotified >= 24 * 60 * 60 * 1000) {
+              const missingParts = [];
+              if (item.needs_email) missingParts.push('client email');
+              if (item.needs_invoice) missingParts.push('invoice PDF');
+              const missingLabel = missingParts.length
+                ? `Missing ${missingParts.join(' and ')}`
+                : (item.can_send ? 'Ready to send (manual)' : 'Missing details');
+              try {
+                new Notification({
+                  title: 'Balance invoice reminder',
+                  body: `${item.client_name || 'Client'} · ${scheduledFor} · ${missingLabel}`
+                }).show();
+              } catch (_) {}
+              await documentService.updatePlannerAction({
+                businessId,
+                jobsheetId: item.jobsheet_id,
+                actionKey: item.action_key,
+                scheduled_for: scheduledFor,
+                last_notified_at: new Date().toISOString()
+              });
+            }
+            continue;
+          }
+
+          if (actionKey === 'payment_check') {
+            if (!isDue) continue;
+            if (['done', 'completed', 'dismissed'].includes(status)) continue;
+            const lastNotified = parseSqlDateTime(item.last_notified_at);
+            if (lastNotified && now - lastNotified < 12 * 60 * 60 * 1000) {
+              dueCount += 1;
+              continue;
+            }
+            dueCount += 1;
+            try {
+              new Notification({
+                title: 'Payment check due',
+                body: `${item.client_name || 'Client'} · ${item.event_date || ''}`
+              }).show();
+            } catch (_) {}
+            await documentService.updatePlannerAction({
+              businessId,
+              jobsheetId: item.jobsheet_id,
+              actionKey: item.action_key,
+              scheduled_for: scheduledFor,
+              last_notified_at: new Date().toISOString()
+            });
+          }
+        }
+      }
+      updateTrayBadge(dueCount);
+    } catch (err) {
+      console.error('Planner scheduler error', err);
+      logHelper('Planner scheduler error', { error: err?.message || String(err) });
+    } finally {
+      plannerSchedulerRunning = false;
+    }
+  };
+
+  tick();
+  setInterval(tick, 5 * 60 * 1000);
 }
 
 function createWindow() {
@@ -220,6 +737,12 @@ function createWindow() {
   } else {
     win.loadFile('renderer/index.html');
   }
+
+  win.webContents.once('did-finish-load', () => {
+    if (pendingUiAction) {
+      dispatchUiAction(pendingUiAction);
+    }
+  });
 }
 
 app.whenReady().then(() => {
@@ -324,11 +847,65 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
 }
 
 app.whenReady().then(() => {
-  createWindow();
+  if (RUN_BACKGROUND && !isHelperBundle) {
+    const helperPath = getHelperAppPath();
+    if (helperPath) {
+      try { shell.openPath(helperPath); } catch (_) {}
+      app.quit();
+      return;
+    }
+  }
+  if (!helperMode) {
+    watchPendingUiAction();
+  }
+  if (!isMCMS) {
+    ensureLoginItemDefault();
+    if (!RUN_BACKGROUND) {
+      try {
+        const pref = loginPreference === null ? readLoginPreference() : loginPreference;
+        const settings = app.getLoginItemSettings();
+        if (pref && settings?.wasOpenedAtLogin) {
+          RUN_BACKGROUND = true;
+          helperMode = true;
+          if (app.dock && process.platform === 'darwin') {
+            try { app.dock.hide(); } catch (_) {}
+          }
+        }
+      } catch (_err) {}
+    }
+    if (helperMode) {
+      const pref = loginPreference === null ? readLoginPreference() : loginPreference;
+      if (pref === false) {
+        logHelper('Helper disabled on startup');
+        app.quit();
+        return;
+      }
+      logHelper('Helper mode active');
+      ensureTray();
+      startPlannerScheduler();
+      startHelperPreferenceWatcher();
+    }
+  }
+
+  if (!RUN_BACKGROUND) {
+    createWindow();
+  } else {
+    try { if (app.dock) app.dock.hide(); } catch (_) {}
+  }
+
+  if (!helperMode && FORCE_MAIN_SCHEDULER) {
+    try {
+      ensureServices();
+    } catch (err) {
+      console.error('Failed to start main scheduler', err);
+    }
+  }
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      showMainWindow();
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
     }
   });
 
@@ -380,6 +957,7 @@ app.whenReady().then(() => {
 // Email via Microsoft Graph – handle in main process to avoid renderer CORS
 ipcMain.handle('send-mail-via-graph', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     const res = await documentService.sendMailViaGraph(args || {});
     // Maintain original return shape
     return { ok: true, ...(res || {}) };
@@ -390,6 +968,7 @@ ipcMain.handle('send-mail-via-graph', async (_event, args = {}) => {
 
 ipcMain.handle('schedule-mail-via-graph', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     const res = await documentService.scheduleMailViaGraph(args || {});
     return { ok: true, ...(res || {}) };
   } catch (err) {
@@ -397,8 +976,55 @@ ipcMain.handle('schedule-mail-via-graph', async (_event, args = {}) => {
   }
 });
 
+ipcMain.handle('get-login-item-settings', async () => {
+  try {
+    const pref = readLoginPreference();
+    const settings = app.getLoginItemSettings();
+    if (pref === null || pref === undefined) return settings;
+    return { ...(settings || {}), openAtLogin: !!pref };
+  } catch (err) {
+    return { error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('set-login-item-settings', async (_event, args = {}) => {
+  try {
+    const openAtLogin = args?.openAtLogin ?? args?.open_at_login;
+    const next = !!openAtLogin;
+    loginPreference = next;
+    writeLoginPreference(next);
+    applyLoginItemSetting(next);
+    if (next) {
+      launchHelperNow();
+    } else {
+      stopHelperNow();
+    }
+    const settings = app.getLoginItemSettings();
+    return { ...(settings || {}), openAtLogin: next };
+  } catch (err) {
+    return { error: err?.message || String(err) };
+  }
+});
+
+ipcMain.handle('test-notification', async () => {
+  if (!Notification.isSupported()) {
+    return { ok: false, error: 'Notifications not supported' };
+  }
+  try {
+    new Notification({
+      title: 'AhMen test notification',
+      body: 'Notifications are enabled.'
+    }).show();
+    return { ok: true };
+  } catch (err) {
+    console.error('Failed to show test notification', err);
+    return { ok: false, error: err?.message || 'Unable to show notification' };
+  }
+});
+
 ipcMain.handle('create-gig-info-pdf', async (event, args = {}) => {
   try {
+    const { db, documentService } = ensureServices();
     const businessId = Number(args.businessId ?? args.business_id);
     const jobsheetId = Number(args.jobsheetId ?? args.jobsheet_id);
     if (!Number.isInteger(businessId) || !Number.isInteger(jobsheetId)) {
@@ -435,6 +1061,7 @@ ipcMain.handle('create-gig-info-pdf', async (event, args = {}) => {
 // Build and export a PDF of upcoming events and required personnel
 ipcMain.handle('create-personnel-log-pdf', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     const businessId = Number(args.businessId ?? args.business_id);
     if (!Number.isInteger(businessId)) {
       throw new Error('businessId is required');
@@ -461,6 +1088,7 @@ ipcMain.handle('create-personnel-log-pdf', async (_event, args = {}) => {
 
 ipcMain.handle('compose-mail-draft', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     const res = await documentService.composeMailDraft(args || {});
     return { ok: true, ...(res || {}) };
   } catch (err) {
@@ -470,6 +1098,7 @@ ipcMain.handle('compose-mail-draft', async (_event, args = {}) => {
 
 ipcMain.handle('create-personnel-log-text', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     const businessId = Number(args.businessId ?? args.business_id);
     if (!Number.isInteger(businessId)) {
       throw new Error('businessId is required');
@@ -780,6 +1409,7 @@ end tell`;
 
 ipcMain.handle('normalize-template', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     const result = await documentService.normalizeTemplate(args);
     return result;
   } catch (err) {
@@ -807,6 +1437,7 @@ ipcMain.handle('open-template', async (_event, args = {}) => {
 
 ipcMain.handle('watch-documents', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     return await documentService.watchDocumentsFolder({
       ...args,
       onChange: broadcastDocumentsChange
@@ -818,6 +1449,7 @@ ipcMain.handle('watch-documents', async (_event, args = {}) => {
 
 ipcMain.handle('unwatch-documents', async (_event, args = {}) => {
   try {
+    const { documentService } = ensureServices();
     return await documentService.unwatchDocumentsFolder(args || {});
   } catch (err) {
     return { ok: false, message: err?.message || String(err) };
@@ -847,5 +1479,9 @@ ipcMain.on('jobsheet-change', (event, payload = {}) => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
+    return;
+  }
+  if (RUN_BACKGROUND && app.dock) {
+    try { app.dock.hide(); } catch (_) {}
   }
 });
