@@ -470,7 +470,7 @@ function applyLoginItemSetting(openAtLogin) {
       openAtLogin: !!openAtLogin,
       openAsHidden: true,
       path: helperPath || undefined,
-      args: helperPath ? ['--helper'] : ['--background', '--helper']
+      args: helperPath ? [] : ['--background', '--helper']
     });
   } catch (_err) {}
 }
