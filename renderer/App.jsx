@@ -10667,7 +10667,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
                 <div className="rounded border border-slate-200 p-4 flex items-center justify-between gap-3">
                   <div>
                     <h3 className="text-sm font-semibold text-slate-700">Run reminders in background</h3>
-                    <p className="text-xs text-slate-500">Starts a menu bar helper at login for notifications and scheduled emails.</p>
+                    <p className="text-xs text-slate-500">Keeps AhMen running in the menu bar at login for notifications and scheduled emails.</p>
                     <p className="text-xs text-slate-500">Only sends emails you explicitly schedule.</p>
                   </div>
                   <label className="inline-flex items-center gap-2 text-sm text-slate-600">

@@ -48,7 +48,7 @@ const isValidSqliteFile = (filePath) => {
   }
 };
 
-if (isPackaged) {
+if (isPackaged && !isHelperProcess) {
   try {
     fs.mkdirSync(sharedSupportDir, { recursive: true });
     const legacyPath = normalizeDbPath(settings.db_path);
@@ -64,10 +64,18 @@ if (isPackaged) {
 const candidatePaths = [];
 const normalizedEnv = normalizeDbPath(envDbPath);
 const normalizedSettings = normalizeDbPath(settings.db_path);
-if (normalizedEnv) candidatePaths.push(normalizedEnv);
-if (isPackaged) candidatePaths.push(sharedDbPath);
-if (normalizedSettings) candidatePaths.push(normalizedSettings);
-if (!candidatePaths.length) candidatePaths.push(sharedDbPath);
+const pushCandidate = (value) => {
+  if (!value) return;
+  if (!candidatePaths.includes(value)) candidatePaths.push(value);
+};
+
+if (isHelperProcess) {
+  pushCandidate(sharedDbPath);
+}
+pushCandidate(normalizedEnv);
+if (isPackaged) pushCandidate(sharedDbPath);
+if (!isHelperProcess) pushCandidate(normalizedSettings);
+if (!candidatePaths.length) pushCandidate(sharedDbPath);
 
 const ensureDbFile = (targetPath) => {
   if (!targetPath || targetPath === ':memory:') return true;

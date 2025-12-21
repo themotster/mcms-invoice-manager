@@ -54,6 +54,9 @@ let documentService = null;
 let helperLogPath = null;
 let pendingUiAction = null;
 let helperPrefWatcher = null;
+let backgroundModeEnabled = false;
+let startHiddenOnLogin = false;
+let isQuitting = false;
 
 const SHARED_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Booking Manager');
 const PENDING_UI_ACTION_PATH = path.join(SHARED_SUPPORT_DIR, 'pending-ui-action.json');
@@ -92,6 +95,9 @@ const HELPER_USER_DATA = path.join(os.homedir(), 'Library', 'Application Support
 
 if (helperMode) {
   try {
+    app.disableHardwareAcceleration();
+  } catch (_err) {}
+  try {
     app.setPath('userData', HELPER_USER_DATA);
   } catch (_err) {}
 }
@@ -106,6 +112,45 @@ function logHelper(message, detail = null) {
     const suffix = detail ? ` ${JSON.stringify(detail)}` : '';
     fs.appendFileSync(helperLogPath, `[${stamp}] ${message}${suffix}\n`, 'utf8');
   } catch (_err) {}
+}
+
+if (helperMode) {
+  process.on('uncaughtException', (err) => {
+    logHelper('Uncaught exception', { error: err?.stack || err?.message || String(err) });
+  });
+  process.on('unhandledRejection', (err) => {
+    logHelper('Unhandled rejection', { error: err?.stack || err?.message || String(err) });
+  });
+  process.on('exit', (code) => {
+    logHelper('Process exit', { code });
+  });
+  app.on('before-quit', () => logHelper('Helper before-quit'));
+  app.on('will-quit', () => logHelper('Helper will-quit'));
+  app.on('quit', (_event, code) => logHelper('Helper quit', { code }));
+  app.on('window-all-closed', () => logHelper('Helper window-all-closed', { runBackground: RUN_BACKGROUND }));
+}
+
+function setBackgroundMode(enabled, { startHidden = false } = {}) {
+  backgroundModeEnabled = !!enabled;
+  startHiddenOnLogin = !!startHidden;
+  if (backgroundModeEnabled) {
+    ensureTray();
+    startPlannerScheduler();
+    if (startHiddenOnLogin) {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide();
+      }
+      try { if (app.dock) app.dock.hide(); } catch (_) {}
+    }
+  } else if (tray) {
+    try { tray.destroy(); } catch (_) {}
+    tray = null;
+  }
+}
+
+function requestQuit() {
+  isQuitting = true;
+  app.quit();
 }
 
 function ensureServices() {
@@ -353,7 +398,7 @@ function showMainWindow({ openPlanner = false } = {}) {
     }
     return;
   }
-  if (RUN_BACKGROUND && app.dock && process.platform === 'darwin') {
+  if (backgroundModeEnabled && app.dock && process.platform === 'darwin') {
     try { app.dock.show(); } catch (_) {}
   }
   if (!mainWindow || mainWindow.isDestroyed()) {
@@ -378,23 +423,20 @@ function ensureTray() {
   if (tray) return;
   tray = new Tray(createTrayIcon());
   tray.setToolTip('AhMen Reminders');
+  if (helperMode) logHelper('Tray created');
   const showTrayMenu = () => {
     try {
       tray.popUpContextMenu();
     } catch (_) {}
   };
   tray.on('click', () => {
-    if (helperMode) {
-      showTrayMenu();
-      return;
-    }
-    showMainWindow({ openPlanner: true });
+    showTrayMenu();
   });
   tray.on('right-click', showTrayMenu);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Open AhMen', click: () => showMainWindow() },
     { type: 'separator' },
-    { role: 'quit' }
+    { label: 'Quit AhMen', click: () => requestQuit() }
   ]));
 }
 
@@ -465,12 +507,9 @@ function getHelperAppPath() {
 
 function applyLoginItemSetting(openAtLogin) {
   try {
-    const helperPath = getHelperAppPath();
     app.setLoginItemSettings({
       openAtLogin: !!openAtLogin,
-      openAsHidden: true,
-      path: helperPath || undefined,
-      args: helperPath ? [] : ['--background', '--helper']
+      openAsHidden: true
     });
   } catch (_err) {}
 }
@@ -546,7 +585,12 @@ async function startPlannerScheduler() {
   if (plannerSchedulerStarted) return;
   plannerSchedulerStarted = true;
   if (isMCMS) return;
-  const { db, documentService } = ensureServices();
+  try {
+    ensureServices();
+  } catch (err) {
+    logHelper('Planner scheduler failed to start', { error: err?.message || String(err) });
+    return;
+  }
   logHelper('Planner scheduler started');
 
   const tick = async () => {
@@ -558,7 +602,12 @@ async function startPlannerScheduler() {
       for (const business of businesses || []) {
         const businessId = Number(business?.id);
         if (!Number.isInteger(businessId)) continue;
-        const result = await documentService.listPlannerItems({ businessId, includeCompleted: true, sync: true });
+        const result = await documentService.listPlannerItems({
+          businessId,
+          includeCompleted: true,
+          sync: true,
+          skipFileScan: helperMode
+        });
         const items = Array.isArray(result?.items) ? result.items : [];
         const now = new Date();
         for (const item of items) {
@@ -714,7 +763,16 @@ function createWindow() {
     });
   };
 
-  win.on('close', saveState);
+  win.on('close', (event) => {
+    if (backgroundModeEnabled && !isQuitting) {
+      event.preventDefault();
+      saveState();
+      win.hide();
+      try { if (app.dock) app.dock.hide(); } catch (_) {}
+      return;
+    }
+    saveState();
+  });
   win.on('move', () => {
     if (!win.isMaximized() && !win.isMinimized()) {
       saveState();
@@ -764,6 +822,16 @@ app.whenReady().then(() => {
     });
   } catch (err) {
     console.warn('Failed to register global shortcuts', err);
+  }
+});
+
+app.on('before-quit', (event) => {
+  if (backgroundModeEnabled && !isQuitting) {
+    event.preventDefault();
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      try { mainWindow.hide(); } catch (_) {}
+    }
+    try { if (app.dock) app.dock.hide(); } catch (_) {}
   }
 });
 
@@ -847,50 +915,38 @@ function createJobsheetWindow(parent, { businessId, businessName, jobsheetId }) 
 }
 
 app.whenReady().then(() => {
-  if (RUN_BACKGROUND && !isHelperBundle) {
-    const helperPath = getHelperAppPath();
-    if (helperPath) {
-      try { shell.openPath(helperPath); } catch (_) {}
+  if (helperMode) {
+    const pref = loginPreference === null ? readLoginPreference() : loginPreference;
+    if (pref === false) {
+      logHelper('Helper disabled on startup');
       app.quit();
       return;
     }
-  }
-  if (!helperMode) {
+    logHelper('Helper mode active');
+    ensureTray();
+    startPlannerScheduler();
+    startHelperPreferenceWatcher();
+  } else {
     watchPendingUiAction();
-  }
-  if (!isMCMS) {
-    ensureLoginItemDefault();
-    if (!RUN_BACKGROUND) {
+    if (isMCMS) {
+      setBackgroundMode(false, { startHidden: false });
+      createWindow();
+    } else {
+      ensureLoginItemDefault();
       try {
         const pref = loginPreference === null ? readLoginPreference() : loginPreference;
         const settings = app.getLoginItemSettings();
-        if (pref && settings?.wasOpenedAtLogin) {
-          RUN_BACKGROUND = true;
-          helperMode = true;
-          if (app.dock && process.platform === 'darwin') {
-            try { app.dock.hide(); } catch (_) {}
-          }
+        const openedAtLogin = !!(pref && settings?.wasOpenedAtLogin);
+        setBackgroundMode(!!pref, { startHidden: openedAtLogin });
+        if (!openedAtLogin) {
+          createWindow();
+        } else {
+          try { if (app.dock) app.dock.hide(); } catch (_) {}
         }
-      } catch (_err) {}
-    }
-    if (helperMode) {
-      const pref = loginPreference === null ? readLoginPreference() : loginPreference;
-      if (pref === false) {
-        logHelper('Helper disabled on startup');
-        app.quit();
-        return;
+      } catch (_err) {
+        createWindow();
       }
-      logHelper('Helper mode active');
-      ensureTray();
-      startPlannerScheduler();
-      startHelperPreferenceWatcher();
     }
-  }
-
-  if (!RUN_BACKGROUND) {
-    createWindow();
-  } else {
-    try { if (app.dock) app.dock.hide(); } catch (_) {}
   }
 
   if (!helperMode && FORCE_MAIN_SCHEDULER) {
@@ -994,11 +1050,7 @@ ipcMain.handle('set-login-item-settings', async (_event, args = {}) => {
     loginPreference = next;
     writeLoginPreference(next);
     applyLoginItemSetting(next);
-    if (next) {
-      launchHelperNow();
-    } else {
-      stopHelperNow();
-    }
+    setBackgroundMode(next, { startHidden: false });
     const settings = app.getLoginItemSettings();
     return { ...(settings || {}), openAtLogin: next };
   } catch (err) {
@@ -1481,7 +1533,9 @@ app.on('window-all-closed', () => {
     app.quit();
     return;
   }
-  if (RUN_BACKGROUND && app.dock) {
-    try { app.dock.hide(); } catch (_) {}
+  if (backgroundModeEnabled) {
+    try { if (app.dock) app.dock.hide(); } catch (_) {}
+    return;
   }
+  app.quit();
 });
