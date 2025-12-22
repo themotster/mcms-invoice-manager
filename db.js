@@ -5,7 +5,7 @@ const path = require('path');
 const os = require('os');
 
 const settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json')));
-const sharedSupportDir = path.join(os.homedir(), 'Library', 'Application Support', 'AhMen Booking Manager');
+const sharedSupportDir = path.join(os.homedir(), 'Library', 'Application Support', 'MCMS Invoice Manager');
 const sharedDbPath = path.join(sharedSupportDir, 'invoice_master.db');
 
 const isPackaged = (() => {
@@ -19,7 +19,7 @@ const isPackaged = (() => {
   }
 })();
 
-const envDbPath = process.env.AHMEN_DB_PATH || process.env.INVOICE_MASTER_DB_PATH;
+const envDbPath = process.env.MCMS_DB_PATH || process.env.INVOICE_MASTER_DB_PATH;
 const SQLITE_HEADER = Buffer.from('SQLite format 3\u0000');
 
 const normalizeDbPath = (value) => {
