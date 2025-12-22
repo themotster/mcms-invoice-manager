@@ -137,23 +137,13 @@ const DEFAULT_BUSINESSES = [
 
 const DEFAULT_DOCUMENT_DEFINITIONS = [
   {
-    key: 'workbook',
-    doc_type: 'workbook',
-    label: 'Excel Workbook',
-    description: 'Excel workbook populated with all jobsheet details.',
-    invoice_variant: null,
-    is_primary: 1,
-    sort_order: 0,
-    locked: 1
-  },
-  {
     key: 'quote',
     doc_type: 'quote',
     label: 'Quote',
     description: 'Quote document with pricing totals.',
     invoice_variant: null,
     is_primary: 0,
-    sort_order: 1,
+    sort_order: 0,
     locked: 1
   },
   {
@@ -163,7 +153,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     description: 'Contract ready for signatures.',
     invoice_variant: null,
     is_primary: 0,
-    sort_order: 2,
+    sort_order: 1,
     locked: 1
   },
   {
@@ -173,7 +163,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     description: 'Deposit invoice for the booking.',
     invoice_variant: 'deposit',
     is_primary: 0,
-    sort_order: 3,
+    sort_order: 2,
     locked: 1
   },
   {
@@ -183,7 +173,7 @@ const DEFAULT_DOCUMENT_DEFINITIONS = [
     description: 'Balance invoice for the booking.',
     invoice_variant: 'balance',
     is_primary: 0,
-    sort_order: 4,
+    sort_order: 3,
     locked: 1
   }
 ];
@@ -982,7 +972,7 @@ function reinstateDepositInvoiceDefinition() {
   } catch (_err) { /* no-op */ }
 }
 
-// If the deposit definition has no workbook path but balance does, copy it across
+// If the deposit definition has no template path but balance does, copy it across
 function backfillDepositTemplatePathFromBalance() {
   try {
     db.all('SELECT id FROM business_settings', [], (err, businesses) => {
@@ -1202,7 +1192,7 @@ function migrateBusinessSettingsDropTemplateColumns(done) {
 
       // Migrate any existing business-level template paths into definitions first
       db.all(
-        `SELECT id, invoice_template_path, quote_template_path, contract_template_path, gig_sheet_template_path FROM business_settings`,
+        `SELECT id, invoice_template_path, quote_template_path, contract_template_path FROM business_settings`,
         [],
         (selErr, businesses) => {
           if (!selErr && Array.isArray(businesses) && businesses.length) {
@@ -1221,7 +1211,6 @@ function migrateBusinessSettingsDropTemplateColumns(done) {
               apply(biz.invoice_template_path || null, ['invoice_deposit', 'invoice_balance']);
               apply(biz.quote_template_path || null, ['quote']);
               apply(biz.contract_template_path || null, ['contract']);
-              apply(biz.gig_sheet_template_path || null, ['workbook']);
             });
           }
 
