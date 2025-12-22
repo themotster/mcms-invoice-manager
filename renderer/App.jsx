@@ -1,4 +1,4 @@
-import React, { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import TemplatesManager from './components/TemplatesManager';
 import WysiwygEditor from './components/WysiwygEditor.jsx';
@@ -90,12 +90,6 @@ const HIDDEN_JOBSHEET_FIELDS = new Set([
 
 const BOOKING_PACK_DEFINITION_KEYS = new Set(['booking_schedule', 'invoice_deposit']);
 
-const DOCUMENT_GROUP_OPTIONS = [
-  { value: 'none', label: 'All Documents' },
-  { value: 'client', label: 'Client' },
-  { value: 'event_date', label: 'Event Date' }
-];
-
 const DOCUMENT_CARD_TONES = {
   workbook: {
     outerBorder: 'border-teal-200',
@@ -124,41 +118,9 @@ const DOCUMENT_CARD_TONES = {
   }
 };
 
-const DOCUMENT_COLUMNS = [
-  { key: 'document', label: 'Document', align: 'left', always: true },
-  { key: 'client', label: 'Client / Event', align: 'left' },
-  { key: 'event_date', label: 'Event Date', align: 'left' },
-  { key: 'created', label: 'Created', align: 'left' },
-  { key: 'amount', label: 'Amount', align: 'right' },
-  { key: 'actions', label: 'Actions', align: 'right', always: true }
-];
-
 const DOCUMENT_FEATURES_ENABLED = true;
 const DOCUMENT_GENERATION_ENABLED = true;
 const HARD_LOCKED_DEFINITION_KEYS = new Set(['workbook']);
-
-function getDocumentIcon(docType) {
-  switch ((docType || '').toLowerCase()) {
-    case 'invoice':
-      return '🧾';
-    case 'quote':
-      return '💼';
-    case 'contract':
-      return '🖋️';
-    case 'workbook':
-      return '📊';
-    case 'pdf_export':
-      return '🖨️';
-    default:
-      return '📄';
-  }
-}
-
-function getFileExtension(filePath) {
-  if (!filePath) return '';
-  const match = String(filePath).match(/\.([^.]+)$/);
-  return match ? match[1].toLowerCase() : '';
-}
 
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
@@ -181,14 +143,6 @@ const WORKSPACE_SECTION_STORAGE_KEY = 'invoiceMaster:workspaceSection';
 const SCROLL_BEHAVIOR_ENABLED = true;
 // Autosave enabled; guarded to skip while typing in client_name and during modal creation.
 const AUTOSAVE_ENABLED = true;
-const DOCUMENT_COLUMNS_STORAGE_KEY = 'invoiceMaster:documentsColumns';
-const DOCUMENT_TREE_COLLAPSE_KEY = 'invoiceMaster:documentTreeCollapsed';
-const DEFAULT_DOCUMENT_COLUMNS_STATE = DOCUMENT_COLUMNS.reduce((acc, column) => {
-  if (!column.always) {
-    acc[column.key] = true;
-  }
-  return acc;
-}, {});
 
 function slugifyDefinitionKey(value) {
   return (value || '')
@@ -1064,28 +1018,6 @@ function IconButton({ label, onClick, disabled, className = '', children, size =
       className={`inline-flex ${sizeClasses} items-center justify-center rounded border transition disabled:cursor-not-allowed disabled:opacity-60 ${colorClasses} ${className}`}
       aria-label={label}
       title={label}
-    >
-      {children}
-    </button>
-  );
-}
-
-function TreeActionButton({ title, onClick, disabled, children }) {
-  const handleClick = (event) => {
-    event.stopPropagation();
-    if (!disabled) {
-      onClick?.(event);
-    }
-  };
-
-  return (
-    <button
-      type="button"
-      onClick={handleClick}
-      disabled={disabled}
-      className="rounded border border-transparent p-1 text-indigo-500 transition hover:bg-indigo-100 hover:text-indigo-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 disabled:cursor-not-allowed disabled:opacity-40"
-      title={title}
-      aria-label={title}
     >
       {children}
     </button>
@@ -2125,334 +2057,6 @@ function DeleteIcon({ className = 'h-4 w-4' }) {
       <path d="M10 11v5" />
       <path d="M14 11v5" />
     </svg>
-  );
-}
-
-function FolderGlyph({ className = 'h-4 w-4' }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 6.25A2.25 2.25 0 0 1 6.25 4h4.086c.414 0 .812.165 1.105.459L13.5 6.5H19A2 2 0 0 1 21 8.5V9H4V6.25Z" fill="currentColor" opacity="0.5" />
-      <path d="M3 9.75A1.75 1.75 0 0 1 4.75 8h15.5A1.75 1.75 0 0 1 22 9.75v7.5A2.75 2.75 0 0 1 19.25 20H6A3 3 0 0 1 3 17V9.75Z" fill="currentColor" />
-    </svg>
-  );
-}
-
-function FileGlyph({ className = 'h-4 w-4' }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M7 3a2 2 0 0 1 2-2h4.172a2 2 0 0 1 1.414.586l4.828 4.828A2 2 0 0 1 20 7.828V20a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2V3Z" fill="currentColor" opacity="0.35" />
-      <path d="M13 3.5v2.75A1.75 1.75 0 0 0 14.75 8h2.75" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M8.75 12h6.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M8.75 15.5h6.5" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function DocumentNodeIcon({ isDirectory }) {
-  const iconClasses = isDirectory ? 'text-yellow-500' : 'text-slate-500';
-
-  return (
-    <span className={`flex h-6 w-6 flex-shrink-0 items-center justify-center ${iconClasses}`} aria-hidden="true">
-      {isDirectory ? <FolderGlyph className="h-5 w-5" /> : <FileGlyph className="h-5 w-5" />}
-    </span>
-  );
-}
-
-function DocumentTreeView({
-  root,
-  trash,
-  rootPath,
-  loading,
-  error,
-  onRefresh,
-  onOpen,
-  onReveal,
-  onDeleteFolder,
-  onDeleteFile,
-  onEmptyTrash,
-  emptyingTrash,
-  isConfigured,
-  collapsed,
-  onCollapsedChange,
-  persist = false,
-  persistKey = ''
-}) {
-  const safeRootPath = rootPath || '';
-  const rootLabel = safeRootPath ? (safeRootPath.split(/[\\/]+/).filter(Boolean).pop() || 'Documents') : 'Documents';
-  const [collapsedNodes, setCollapsedNodes] = useState(() => new Set());
-  const [selectedNodeId, setSelectedNodeId] = useState(null);
-  const isControlledCollapse = typeof collapsed === 'boolean';
-  const [internalCollapsed, setInternalCollapsed] = useState(() => (isControlledCollapse ? collapsed : false));
-
-  useEffect(() => {
-    if (isControlledCollapse) return;
-    if (typeof collapsed === 'boolean') {
-      setInternalCollapsed(collapsed);
-    }
-  }, [collapsed, isControlledCollapse]);
-
-  const panelCollapsed = isControlledCollapse ? collapsed : internalCollapsed;
-
-  const handleSetPanelCollapsed = useCallback((next) => {
-    const value = Boolean(next);
-    if (!isControlledCollapse) {
-      setInternalCollapsed(value);
-    }
-    onCollapsedChange?.(value);
-  }, [isControlledCollapse, onCollapsedChange]);
-
-  useEffect(() => {
-    const prefix = persist && persistKey ? `${persistKey}:tree:` : '';
-    if (persist && prefix && typeof window !== 'undefined') {
-      try {
-        const savedCollapsed = window.localStorage.getItem(`${prefix}collapsed`);
-        if (savedCollapsed) {
-          const arr = JSON.parse(savedCollapsed);
-          if (Array.isArray(arr)) setCollapsedNodes(new Set(arr));
-        } else {
-          setCollapsedNodes(new Set());
-        }
-        const savedSelected = window.localStorage.getItem(`${prefix}selected`);
-        setSelectedNodeId(savedSelected || null);
-      } catch (_err) {
-        setCollapsedNodes(new Set());
-        setSelectedNodeId(null);
-      }
-    } else {
-      setCollapsedNodes(new Set());
-      setSelectedNodeId(null);
-    }
-  }, [safeRootPath, root, persist, persistKey]);
-
-  const toggleFolder = useCallback((nodeId) => {
-    setCollapsedNodes(prev => {
-      const next = new Set(prev);
-      if (next.has(nodeId)) {
-        next.delete(nodeId);
-      } else {
-        next.add(nodeId);
-      }
-      if (persist && persistKey && typeof window !== 'undefined') {
-        try { window.localStorage.setItem(`${persistKey}:tree:collapsed`, JSON.stringify(Array.from(next))); } catch (_err) {}
-      }
-      return next;
-    });
-  }, [persist, persistKey]);
-
-  const handleNodeDoubleClick = useCallback((node, nodeId, isDirectory) => {
-    if (!node) return;
-    if (isDirectory) {
-      toggleFolder(nodeId);
-      return;
-    }
-    if (onOpen) {
-      onOpen(node);
-    } else if (onReveal) {
-      onReveal(node);
-    }
-  }, [onOpen, onReveal, toggleFolder]);
-
-  const renderRows = (node, depth = 0, isRoot = false) => {
-    if (!node) return [];
-    const isDirectory = node.isDirectory !== false;
-    const absolutePath = node.absolutePath || '';
-    const nodeName = node.name || (isRoot ? rootLabel : '(unnamed)');
-    const nodeId = isRoot ? '__root__' : (node.path || absolutePath || nodeName || `${nodeName}-${depth}`);
-    const hasChildren = Array.isArray(node.children) && node.children.length > 0;
-    const isExpanded = isRoot ? true : !collapsedNodes.has(nodeId);
-    const isSelected = selectedNodeId === nodeId;
-
-    const rows = [];
-    const rowKey = absolutePath || `${nodeName}-${depth}`;
-    const itemCount = isDirectory ? Number(node.itemCount || (node.children ? node.children.length : 0)) : 1;
-    const sizeValue = isDirectory ? node.totalSize ?? node.size : node.size;
-    const modifiedLabel = formatTimestampDisplay(node.modified);
-
-    const baseRowClass = isDirectory ? 'bg-indigo-50/50' : 'bg-white';
-    const rowClasses = isSelected
-      ? 'bg-indigo-200/80 font-semibold text-indigo-900'
-      : `${baseRowClass} hover:bg-indigo-100/70`;
-
-    rows.push(
-      <tr
-        key={rowKey}
-        className={`group cursor-default border-b border-indigo-100 last:border-b-0 transition ${rowClasses}`}
-        onClick={() => {
-          setSelectedNodeId(nodeId);
-          if (persist && persistKey && typeof window !== 'undefined') {
-            try { window.localStorage.setItem(`${persistKey}:tree:selected`, nodeId); } catch (_err) {}
-          }
-        }}
-        onDoubleClick={(event) => {
-          event.stopPropagation();
-          handleNodeDoubleClick(node, nodeId, isDirectory);
-        }}
-        aria-selected={isSelected}
-      >
-        <td className="px-3 py-2 text-sm text-slate-700">
-          <div className="flex min-w-0 items-center gap-2" style={{ paddingLeft: `${depth * 1.25}rem` }}>
-            {isDirectory && hasChildren ? (
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  toggleFolder(nodeId);
-                }}
-                className="flex h-6 w-6 items-center justify-center rounded text-indigo-400 transition hover:bg-indigo-100 hover:text-indigo-600"
-                aria-label={isExpanded ? 'Collapse folder' : 'Expand folder'}
-                aria-expanded={isExpanded}
-              >
-                <span>{isExpanded ? '▾' : '▸'}</span>
-              </button>
-            ) : (
-              <span className="h-6 w-6" />
-            )}
-            <DocumentNodeIcon isDirectory={isDirectory} />
-            <div className="min-w-0 truncate" title={absolutePath || nodeName}>{nodeName}</div>
-          </div>
-        </td>
-        <td className="px-3 py-2 text-xs">
-          <span className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold ${isDirectory ? 'bg-indigo-100 text-indigo-700' : 'bg-sky-100 text-sky-700'}`}>
-            {isDirectory ? 'Folder' : 'File'}
-          </span>
-        </td>
-        <td className={`px-3 py-2 text-xs ${isDirectory ? 'text-indigo-600 font-medium' : 'text-slate-500'}`}>
-          {isDirectory ? `${itemCount} item${itemCount === 1 ? '' : 's'}` : '—'}
-        </td>
-        <td className="px-3 py-2 text-xs text-slate-600 font-medium">{formatFileSize(sizeValue)}</td>
-        <td className="px-3 py-2 text-xs text-slate-600">{modifiedLabel}</td>
-        <td className="px-3 py-2">
-          <div className="flex justify-end gap-1 text-indigo-600">
-            <TreeActionButton title="Open" onClick={() => onOpen?.(node)} disabled={!onOpen || !absolutePath}>
-              <OpenIcon className="h-3.5 w-3.5" />
-            </TreeActionButton>
-            <TreeActionButton title="Reveal in Finder" onClick={() => onReveal?.(node)} disabled={!onReveal || !absolutePath}>
-              <RevealIcon className="h-3.5 w-3.5" />
-            </TreeActionButton>
-            {!isRoot ? (
-              <TreeActionButton
-                title="Move to trash"
-                onClick={() => {
-                  if (isDirectory) {
-                    onDeleteFolder?.(node);
-                  } else {
-                    onDeleteFile?.(node);
-                  }
-                }}
-                disabled={(isDirectory && !onDeleteFolder) || (!isDirectory && !onDeleteFile)}
-              >
-                <DeleteIcon className="h-3.5 w-3.5" />
-              </TreeActionButton>
-            ) : null}
-          </div>
-        </td>
-      </tr>
-    );
-
-    if (isDirectory && hasChildren && isExpanded) {
-      for (const child of node.children) {
-        rows.push(...renderRows(child, depth + 1, false));
-      }
-    }
-
-    return rows;
-  };
-
-  let content = null;
-  if (panelCollapsed) {
-    content = null;
-  } else if (!isConfigured) {
-    content = (
-      <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-        Choose a documents folder in Settings to enable file management.
-      </div>
-    );
-  } else if (error) {
-    content = (
-      <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700" role="alert">
-        {error}
-      </div>
-    );
-  } else if (loading) {
-    content = <div className="text-xs text-slate-500">Loading tree…</div>;
-  } else if (!root || !Array.isArray(root.children) || root.children.length === 0) {
-    content = <div className="text-xs text-slate-500">No documents found in this folder yet.</div>;
-  } else {
-    const tableRows = renderRows(root, 0, true);
-    content = (
-      <div className="max-h-[420px] overflow-y-auto rounded border border-slate-200">
-        <table className="min-w-full border-collapse text-left text-sm">
-          <thead className="bg-indigo-600 text-indigo-50">
-            <tr>
-              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Name</th>
-              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Type</th>
-              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Contents</th>
-              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Size</th>
-              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-xs font-semibold uppercase tracking-wide">Modified</th>
-              <th scope="col" className="sticky top-0 z-10 bg-indigo-600 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide">Actions</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-indigo-50">{tableRows}</tbody>
-        </table>
-      </div>
-    );
-  }
-
-  const trashSummary = trash && typeof trash === 'object' ? trash : null;
-  const trashItems = Number.isFinite(trashSummary?.itemCount) ? trashSummary.itemCount : 0;
-  const trashSizeLabel = Number.isFinite(trashSummary?.size) ? formatFileSize(trashSummary.size) : null;
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="text-sm font-semibold text-slate-700">Documents tree</h3>
-          <p className="text-xs text-slate-500 break-all">{safeRootPath || 'Not configured'}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => handleSetPanelCollapsed(!panelCollapsed)}
-            className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
-            aria-expanded={!panelCollapsed}
-          >
-            {panelCollapsed ? 'Expand' : 'Collapse'}
-          </button>
-          <button
-            type="button"
-            onClick={() => onRefresh?.()}
-            disabled={loading || !isConfigured}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {loading ? 'Loading…' : 'Refresh'}
-          </button>
-        </div>
-      </div>
-      {content}
-      {!panelCollapsed && isConfigured ? (
-        <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="font-semibold text-slate-600">Trash</div>
-              <div className="text-xs text-slate-500">
-                {trashItems ? `${trashItems} item${trashItems === 1 ? '' : 's'}${trashSizeLabel ? ` · ${trashSizeLabel}` : ''}` : 'Trash is empty'}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => onEmptyTrash?.()}
-              disabled={!trashItems || emptyingTrash}
-              className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {emptyingTrash ? 'Emptying…' : 'Empty trash'}
-            </button>
-          </div>
-        </div>
-      ) : null}
-      {panelCollapsed ? (
-        <div className="text-xs text-slate-500">Tree hidden. Use Expand to view folders.</div>
-      ) : null}
-    </div>
   );
 }
 
@@ -8450,57 +8054,10 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       return 'jobsheets';
     }
   });
-  const [documents, setDocuments] = useState([]);
-  const [documentsLoading, setDocumentsLoading] = useState(true);
-  const [documentsError, setDocumentsError] = useState('');
-  const [documentTree, setDocumentTree] = useState(null);
-  const [documentTreeLoading, setDocumentTreeLoading] = useState(false);
-  const [documentTreeError, setDocumentTreeError] = useState('');
-  const [documentTreeCollapsed, setDocumentTreeCollapsed] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    try {
-      const stored = window.localStorage.getItem(DOCUMENT_TREE_COLLAPSE_KEY);
-      if (stored === 'true') return true;
-      if (stored === 'false') return false;
-    } catch (err) {
-      console.warn('Unable to read document tree collapse preference', err);
-    }
-    return false;
-  });
-  const [emptyingTrash, setEmptyingTrash] = useState(false);
-  const [documentsGroup, setDocumentsGroup] = useState('client');
-  const [documentsSearch, setDocumentsSearch] = useState('');
-  const [documentsTypeFilter, setDocumentsTypeFilter] = useState('all');
-  const [documentsExtensionFilter, setDocumentsExtensionFilter] = useState('all');
-  const [documentsLinkFilter, setDocumentsLinkFilter] = useState('all');
   const [plannerItems, setPlannerItems] = useState([]);
   const [plannerLoading, setPlannerLoading] = useState(false);
   const [plannerError, setPlannerError] = useState('');
   const [plannerBusyKey, setPlannerBusyKey] = useState('');
-  const [documentColumnsState, setDocumentColumnsState] = useState(() => {
-    if (typeof window === 'undefined') return { ...DEFAULT_DOCUMENT_COLUMNS_STATE };
-    try {
-      const stored = window.localStorage.getItem(DOCUMENT_COLUMNS_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (parsed && typeof parsed === 'object') {
-          return {
-            ...DEFAULT_DOCUMENT_COLUMNS_STATE,
-            ...parsed
-          };
-        }
-      }
-    } catch (err) {
-      console.warn('Unable to read document columns preference', err);
-    }
-    return { ...DEFAULT_DOCUMENT_COLUMNS_STATE };
-  });
-  const [columnsMenuOpen, setColumnsMenuOpen] = useState(false);
-  const columnsMenuRef = useRef(null);
-  const columnsMenuContentRef = useRef(null);
-  const [columnsMenuAbove, setColumnsMenuAbove] = useState(false);
-  const [selectedDocuments, setSelectedDocuments] = useState(() => new Set());
-  const [showDocumentsLoading, setShowDocumentsLoading] = useState(false);
   const PERSIST_UI_KEY = 'app:persistUiState';
   const PERSIST_PREFIX = `ui:${business.id}:`;
   const [persistUi, setPersistUi] = useState(() => {
@@ -8531,15 +8088,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     } catch (_err) {}
   }, [persistUi, PERSIST_PREFIX]);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(DOCUMENT_TREE_COLLAPSE_KEY, documentTreeCollapsed ? 'true' : 'false');
-    } catch (err) {
-      console.warn('Unable to store document tree collapse preference', err);
-    }
-  }, [documentTreeCollapsed]);
-
   // Persist key UI state if enabled
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -8565,17 +8113,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     window.addEventListener('scroll', onScroll, { passive: true });
     return () => window.removeEventListener('scroll', onScroll);
   }, [persistUi]);
-
-  // Debounce documentsLoading indicator to prevent UI shake on very fast operations
-  useEffect(() => {
-    let timer = null;
-    if (documentsLoading) {
-      timer = setTimeout(() => setShowDocumentsLoading(true), 180);
-    } else {
-      setShowDocumentsLoading(false);
-    }
-    return () => { if (timer) clearTimeout(timer); };
-  }, [documentsLoading]);
 
   // Restore UI state on mount (without auto-scrolling)
   useEffect(() => {
@@ -8610,22 +8147,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     setTimeout(() => applyStoredScroll(), 120);
   }, [persistUi, applyStoredScroll, listLoading]);
   // Stop auto-scroll on tab switch; scroll only on explicit actions (open/create)
-
-  useEffect(() => {
-    if (workspaceSection !== 'documents') return () => {};
-    if (!DOCUMENT_FEATURES_ENABLED) return () => {};
-    if (!window.api) return () => {};
-    window.api.watchDocuments?.({ businessId: business.id }).catch(err => {
-      console.warn('Unable to start documents watcher', err);
-    });
-    const unsubscribe = window.api.onDocumentsChange?.((payload) => {
-      if (!payload || payload.businessId !== business.id) return;
-      refreshDocuments();
-    });
-    return () => {
-      unsubscribe?.();
-    };
-  }, [business.id, refreshDocuments, workspaceSection]);
 
   const normalizeJobsheet = useCallback(item => ({
     ...item,
@@ -8686,129 +8207,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     }
   }, [business.id, normalizeJobsheet, showArchived, inlineEditorVisible]);
 
-  const loadDocumentTree = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentTree(null);
-      setDocumentTreeLoading(false);
-      setDocumentTreeError('');
-      return null;
-    }
-    setDocumentTreeLoading(true);
-    setDocumentTreeError('');
-    try {
-      const api = window.api;
-      if (!api || typeof api.listDocumentTree !== 'function') {
-        throw new Error('Document tree unavailable');
-      }
-      const tree = await api.listDocumentTree({ businessId: business.id });
-      setDocumentTree(tree || null);
-      return tree || null;
-    } catch (err) {
-      console.error('Failed to load document tree', err);
-      setDocumentTreeError(err?.message || 'Unable to load document tree');
-      setDocumentTree(null);
-      return null;
-    } finally {
-      setDocumentTreeLoading(false);
-    }
-  }, [business.id]);
-
-  const normalizeDocumentPath = useCallback((value) => {
-    return String(value || '').replace(/\\/g, '/').toLowerCase();
-  }, []);
-
-  const getFolderPath = useCallback((value) => {
-    const str = String(value || '');
-    const lastSlash = Math.max(str.lastIndexOf('/'), str.lastIndexOf('\\'));
-    return lastSlash >= 0 ? str.slice(0, lastSlash) : '';
-  }, []);
-
-  const buildOrphanDocuments = useCallback((treeRoot, existingDocs) => {
-    if (!treeRoot) return [];
-    const existingPaths = new Set();
-    (existingDocs || []).forEach(doc => {
-      const key = normalizeDocumentPath(doc?.file_path);
-      if (key) existingPaths.add(key);
-    });
-
-    const files = [];
-    const collect = (node) => {
-      if (!node) return;
-      if (node.isDirectory) {
-        (node.children || []).forEach(child => collect(child));
-      } else {
-        files.push(node);
-      }
-    };
-    collect(treeRoot);
-
-    const allowedExtensions = new Set(['pdf', 'xlsx', 'xls', 'docx']);
-    const orphans = [];
-    files.forEach(node => {
-      const filePath = node?.absolutePath || '';
-      if (!filePath) return;
-      const key = normalizeDocumentPath(filePath);
-      if (!key || existingPaths.has(key)) return;
-      const extension = getFileExtension(node.name || filePath);
-      if (!allowedExtensions.has(extension)) return;
-      let docType = 'file';
-      if (extension === 'pdf') docType = 'pdf_export';
-      if (extension === 'xlsx' || extension === 'xls') docType = 'workbook';
-      if (extension === 'docx') docType = 'contract';
-      const fileName = node?.name || filePath.split(/[\\/]+/).filter(Boolean).pop() || 'Document';
-      orphans.push({
-        document_id: null,
-        doc_type: docType,
-        file_path: filePath,
-        file_name: fileName,
-        folder_path: getFolderPath(filePath),
-        display_label: fileName,
-        status: 'orphaned',
-        file_available: true,
-        created_at: node?.modified || null,
-        document_date: node?.modified || null,
-        is_orphan: true
-      });
-    });
-
-    return orphans;
-  }, [normalizeDocumentPath, getFolderPath]);
-
-  const refreshDocuments = useCallback(async () => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setDocuments([]);
-      setDocumentsLoading(false);
-      setDocumentsError('');
-      return;
-    }
-    setDocumentsLoading(true);
-    setDocumentsError('');
-    try {
-      if (DOCUMENT_FEATURES_ENABLED || DOCUMENT_GENERATION_ENABLED) {
-        const api = window.api;
-        if (!api || typeof api.listJobsheetDocuments !== 'function') {
-          throw new Error('Unable to load documents: API unavailable');
-        }
-        const response = await api.listJobsheetDocuments({ businessId: business.id });
-        const docs = Array.isArray(response?.documents) ? response.documents : [];
-        const filtered = docs.filter(doc => doc?.definition_key !== 'client_data' && doc?.definition_key !== 't_cs');
-        let tree = null;
-        if (DOCUMENT_FEATURES_ENABLED) {
-          tree = await loadDocumentTree();
-        } else {
-          setDocumentTree(null);
-        }
-        const orphans = tree?.root ? buildOrphanDocuments(tree.root, filtered) : [];
-        setDocuments([...filtered, ...orphans]);
-      }
-    } catch (err) {
-      console.error('Failed to refresh documents', err);
-      setDocumentsError(err?.message || 'Unable to load documents');
-    } finally {
-      setDocumentsLoading(false);
-    }
-  }, [business.id, loadDocumentTree, buildOrphanDocuments]);
-
   const refreshPlanner = useCallback(async () => {
     setPlannerLoading(true);
     setPlannerError('');
@@ -8850,248 +8248,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setPlannerError(err?.message || 'Unable to show notification');
     }
   }, [setMessage]);
-
-  const handleRefreshDocuments = useCallback(() => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return;
-    refreshDocuments();
-  }, [refreshDocuments]);
-
-  const handleOpenDocumentsFolder = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    setDocumentsError('');
-    if (!business.save_path) {
-      setDocumentsError('Documents folder not configured');
-      return;
-    }
-    try {
-      const response = await window.api?.openPath?.(business.save_path);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to open documents folder');
-      }
-    } catch (err) {
-      console.error('Failed to open documents folder', err);
-      setDocumentsError(err?.message || 'Unable to open documents folder');
-    }
-  }, [business.save_path]);
-
-  const handleOpenDocumentFile = useCallback(async (filePath) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    setDocumentsError('');
-    if (!filePath) {
-      setDocumentsError('Document file not available');
-      return;
-    }
-    try {
-      const response = await window.api?.openPath?.(filePath);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to open document');
-      }
-    } catch (err) {
-      console.error('Failed to open document', err);
-      setDocumentsError(err?.message || 'Unable to open document');
-    }
-  }, []);
-
-  const handleOpenTreeNode = useCallback(async (node) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    if (!node?.absolutePath) return;
-    try {
-      setDocumentsError('');
-      const response = await window.api?.openPath?.(node.absolutePath);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to open path');
-      }
-    } catch (err) {
-      console.error('Failed to open path', err);
-      setDocumentsError(err?.message || 'Unable to open path');
-    }
-  }, []);
-
-  const handleRevealTreeNode = useCallback(async (node) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    if (!node?.absolutePath) return;
-    try {
-      setDocumentsError('');
-      const response = await window.api?.showItemInFolder?.(node.absolutePath);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to reveal path');
-      }
-    } catch (err) {
-      console.error('Failed to reveal path', err);
-      setDocumentsError(err?.message || 'Unable to reveal path');
-    }
-  }, []);
-
-  const handleDeleteTreeFolder = useCallback(async (node) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    if (!node?.path) {
-      setDocumentsError('Cannot delete the root documents folder.');
-      return;
-    }
-    const confirmed = window.confirm(`Move folder "${node.name}" to trash?`);
-    if (!confirmed) return;
-    try {
-      setDocumentsError('');
-      await window.api?.deleteDocumentFolder?.({ businessId: business.id, relativePath: node.path });
-      setMessage('Folder moved to trash');
-      await refreshDocuments();
-      await loadDocumentTree();
-      setTimeout(() => setMessage(''), 2000);
-    } catch (err) {
-      console.error('Failed to delete folder', err);
-      setDocumentsError(err?.message || 'Unable to delete folder');
-    }
-  }, [business.id, refreshDocuments, loadDocumentTree]);
-
-  const handleDeleteTreeFile = useCallback(async (node) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    if (!node?.absolutePath) return;
-    const confirmed = window.confirm(`Move file "${node.name}" to trash?`);
-    if (!confirmed) return;
-    try {
-      setDocumentsError('');
-      await window.api?.deleteDocumentByPath?.({ businessId: business.id, absolutePath: node.absolutePath });
-      setMessage('File moved to trash');
-      await refreshDocuments();
-      await loadDocumentTree();
-      setTimeout(() => setMessage(''), 2000);
-    } catch (err) {
-      console.error('Failed to delete file', err);
-      setDocumentsError(err?.message || 'Unable to delete file');
-    }
-  }, [business.id, refreshDocuments, loadDocumentTree]);
-
-  const handleEmptyTrash = useCallback(async () => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    const confirmed = window.confirm('Empty all trash folders? This cannot be undone.');
-    if (!confirmed) return;
-    try {
-      setDocumentsError('');
-      setEmptyingTrash(true);
-      await window.api?.emptyDocumentsTrash?.({ businessId: business.id });
-      setMessage('Trash emptied');
-      await refreshDocuments();
-      await loadDocumentTree();
-      setTimeout(() => setMessage(''), 2000);
-    } catch (err) {
-      console.error('Failed to empty trash', err);
-      setDocumentsError(err?.message || 'Unable to empty trash');
-    } finally {
-      setEmptyingTrash(false);
-    }
-  }, [business.id, refreshDocuments, loadDocumentTree]);
-
-  const handleRevealDocument = useCallback(async (filePath) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    setDocumentsError('');
-    if (!filePath) {
-      setDocumentsError('Document file not available');
-      return;
-    }
-    try {
-      const response = await window.api?.showItemInFolder?.(filePath);
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to locate document on disk');
-      }
-    } catch (err) {
-      console.error('Failed to reveal document', err);
-      setDocumentsError(err?.message || 'Unable to locate document on disk');
-    }
-  }, []);
-
-  const handleDeleteDocumentRecord = useCallback(async (doc) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    if (!doc || doc.document_id == null) return;
-    const title = doc.typeLabel
-      ? `${doc.typeLabel}${doc.number ? ` #${doc.number}` : ''}`
-      : 'this document';
-    const confirmDelete = window.confirm(`Delete ${title}? This will remove it from the documents list.`);
-    if (!confirmDelete) return;
-
-    let removeFile = false;
-    if (doc.file_path) {
-      removeFile = window.confirm('Also remove the generated file from disk?');
-    }
-
-    try {
-      setError('');
-      if (doc.is_locked) {
-        const unlock = window.confirm('This document is locked. Unlock and delete it now?');
-        if (!unlock) return;
-        try { await window.api?.setDocumentLock?.(doc.document_id, false); } catch (_) {}
-      }
-      await window.api?.deleteDocument?.(doc.document_id, { removeFile });
-      setMessage('Document deleted');
-      await refreshDocuments();
-      await loadDocumentTree();
-      setSelectedDocuments(prev => {
-        const next = new Set(prev);
-        next.delete(doc.document_id);
-        return next;
-      });
-      window.api?.notifyJobsheetChange?.({
-        type: 'documents-updated',
-        businessId: business.id,
-        jobsheetId: doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null,
-        documentId: doc.document_id
-      });
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to delete document', err);
-      setError(err?.message || 'Unable to delete document');
-    }
-  }, [refreshDocuments, loadDocumentTree, business.id]);
-
-  const handleDeleteOrphanFile = useCallback(async (doc) => {
-    if (!DOCUMENT_FEATURES_ENABLED) {
-      setDocumentsError('Document generation is disabled.');
-      return;
-    }
-    if (!doc?.file_path) {
-      setDocumentsError('Document file not available');
-      return;
-    }
-    const fileName = doc.fileName || doc.displayLabel || doc.file_path;
-    const confirmDelete = window.confirm(`Move file "${fileName}" to trash?`);
-    if (!confirmDelete) return;
-    try {
-      setDocumentsError('');
-      await window.api?.deleteDocumentByPath?.({ businessId: business.id, absolutePath: doc.file_path });
-      setMessage('File moved to trash');
-      await refreshDocuments();
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to delete orphan file', err);
-      setDocumentsError(err?.message || 'Unable to delete file');
-    }
-  }, [business.id, refreshDocuments]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -9177,59 +8333,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   }, [refreshJobsheets]);
 
   useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
-    refreshDocuments();
-  }, [refreshDocuments]);
-
-  useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
-    if (workspaceSection === 'documents') {
-      loadDocumentTree();
-    }
-  }, [workspaceSection, loadDocumentTree]);
-
-  useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(DOCUMENT_COLUMNS_STORAGE_KEY, JSON.stringify(documentColumnsState));
-    } catch (err) {
-      console.warn('Unable to persist document columns preference', err);
-    }
-  }, [documentColumnsState]);
-
-  useEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return undefined;
-    if (!columnsMenuOpen) return undefined;
-    const handleClick = (event) => {
-      if (columnsMenuRef.current && !columnsMenuRef.current.contains(event.target)) {
-        setColumnsMenuOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [columnsMenuOpen]);
-
-  useLayoutEffect(() => {
-    if (!DOCUMENT_FEATURES_ENABLED) return;
-    if (!columnsMenuOpen) return;
-    const buttonEl = columnsMenuRef.current;
-    const menuEl = columnsMenuContentRef.current;
-    if (!buttonEl || !menuEl) return;
-
-    const buttonRect = buttonEl.getBoundingClientRect();
-    const menuHeight = menuEl.offsetHeight;
-    const spaceBelow = window.innerHeight - buttonRect.bottom;
-    const spaceAbove = buttonRect.top;
-
-    if (spaceBelow < menuHeight + 12 && spaceAbove > spaceBelow) {
-      setColumnsMenuAbove(true);
-    } else {
-      setColumnsMenuAbove(false);
-    }
-  }, [columnsMenuOpen, documentColumnsState, activeDocumentColumns]);
-
-  useEffect(() => {
     if (!window.api || typeof window.api.onJobsheetChange !== 'function') return () => {};
     const unsubscribe = window.api.onJobsheetChange(payload => {
       if (!payload || payload.businessId !== business.id) return;
@@ -9237,16 +8340,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         refreshPlanner();
         return;
       }
-      if (payload.type === 'document-lock-toggled' && payload.documentId != null && typeof payload.locked === 'boolean') {
-        const docId = Number(payload.documentId);
-        setDocuments(prev => prev.map(d => (
-          d && d.document_id === docId ? { ...d, is_locked: payload.locked ? 1 : 0 } : d
-        )));
-        return;
-      }
       if (payload.type === 'documents-updated') {
-        refreshDocuments();
-        loadDocumentTree();
         const payloadJobsheetId = payload.jobsheetId != null ? Number(payload.jobsheetId) : null;
         if (payloadJobsheetId != null) {
           setInlineEditorTargetId(payloadJobsheetId);
@@ -9305,7 +8399,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       }
     });
     return () => unsubscribe?.();
-  }, [business.id, refreshJobsheets, refreshDocuments, loadDocumentTree, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible, refreshPlanner]);
+  }, [business.id, refreshJobsheets, mergeJobsheetSnapshot, inlineEditorTargetId, inlineEditorVisible, refreshPlanner]);
 
   const handleChangeDocumentsFolder = useCallback(async () => {
     const api = window.api;
@@ -9380,6 +8474,74 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     }
   }, [business, onBusinessUpdate]);
 
+  const handleOpenDocumentsFolder = useCallback(async () => {
+    const folderPath = business.save_path || '';
+    if (!folderPath) {
+      setError('Documents folder not configured');
+      return;
+    }
+    try {
+      setError('');
+      const res = await window.api?.openPath?.(folderPath);
+      if (res && res.ok === false) {
+        throw new Error(res.message || 'Unable to open folder');
+      }
+    } catch (err) {
+      console.error('Failed to open documents folder', err);
+      setError(err?.message || 'Unable to open folder');
+    }
+  }, [business.save_path]);
+
+  const handleOpenDocumentFile = useCallback(async (filePath) => {
+    const path = filePath || '';
+    if (!path) {
+      setError('PDF not available');
+      return;
+    }
+    try {
+      setError('');
+      const res = await window.api?.openPath?.(path);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to open file');
+    } catch (err) {
+      console.error('Open failed', err);
+      setError(err?.message || 'Unable to open file');
+    }
+  }, []);
+
+  const handleRevealDocument = useCallback(async (filePath) => {
+    const path = filePath || '';
+    if (!path) {
+      setError('PDF not available');
+      return;
+    }
+    try {
+      setError('');
+      const res = await window.api?.showItemInFolder?.(path);
+      if (res && res.ok === false) throw new Error(res.message || 'Unable to reveal file');
+    } catch (err) {
+      console.error('Reveal failed', err);
+      setError(err?.message || 'Unable to reveal file');
+    }
+  }, []);
+
+  const handleDeleteDocumentRecord = useCallback(async (doc) => {
+    if (!doc || !doc.document_id) return;
+    const locked = !!doc.is_locked;
+    if (locked) {
+      window.alert('Unlock the record before deleting.');
+      return;
+    }
+    const removeFile = window.confirm('Also delete the PDF file from disk?');
+    try {
+      await window.api?.deleteDocument?.(doc.document_id, { removeFile });
+      setMessage('Invoice deleted');
+      setTimeout(() => setMessage(''), 1200);
+    } catch (err) {
+      console.error('Delete failed', err);
+      setError(err?.message || 'Unable to delete');
+    }
+  }, []);
+
   const handleToggleStartAtLogin = useCallback(async (nextValue) => {
     const api = window.api;
     if (!api || typeof api.setLoginItemSettings !== 'function') return;
@@ -9396,85 +8558,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
       setLoginSettingsLoading(false);
     }
   }, []);
-
-  const handleDeleteSelected = useCallback(async () => {
-    if (!selectedDocuments.size) return;
-    const ids = Array.from(selectedDocuments);
-    const lockedIds = (normalizedDocuments || [])
-      .filter(doc => ids.includes(doc.document_id) && doc.is_locked)
-      .map(doc => doc.document_id);
-    const confirmMessage = ids.length === 1
-      ? 'Delete the selected document?'
-      : `Delete ${ids.length} selected documents?`;
-    if (!window.confirm(confirmMessage)) return;
-
-    const hasFiles = normalizedDocuments.some(doc => ids.includes(doc.document_id) && doc.fileAvailable);
-    let removeFiles = false;
-    if (hasFiles) {
-      removeFiles = window.confirm('Also remove the generated files from disk?');
-    }
-
-    try {
-      setError('');
-      if (lockedIds.length) {
-        const doUnlock = window.confirm(`${lockedIds.length} selected document(s) are locked. Unlock and delete all?`);
-        if (!doUnlock) return;
-        await Promise.all(lockedIds.map(id => window.api?.setDocumentLock?.(id, false)));
-      }
-      await Promise.all(ids.map(id => window.api?.deleteDocument?.(id, { removeFile: removeFiles })));
-      setMessage(ids.length === 1 ? 'Document deleted' : 'Selected documents deleted');
-      await refreshDocuments();
-      setSelectedDocuments(new Set());
-      const impactedJobsheets = new Set();
-      normalizedDocuments.forEach(doc => {
-        if (ids.includes(doc.document_id) && doc.jobsheet_id != null) {
-          impactedJobsheets.add(Number(doc.jobsheet_id));
-        }
-      });
-      if (impactedJobsheets.size) {
-        impactedJobsheets.forEach(id => {
-          window.api?.notifyJobsheetChange?.({
-            type: 'documents-updated',
-            businessId: business.id,
-            jobsheetId: id,
-            documentIds: ids
-          });
-        });
-      } else {
-        window.api?.notifyJobsheetChange?.({
-          type: 'documents-updated',
-          businessId: business.id,
-          documentIds: ids
-        });
-      }
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to delete selected documents', err);
-      setError(err?.message || 'Unable to delete selected documents');
-    }
-  }, [selectedDocuments, normalizedDocuments, refreshDocuments, business.id]);
-
-  const handleUnlockSelected = useCallback(async () => {
-    if (!selectedDocuments.size) return;
-    const ids = Array.from(selectedDocuments);
-    const lockedIds = (normalizedDocuments || [])
-      .filter(doc => ids.includes(doc.document_id) && doc.is_locked)
-      .map(doc => doc.document_id);
-    if (!lockedIds.length) return;
-    const confirmMessage = lockedIds.length === 1
-      ? 'Unlock the selected document?'
-      : `Unlock ${lockedIds.length} selected documents?`;
-    if (!window.confirm(confirmMessage)) return;
-    try {
-      await Promise.all(lockedIds.map(id => window.api?.setDocumentLock?.(id, false)));
-      setMessage(lockedIds.length === 1 ? 'Document unlocked' : 'Selected documents unlocked');
-      await refreshDocuments();
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to unlock selected documents', err);
-      setError(err?.message || 'Unable to unlock selected documents');
-    }
-  }, [selectedDocuments, normalizedDocuments, refreshDocuments]);
 
   const completedPlannerStatuses = useMemo(() => new Set(['sent', 'done', 'completed', 'dismissed']), []);
 
@@ -9580,539 +8663,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
     }
   }, [business.id, refreshPlanner]);
 
-
-  const normalizedDocuments = useMemo(() => {
-    return (documents || []).map(doc => {
-      const typeLabel = DOCUMENT_TYPE_LABELS[doc.doc_type] || startCaseKey(doc.doc_type || 'document');
-      const displayClient = doc.display_client_name || doc.client_name || doc.joined_client_name || '';
-      const displayEvent = doc.display_event_name || doc.event_name || doc.joined_event_name || '';
-      const eventDateRaw = doc.display_event_date || doc.joined_event_date || doc.event_date || '';
-      const documentDateRaw = doc.document_date || '';
-      const eventDateIso = eventDateRaw ? formatDateInput(eventDateRaw) : '';
-      const formattedEventDate = eventDateIso ? formatCompactDate(eventDateIso) : '—';
-      const formattedDocumentDate = documentDateRaw ? formatCompactDate(documentDateRaw) : '';
-      const createdAtDisplay = formatCompactDate(doc.created_at);
-      const createdAtFull = doc.created_at ? formatTimestampDisplay(doc.created_at) : '';
-      const statusLabel = (doc.status || 'draft').replace(/_/g, ' ');
-      const fileName = doc.file_name || (doc.file_path ? doc.file_path.split(/[\\/]+/).filter(Boolean).pop() : '');
-      const displayLabel = doc.display_label || doc.definition_label || typeLabel;
-      const filePrefix = '';
-      const fileSuffix = '';
-      const folderPath = doc.folder_path || '';
-      const fileAvailable = doc.file_available !== false && Boolean(doc.file_path);
-      const fileExtension = getFileExtension(doc.file_path || doc.file_name || '');
-      const isOrphan = Boolean(doc.is_orphan) || doc.document_id == null;
-
-      return {
-        ...doc,
-        typeLabel,
-        displayClient: displayClient || '—',
-        displayEvent: displayEvent || '',
-        eventDateIso,
-        formattedEventDate,
-        formattedDocumentDate,
-        createdAtDisplay,
-        createdAtFull,
-        statusLabel,
-        fileName,
-        displayLabel,
-        filePrefix,
-        fileSuffix,
-        folderPath,
-        fileAvailable,
-        fileExtension,
-        isOrphan
-      };
-    });
-  }, [documents]);
-
-  // Helpers for matching PDFs to workbooks by base filename (no extension)
-  const baseNameNoExt = useCallback((fp) => {
-    const name = fp ? String(fp).split(/[\\/]+/).pop() : '';
-    return name ? name.replace(/\.[^.]+$/, '') : '';
-  }, []);
-
-  const pdfBaseNames = useMemo(() => {
-    const set = new Set();
-    (normalizedDocuments || []).forEach(doc => {
-      const path = doc?.file_path || '';
-      if (path && path.toLowerCase().endsWith('.pdf')) {
-        const base = baseNameNoExt(path);
-        if (base) set.add(base);
-      }
-    });
-    return set;
-  }, [normalizedDocuments, baseNameNoExt]);
-
-  useEffect(() => {
-    setSelectedDocuments(prev => {
-      const next = new Set();
-      normalizedDocuments.forEach(doc => {
-        if (prev.has(doc.document_id)) {
-          next.add(doc.document_id);
-        }
-      });
-      return next;
-    });
-  }, [normalizedDocuments]);
-
-  const toggleDocumentSelection = useCallback((docId, checked) => {
-    setSelectedDocuments(prev => {
-      const next = new Set(prev);
-      if (checked) {
-        next.add(docId);
-      } else {
-        next.delete(docId);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleSelectGroupDocs = useCallback((docIds, checked) => {
-    setSelectedDocuments(prev => {
-      const next = new Set(prev);
-      docIds.forEach(id => {
-        if (checked) {
-          next.add(id);
-        } else {
-          next.delete(id);
-        }
-      });
-      return next;
-    });
-  }, []);
-
-  const handleToggleColumn = useCallback((columnKey) => {
-    setDocumentColumnsState(prev => {
-      if (DOCUMENT_COLUMNS.find(column => column.key === columnKey)?.always) {
-        return prev;
-      }
-      const current = prev?.[columnKey] !== false;
-      return {
-        ...prev,
-        [columnKey]: !current
-      };
-    });
-  }, []);
-
-  const selectedCount = selectedDocuments.size;
-  const documentsSearchValue = documentsSearch.trim().toLowerCase();
-
-  const documentTypeOptions = useMemo(() => {
-    const map = new Map();
-    (normalizedDocuments || []).forEach(doc => {
-      const key = doc.doc_type || 'other';
-      const label = doc.typeLabel || startCaseKey(key);
-      if (!map.has(key)) map.set(key, label);
-    });
-    return Array.from(map.entries())
-      .map(([value, label]) => ({ value, label }))
-      .sort((a, b) => a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }));
-  }, [normalizedDocuments]);
-
-  const documentExtensionOptions = useMemo(() => {
-    const set = new Set();
-    (normalizedDocuments || []).forEach(doc => {
-      if (doc.fileExtension) set.add(doc.fileExtension);
-    });
-    return Array.from(set)
-      .sort((a, b) => a.localeCompare(b, 'en', { sensitivity: 'base' }))
-      .map(ext => ({ value: ext, label: ext.toUpperCase() }));
-  }, [normalizedDocuments]);
-
-  const filteredDocuments = useMemo(() => {
-    let list = normalizedDocuments;
-    if (documentsTypeFilter !== 'all') {
-      list = list.filter(doc => (doc.doc_type || 'other') === documentsTypeFilter);
-    }
-    if (documentsExtensionFilter !== 'all') {
-      list = list.filter(doc => doc.fileExtension === documentsExtensionFilter);
-    }
-    if (documentsLinkFilter !== 'all') {
-      const wantsOrphans = documentsLinkFilter === 'orphaned';
-      list = list.filter(doc => doc.isOrphan === wantsOrphans);
-    }
-    if (!documentsSearchValue) return list;
-    return list.filter(doc => {
-      const haystack = [
-        doc.typeLabel,
-        doc.displayLabel,
-        doc.displayClient,
-        doc.displayEvent,
-        doc.statusLabel,
-        doc.formattedEventDate,
-        doc.formattedDocumentDate,
-        doc.createdAtDisplay,
-        doc.createdAtFull,
-        doc.doc_type,
-        doc.file_path,
-        doc.fileName,
-        doc.filePrefix,
-        doc.folderPath,
-        doc.number ? `#${doc.number}` : '',
-        doc.document_id != null ? String(doc.document_id) : ''
-      ].join(' ').toLowerCase();
-      return haystack.includes(documentsSearchValue);
-    });
-  }, [normalizedDocuments, documentsSearchValue, documentsTypeFilter, documentsExtensionFilter, documentsLinkFilter]);
-
-  const groupedDocuments = useMemo(() => {
-    if (documentsGroup === 'none') {
-      return [];
-    }
-
-    const groups = new Map();
-    const ensureGroup = (key, label) => {
-      const mapKey = key || '__missing__';
-      if (!groups.has(mapKey)) {
-        groups.set(mapKey, { key: mapKey, label: label || 'Other', items: [] });
-      }
-      return groups.get(mapKey);
-    };
-
-    filteredDocuments.forEach(doc => {
-      if (documentsGroup === 'client') {
-        const key = (doc.displayClient && doc.displayClient !== '—') ? doc.displayClient : 'No client';
-        const entry = ensureGroup(key, key);
-        entry.items.push(doc);
-      } else if (documentsGroup === 'event_date') {
-        const key = doc.eventDateIso || 'no-date';
-        const label = doc.eventDateIso ? doc.formattedEventDate : 'No event date';
-        const entry = ensureGroup(key, label);
-        entry.items.push(doc);
-      }
-    });
-
-    const result = Array.from(groups.values());
-    if (documentsGroup === 'event_date') {
-      result.sort((a, b) => {
-        if (a.key === 'no-date') return 1;
-        if (b.key === 'no-date') return -1;
-        return a.key.localeCompare(b.key);
-      });
-    } else {
-      result.sort((a, b) => a.label.localeCompare(b.label, 'en', { sensitivity: 'base' }));
-    }
-
-    result.forEach(group => {
-      group.items.sort((a, b) => {
-        if (documentsGroup === 'client') {
-          const dateA = a.eventDateIso || '9999-99-99';
-          const dateB = b.eventDateIso || '9999-99-99';
-          if (dateA !== dateB) return dateA.localeCompare(dateB);
-        }
-        if (documentsGroup === 'event_date') {
-          const clientA = (a.displayClient || '').toLowerCase();
-          const clientB = (b.displayClient || '').toLowerCase();
-          if (clientA !== clientB) return clientA.localeCompare(clientB);
-        }
-        const nameA = (a.fileName || a.displayLabel || '').toLowerCase();
-        const nameB = (b.fileName || b.displayLabel || '').toLowerCase();
-        return nameA.localeCompare(nameB);
-      });
-    });
-
-    return result;
-  }, [documentsGroup, filteredDocuments]);
-
-  const activeDocumentColumns = useMemo(() => (
-    DOCUMENT_COLUMNS.filter(column => column.always || documentColumnsState[column.key] !== false)
-  ), [documentColumnsState]);
-
-  const canDeleteSelected = selectedCount > 0 && !documentsLoading;
-  const hasLockedSelected = useMemo(() => {
-    if (!selectedCount) return false;
-    const ids = new Set(Array.from(selectedDocuments));
-    return (normalizedDocuments || []).some(doc => ids.has(doc.document_id) && doc.is_locked);
-  }, [selectedCount, selectedDocuments, normalizedDocuments]);
-  const canUnlockSelected = selectedCount > 0 && hasLockedSelected && !documentsLoading;
-
-  const documentsGroupLabel = DOCUMENT_GROUP_OPTIONS.find(option => option.value === documentsGroup)?.label || 'All Documents';
-  const headerSubtitle = documentsGroup === 'none'
-    ? `${filteredDocuments.length} item${filteredDocuments.length === 1 ? '' : 's'}`
-    : `${filteredDocuments.length} items · ${documentsGroupLabel}`;
-
-  const hasDocumentsFilter = documentsSearchValue
-    || documentsTypeFilter !== 'all'
-    || documentsExtensionFilter !== 'all'
-    || documentsLinkFilter !== 'all';
-  const emptyStateMessage = hasDocumentsFilter
-    ? 'No documents match your filters.'
-    : documentsGroup === 'none'
-      ? 'No documents generated yet.'
-      : 'No documents available in this group yet.';
-
-  const renderDocumentTable = useCallback((items) => {
-    if (!items.length) return null;
-
-    const docIds = items
-      .map(doc => doc.document_id)
-      .filter(id => id != null);
-    const allSelected = docIds.length > 0 && docIds.every(id => selectedDocuments.has(id));
-    const someSelected = docIds.some(id => selectedDocuments.has(id));
-
-    return (
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
-        <table className="w-full table-auto text-sm">
-          <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-600">
-            <tr>
-              <th className="w-12 px-3 py-3 text-left">
-                <IndeterminateCheckbox
-                  checked={allSelected}
-                  indeterminate={!allSelected && someSelected}
-                  onChange={event => handleSelectGroupDocs(docIds, event.target.checked)}
-                  aria-label="Select group"
-                />
-              </th>
-              {activeDocumentColumns.map(column => {
-                const alignClass = column.align === 'right'
-                  ? 'text-right'
-                  : column.align === 'center'
-                    ? 'text-center'
-                    : 'text-left';
-                return (
-                  <th
-                    key={column.key}
-                    className={`px-3 py-3 ${alignClass}`}
-                  >
-                    {column.label}
-                  </th>
-                );
-              })}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200">
-            {items.map((doc, index) => {
-              const selectable = doc.document_id != null;
-              const rowSelected = selectable ? selectedDocuments.has(doc.document_id) : false;
-              const rowClass = rowSelected
-                ? 'bg-indigo-50/80'
-                : index % 2 === 0
-                  ? 'bg-white'
-                  : 'bg-slate-50';
-              const rowKey = doc.document_id != null
-                ? `doc-${doc.document_id}`
-                : `file-${doc.file_path || index}`;
-              const typeBadge = doc.typeLabel + (doc.number ? ` #${doc.number}` : '');
-              const primaryText = doc.fileName || doc.displayLabel || typeBadge;
-              const secondaryTexts = [];
-              if (doc.displayLabel && doc.displayLabel !== primaryText) secondaryTexts.push(doc.displayLabel);
-              if (doc.filePrefix) secondaryTexts.push(doc.filePrefix);
-              if (typeBadge && typeBadge !== primaryText && typeBadge !== doc.displayLabel) secondaryTexts.push(typeBadge);
-              const tooltipText = doc.file_path || doc.folderPath || primaryText;
-              return (
-                <tr key={rowKey} className={`transition ${rowClass}`}>
-                  <td className="align-top px-3 py-3">
-                    <input
-                      type="checkbox"
-                      className="mt-1 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                      checked={rowSelected}
-                      onChange={event => {
-                        if (!selectable) return;
-                        toggleDocumentSelection(doc.document_id, event.target.checked);
-                      }}
-                      aria-label="Select document"
-                      disabled={!selectable}
-                    />
-                  </td>
-                  {activeDocumentColumns.map(column => {
-                    const alignClass = column.align === 'right'
-                      ? 'text-right'
-                      : column.align === 'center'
-                        ? 'text-center'
-                        : 'text-left';
-                    let cell = null;
-                    if (column.key === 'document') {
-                      cell = (
-                        <div className="flex items-center gap-3">
-                          <span className="text-lg" role="img" aria-label={doc.typeLabel}>{getDocumentIcon(doc.doc_type)}</span>
-                          <div className="min-w-0 space-y-1">
-                            <div
-                              className="text-sm font-medium text-slate-700 truncate"
-                              title={tooltipText}
-                            >
-                              {primaryText}
-                            </div>
-                            {secondaryTexts.map((text, idx) => (
-                              <div key={`${text}-${idx}`} className="text-xs text-slate-500 truncate" title={text}>{text}</div>
-                            ))}
-                            {doc.folderPath ? (
-                              <div className="text-[11px] text-slate-400 truncate" title={doc.folderPath}>{doc.folderPath}</div>
-                            ) : null}
-                          </div>
-                          {doc.isOrphan ? (
-                            <div className="text-xs font-medium text-indigo-500">Orphaned</div>
-                          ) : !doc.fileAvailable ? (
-                            <div className="text-xs font-medium text-amber-600">Missing</div>
-                          ) : null}
-                        </div>
-                      );
-                    } else if (column.key === 'client') {
-                      cell = (
-                        <div className="text-slate-600">
-                          <div className="font-medium" title={doc.displayClient}>{doc.displayClient}</div>
-                          {doc.displayEvent ? (
-                            <div className="text-xs text-slate-500" title={doc.displayEvent}>{doc.displayEvent}</div>
-                          ) : null}
-                        </div>
-                      );
-                    } else if (column.key === 'event_date') {
-                      cell = (
-                        <div className="text-slate-600">
-                          <span title={doc.eventDateIso || undefined}>{doc.formattedEventDate}</span>
-                          {doc.formattedDocumentDate && doc.formattedDocumentDate !== doc.formattedEventDate ? (
-                            <div className="text-xs text-slate-500">Doc: {doc.formattedDocumentDate}</div>
-                          ) : null}
-                        </div>
-                      );
-                    } else if (column.key === 'created') {
-                      cell = (
-                        <div className="text-slate-600">
-                          <span title={doc.createdAtFull || undefined}>{doc.createdAtDisplay}</span>
-                        </div>
-                      );
-                    } else if (column.key === 'amount') {
-                      cell = (
-                        <div className="font-semibold text-slate-700">
-                          {toCurrency(doc.total_amount)}
-                        </div>
-                      );
-                    } else if (column.key === 'actions') {
-                      const isLocked = Boolean(doc?.is_locked);
-                      const isWorkbook = (doc?.doc_type || '').toLowerCase() === 'workbook';
-                      const isOrphan = Boolean(doc?.isOrphan);
-                      const fileExists = doc?.fileAvailable !== false && Boolean(doc?.file_path);
-                      const workbookHasPdf = isWorkbook && fileExists ? pdfBaseNames.has(baseNameNoExt(doc.file_path)) : false;
-                      if (isOrphan) {
-                        cell = (
-                          <div className="flex flex-wrap justify-end gap-1.5">
-                            <IconButton
-                              label="Open document"
-                              onClick={() => handleOpenDocumentFile(doc.file_path)}
-                              disabled={!fileExists}
-                            >
-                              <OpenIcon />
-                            </IconButton>
-                            <IconButton
-                              label="Reveal document in Finder"
-                              onClick={() => handleRevealDocument(doc.file_path)}
-                              disabled={!fileExists}
-                            >
-                              <RevealIcon />
-                            </IconButton>
-                            <IconButton
-                              label="Delete file"
-                              onClick={() => handleDeleteOrphanFile(doc)}
-                              disabled={!fileExists}
-                              className="border-red-200 text-red-600 hover:bg-red-50"
-                            >
-                              <DeleteIcon />
-                            </IconButton>
-                          </div>
-                        );
-                      } else {
-                        cell = (
-                          <div className="flex flex-wrap justify-end gap-1.5">
-                            <IconButton
-                              label={isLocked ? 'Unlock' : 'Lock'}
-                              onClick={async () => {
-                                try {
-                                  await window.api?.setDocumentLock?.(doc.document_id, !isLocked);
-                                  await refreshDocuments();
-                                } catch (err) {
-                                  console.error('Failed to toggle document lock', err);
-                                  setError(err?.message || 'Unable to toggle document lock');
-                                }
-                              }}
-                              disabled={!doc?.document_id}
-                              className={isLocked ? 'border-red-300 text-red-600 hover:bg-red-50' : 'border-green-300 text-green-600 hover:bg-green-50'}
-                            >
-                              <span className="text-base" aria-hidden>{isLocked ? '🔒' : '🔓'}</span>
-                            </IconButton>
-                            <IconButton
-                              label="Open document"
-                              onClick={() => handleOpenDocumentFile(doc.file_path)}
-                              disabled={!fileExists}
-                            >
-                              <OpenIcon />
-                            </IconButton>
-                            <IconButton
-                              label="Reveal document in Finder"
-                              onClick={() => handleRevealDocument(doc.file_path)}
-                              disabled={!fileExists}
-                            >
-                              <RevealIcon />
-                            </IconButton>
-                            {isWorkbook ? (
-                              <button
-                                type="button"
-                                onClick={() => handleExportWorkbookPdf(doc)}
-                                disabled={!fileExists || isLocked || workbookHasPdf}
-                                className="inline-flex items-center rounded border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-                              >
-                                Export
-                              </button>
-                            ) : null}
-                            <IconButton
-                              label="Delete document"
-                              onClick={() => handleDeleteDocumentRecord(doc)}
-                              disabled={doc?.document_id == null}
-                              className="border-red-200 text-red-600 hover:bg-red-50"
-                            >
-                              <DeleteIcon />
-                            </IconButton>
-                          </div>
-                        );
-                      }
-                    }
-
-                    return (
-                      <td
-                        key={column.key}
-                        className={`align-top px-3 py-3 text-sm text-slate-600 ${alignClass}`}
-                      >
-                        {cell}
-                      </td>
-                    );
-                  })}
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    );
-  }, [activeDocumentColumns, handleDeleteDocumentRecord, handleDeleteOrphanFile, handleOpenDocumentFile, handleRevealDocument, handleSelectGroupDocs, selectedDocuments, toggleDocumentSelection, pdfBaseNames, baseNameNoExt, refreshDocuments]);
-
-  const documentsContent = useMemo(() => {
-    if (!filteredDocuments.length) {
-      return (
-        <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-500">
-          {emptyStateMessage}
-        </div>
-      );
-    }
-
-    if (documentsGroup === 'none') {
-      return renderDocumentTable(filteredDocuments);
-    }
-
-    return (
-      <div className="space-y-4">
-        {groupedDocuments.map(group => (
-          <div key={group.key} className="space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-semibold text-slate-700">{group.label}</div>
-              <div className="text-xs text-slate-500">
-                {group.items.length} item{group.items.length === 1 ? '' : 's'}
-              </div>
-            </div>
-            {renderDocumentTable(group.items)}
-          </div>
-        ))}
-      </div>
-    );
-  }, [documentsGroup, filteredDocuments, groupedDocuments, emptyStateMessage, renderDocumentTable]);
 
   const openJobsheetWindow = useCallback((jobsheetId) => {
     const api = window.api;
@@ -10368,7 +8918,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
         <div className="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-semibold text-slate-800">{business.business_name}</h1>
-            <p className="text-sm text-slate-500">Manage jobsheets, documents, and templates in one workspace.</p>
+            <p className="text-sm text-slate-500">Manage jobsheets, planner, invoices, and templates in one workspace.</p>
           </div>
           {/* Switch business removed */}
         </div>
@@ -10620,7 +9170,7 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
 
             {workspaceSection === 'templates' ? (
               <section className="rounded-lg border border-slate-200 bg-white p-6">
-                <TemplatesManager business={business} onTemplatesUpdated={refreshDocuments} />
+                <TemplatesManager business={business} />
               </section>
             ) : null}
 
@@ -10979,35 +9529,6 @@ function MCMSWorkspace({ business, onBusinessUpdate }) {
       setError(err?.message || 'Unable to delete');
     }
   }, [refreshDocs]);
-
-  const documentsContent = (
-    <div className="space-y-2">
-      {docsLoading ? <div className="text-sm text-slate-500">Loading…</div> : null}
-      {docs.map(row => {
-        const number = row.number != null ? `#${row.number}` : '';
-        const label = `${(row.doc_type || '').toString().toUpperCase()} ${number}`.trim();
-        return (
-          <div key={row.document_id} className="flex items-center justify-between rounded border border-slate-200 px-3 py-2">
-            <div className="flex flex-col">
-              <div className="text-sm font-medium text-slate-700">{label} — {row.display_client_name || row.client_name || ''}</div>
-              <div className="text-xs text-slate-500">{row.file_path || 'No file yet'}</div>
-            </div>
-            <div className="flex items-center gap-2">
-              {row.file_path ? (
-                <>
-                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => window.api.openPath(row.file_path)}>Open</button>
-                  <button className="text-xs px-2 py-1 border rounded border-slate-300 text-slate-600 hover:bg-slate-50" onClick={() => window.api.showItemInFolder(row.file_path)}>Reveal</button>
-                  <button className="text-xs px-2 py-1 border rounded border-indigo-200 text-indigo-600 hover:bg-indigo-50" onClick={() => emailDocument(row)}>Email</button>
-                </>
-              ) : null}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-
-  
 
   const editor = clientEditor || { client: {}, emails: [], phones: [], addresses: [] };
   const onChangeList = (key, updater) => setClientEditor(prev => prev ? { ...prev, [key]: updater(Array.isArray(prev[key]) ? prev[key] : []) } : prev);
