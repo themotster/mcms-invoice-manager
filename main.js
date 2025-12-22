@@ -1202,34 +1202,6 @@ end tell`;
   }
 });
 
-ipcMain.handle('normalize-template', async (_event, args = {}) => {
-  try {
-    const { documentService } = ensureServices();
-    const result = await documentService.normalizeTemplate(args);
-    return result;
-  } catch (err) {
-    return { ok: false, message: err?.message || String(err) };
-  }
-});
-
-ipcMain.handle('open-template', async (_event, args = {}) => {
-  try {
-    const providedPath = typeof args?.templatePath === 'string' && args.templatePath.trim()
-      ? args.templatePath.trim()
-      : null;
-    const templatePath = providedPath
-      ? path.resolve(providedPath)
-      : path.resolve(__dirname, 'AhMen Client Data and Docs Template.xlsx');
-    const result = await shell.openPath(templatePath);
-    if (result) {
-      return { ok: false, message: result };
-    }
-    return { ok: true, templatePath };
-  } catch (err) {
-    return { ok: false, message: err?.message || String(err) };
-  }
-});
-
 ipcMain.handle('watch-documents', async (_event, args = {}) => {
   try {
     const { documentService } = ensureServices();
