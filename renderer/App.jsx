@@ -39,30 +39,21 @@ const DOCUMENT_TYPE_LABELS = {
   invoice: 'Invoice',
   quote: 'Quote',
   contract: 'Contract',
-  workbook: 'Excel Workbook',
   pdf_export: 'PDF Export'
 };
 
 const DOC_TYPE_META = {
   invoice: {
     label: DOCUMENT_TYPE_LABELS.invoice,
-    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
-    supportsNormalize: true
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
   },
   quote: {
     label: DOCUMENT_TYPE_LABELS.quote,
-    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
-    supportsNormalize: true
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
   },
   contract: {
     label: DOCUMENT_TYPE_LABELS.contract,
-    filters: [{ name: 'Word documents', extensions: ['docx'] }],
-    supportsNormalize: false
-  },
-  workbook: {
-    label: DOCUMENT_TYPE_LABELS.workbook,
-    filters: [{ name: 'Excel workbooks', extensions: ['xlsx'] }],
-    supportsNormalize: true
+    filters: [{ name: 'PDF', extensions: ['pdf'] }]
   }
 };
 
@@ -89,11 +80,6 @@ const HIDDEN_JOBSHEET_FIELDS = new Set([
 const BOOKING_PACK_DEFINITION_KEYS = new Set(['booking_schedule', 'invoice_deposit']);
 
 const DOCUMENT_CARD_TONES = {
-  workbook: {
-    outerBorder: 'border-teal-200',
-    outerBg: 'rgba(209,250,229,0.85)',
-    innerBorder: 'border-teal-200'
-  },
   quote: {
     outerBorder: 'border-sky-200',
     outerBg: 'rgba(224,242,254,0.85)',
@@ -118,7 +104,6 @@ const DOCUMENT_CARD_TONES = {
 
 const DOCUMENT_FEATURES_ENABLED = true;
 const DOCUMENT_GENERATION_ENABLED = true;
-const HARD_LOCKED_DEFINITION_KEYS = new Set(['workbook']);
 
 const WORKSPACE_ICON_MAP = {
   jobsheets: '🗂️',
@@ -513,7 +498,7 @@ const GROUP_CONFIG = {
   },
   documents: {
     title: 'Documents',
-    description: 'Generate Excel outputs and manage PDFs.',
+    description: 'Generate and manage PDFs.',
     staticOnly: true,
     fields: ['documents_panel']
   },
@@ -1031,7 +1016,6 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
   const [list, setList] = useState([]);
   const [filter, setFilter] = useState('all'); // all | unpaid | overdue | duesoon | paid
   const [search, setSearch] = useState('');
-  const [importing, setImporting] = useState(false);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState(null);
   // More inline edit state
   const [editingAmountId, setEditingAmountId] = useState(null);
@@ -1103,10 +1087,6 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     try {
       setLoading(true);
       setError('');
-      // First, index any PDFs named with (INV-###) into invoice rows
-      try { await window.api?.indexInvoicesFromFilenames?.({ businessId }); } catch (_err) {}
-      // Reconcile DB with filesystem to avoid ghost files before loading
-      try { await window.api?.cleanOrphanDocuments?.({ businessId }); } catch (_err) {}
       const allDocs = await window.api?.getDocuments?.({ businessId });
       const docs = Array.isArray(allDocs) ? allDocs : [];
 
@@ -1204,22 +1184,6 @@ function InvoiceLogPanel({ business, onOpenFile, onRevealFile, onDeleteDocument 
     const exists = (Array.isArray(list) ? list : []).some(d => d && d.document_id === selectedInvoiceId);
     if (!exists) setSelectedInvoiceId(null);
   }, [list, selectedInvoiceId]);
-
-  const handleImportHistoric = useCallback(async () => {
-    if (!businessId || !window.api || typeof window.api.indexInvoicesFromFilenames !== 'function') return;
-    try {
-      setImporting(true);
-      const result = await window.api.indexInvoicesFromFilenames({ businessId });
-      await refresh();
-      const count = result && typeof result.imported === 'number' ? result.imported : 0;
-      window.alert(`Imported ${count} invoice${count === 1 ? '' : 's'} from filenames`);
-    } catch (err) {
-      console.error('Historic import failed', err);
-      setError(err?.message || 'Unable to import historic invoices');
-    } finally {
-      setImporting(false);
-    }
-  }, [businessId, refresh]);
 
   // Auto-refresh on document change events and jobsheet document updates
   useEffect(() => {
@@ -2643,7 +2607,6 @@ function JobsheetList({
             <p className="text-sm text-slate-500">{summaryLabel}</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <ImportJobsheetButton business={business} onCreated={(id) => onOpen?.(id)} />
             <div className="relative inline-block">
               <button
                 type="button"
@@ -2912,375 +2875,6 @@ function JobsheetList({
     </div>
   );
 }
-
-function ImportJobsheetButton({ business, onCreated }) {
-  const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [errorLocal, setErrorLocal] = useState('');
-  const [source, setSource] = useState({ folder: '', workbook_path: '', invoices: [] });
-  const [draft, setDraft] = useState({
-    // Client
-    client_name: '',
-    client_email: '',
-    client_phone: '',
-    client_address1: '',
-    client_address2: '',
-    client_address3: '',
-    client_town: '',
-    client_postcode: '',
-    // Event
-    event_type: '',
-    event_date: '',
-    event_start: '',
-    event_end: '',
-    // Venue
-    venue_name: '',
-    venue_address1: '',
-    venue_address2: '',
-    venue_address3: '',
-    venue_town: '',
-    venue_postcode: '',
-    // Services
-    service_types: '',
-    specialist_singers: '',
-    caterer_name: ''
-  });
-
-  const setField = (key, value) => setDraft(prev => ({ ...prev, [key]: value }));
-
-  // Normalize typed time strings to 24-hour HH:MM
-  const to24h = (h, min, ap) => {
-    let hour = Number(h);
-    let m = Number(min);
-    if (Number.isNaN(hour)) hour = 0;
-    if (Number.isNaN(m)) m = 0;
-    hour = Math.max(0, Math.min(23, hour));
-    m = Math.max(0, Math.min(59, m));
-    if (ap) {
-      const ampm = ap.toUpperCase();
-      hour = hour % 12;
-      if (ampm === 'PM') hour += 12;
-    }
-    return `${String(hour).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-  };
-  const normalizeTime24 = (input) => {
-    const raw = (input || '').toString().trim();
-    if (!raw) return '';
-    let s = raw.replace(/\./g, ':').replace(/-/g, ':').replace(/\s+/g, ' ').trim();
-    // 12h with optional minutes and optional space before am/pm
-    let m = s.match(/^(\d{1,2})(?::(\d{1,2}))?\s*([AaPp][Mm])$/);
-    if (m) return to24h(m[1], m[2] ?? '0', m[3]);
-    // 24h HH:MM
-    m = s.match(/^(\d{1,2}):(\d{1,2})$/);
-    if (m) return to24h(m[1], m[2]);
-    // Compact 3-4 digits e.g. 730 or 1530
-    m = s.match(/^(\d{3,4})$/);
-    if (m) {
-      const num = m[1];
-      const mm = num.slice(-2);
-      const hh = num.slice(0, num.length - 2);
-      return to24h(hh, mm);
-    }
-    // Bare hour
-    m = s.match(/^(\d{1,2})$/);
-    if (m) return to24h(m[1], '0');
-    return raw;
-  };
-
-  useEffect(() => {
-    // Lock background scroll when modal is open
-    try {
-      if (open) {
-        const prev = document.body.style.overflow;
-        document.body.dataset.prevOverflow = prev || '';
-        document.body.style.overflow = 'hidden';
-      } else if (document.body.dataset.prevOverflow !== undefined) {
-        document.body.style.overflow = document.body.dataset.prevOverflow;
-        delete document.body.dataset.prevOverflow;
-      }
-    } catch (_) {}
-    return () => {
-      try {
-        if (document.body.dataset.prevOverflow !== undefined) {
-          document.body.style.overflow = document.body.dataset.prevOverflow;
-          delete document.body.dataset.prevOverflow;
-        }
-      } catch (_) {}
-    };
-  }, [open]);
-
-  const handleChoose = async () => {
-    try {
-      setErrorLocal('');
-      const folder = await window.api?.chooseDirectory?.({ title: 'Select source for import', defaultPath: business?.save_path || undefined });
-      if (!folder) return;
-      setLoading(true);
-      const res = await window.api?.extractJobsheetFromFolder?.({ folderPath: folder });
-      setLoading(false);
-      if (!res || res.ok === false) { setErrorLocal(res?.message || 'Unable to extract'); return; }
-      const sug = res.suggested || {};
-      const init = {
-        client_name: sug.client_name || '',
-        client_email: sug.client_email || '',
-        client_phone: sug.client_phone || '',
-        client_address1: sug.client_address1 || '',
-        client_address2: sug.client_address2 || '',
-        client_address3: sug.client_address3 || '',
-        client_town: sug.client_town || '',
-        client_postcode: sug.client_postcode || '',
-        event_type: sug.event_type || '',
-        event_date: sug.event_date || '',
-        event_start: sug.event_start || '',
-        event_end: sug.event_end || '',
-        venue_name: sug.venue_name || '',
-        venue_address1: sug.venue_address1 || '',
-        venue_address2: sug.venue_address2 || '',
-        venue_address3: sug.venue_address3 || '',
-        venue_town: sug.venue_town || '',
-        venue_postcode: sug.venue_postcode || '',
-        service_types: sug.service_types || '',
-        specialist_singers: sug.specialist_singers || '',
-        caterer_name: sug.caterer_name || ''
-      };
-      setDraft(init);
-      setSource({ folder: res.folder || folder, workbook_path: res.workbook_path || '', invoices: Array.isArray(res.invoices) ? res.invoices : [] });
-      setOpen(true);
-    } catch (err) {
-      setLoading(false);
-      console.error('Import failed', err);
-      setErrorLocal(err?.message || 'Import failed');
-    }
-  };
-
-  const handleApply = async () => {
-    try {
-      setErrorLocal('');
-      const client = (draft.client_name || '').trim();
-      if (!client) { setErrorLocal('Client name is required'); return; }
-      const payload = {
-        business_id: business?.id,
-        status: 'contracting',
-        client_name: client,
-        event_date: draft.event_date || null,
-        client_email: draft.client_email || null,
-        client_phone: draft.client_phone || null,
-        client_address1: draft.client_address1 || null,
-        client_address2: draft.client_address2 || null,
-        client_address3: draft.client_address3 || null,
-        client_town: draft.client_town || null,
-        client_postcode: draft.client_postcode || null,
-        event_type: draft.event_type || null,
-        event_start: draft.event_start || null,
-        event_end: draft.event_end || null,
-        venue_name: draft.venue_name || null,
-        venue_address1: draft.venue_address1 || null,
-        venue_address2: draft.venue_address2 || null,
-        venue_address3: draft.venue_address3 || null,
-        venue_town: draft.venue_town || null,
-        venue_postcode: draft.venue_postcode || null,
-        service_types: draft.service_types || null,
-        specialist_singers: draft.specialist_singers || null,
-        caterer_name: draft.caterer_name || null
-      };
-      const id = await window.api?.addAhmenJobsheet?.(payload);
-      if (id) {
-        window.api?.notifyJobsheetChange?.({ type: 'jobsheet-created', businessId: business?.id, jobsheetId: id });
-        setOpen(false);
-        onCreated?.(id);
-      } else {
-        setErrorLocal('Failed to create jobsheet');
-      }
-    } catch (err) {
-      console.error('Create from import failed', err);
-      setErrorLocal(err?.message || 'Unable to create jobsheet');
-    }
-  };
-
-  return (
-    <>
-      <button
-        type="button"
-        className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
-        onClick={handleChoose}
-        disabled={loading}
-      >
-        {loading ? 'Scanning…' : 'Import'}
-      </button>
-
-      {open ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
-          <div
-            className="w-full max-w-2xl rounded-lg bg-white p-6 shadow-xl overflow-y-auto"
-            style={{ maxHeight: '60vh' }}
-          >
-            <div className="flex items-start justify-between border-b border-slate-200 pb-4">
-              <div>
-                <h3 className="text-lg font-semibold text-slate-800">Import</h3>
-                <p className="text-sm text-slate-500">Review and edit values before creating the jobsheet.</p>
-              </div>
-              <button type="button" onClick={() => setOpen(false)} className="text-slate-400 hover:text-slate-600" aria-label="Close import modal">✕</button>
-            </div>
-            <div className="mt-4 space-y-4">
-              {errorLocal ? (
-                <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{errorLocal}</div>
-              ) : null}
-              <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600 flex items-center justify-between gap-2">
-                <div className="truncate">
-                  <div><span className="font-medium">Source:</span> <span className="truncate" title={source.folder}>{source.folder || '—'}</span></div>
-                  <div><span className="font-medium">Workbook:</span> <span className="truncate" title={source.workbook_path}>{source.workbook_path || '—'}</span></div>
-                  <div><span className="font-medium">Invoices:</span> {source.invoices && source.invoices.length ? `${source.invoices.length} found` : 'none'}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {source.workbook_path ? (
-                    <button type="button" className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={() => window.api?.openPath?.(source.workbook_path)}>Open workbook</button>
-                  ) : null}
-                  {source.folder ? (
-                    <button type="button" className="rounded border border-slate-300 px-2 py-1 text-xs" onClick={() => window.api?.openPath?.(source.folder)}>Open folder</button>
-                  ) : null}
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Client</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-medium text-slate-600">
-                  Client name
-                  <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_name} onChange={e => setField('client_name', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Email
-                    <input type="email" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_email} onChange={e => setField('client_email', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Phone
-                    <input type="tel" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_phone} onChange={e => setField('client_phone', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Address line 1
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_address1} onChange={e => setField('client_address1', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Address line 2
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_address2} onChange={e => setField('client_address2', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Address line 3
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_address3} onChange={e => setField('client_address3', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Town / City
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_town} onChange={e => setField('client_town', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Postcode
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.client_postcode} onChange={e => setField('client_postcode', e.target.value)} />
-                  </label>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Event</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-medium text-slate-600">
-                  Event date
-                  <input type="date" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={formatDateInput(draft.event_date)} onChange={e => setField('event_date', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Event type
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.event_type} onChange={e => setField('event_type', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Start time
-                    <input
-                      type="text"
-                      placeholder="e.g. 19:00"
-                      className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={draft.event_start}
-                      onChange={e => setField('event_start', e.target.value)}
-                      onBlur={e => setField('event_start', normalizeTime24(e.target.value))}
-                    />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    End time
-                    <input
-                      type="text"
-                      placeholder="e.g. 22:30"
-                      className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                      value={draft.event_end}
-                      onChange={e => setField('event_end', e.target.value)}
-                      onBlur={e => setField('event_end', normalizeTime24(e.target.value))}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Venue</div>
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="text-sm font-medium text-slate-600">
-                    Venue name
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_name} onChange={e => setField('venue_name', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Address line 1 (venue)
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_address1} onChange={e => setField('venue_address1', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Address line 2 (venue)
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_address2} onChange={e => setField('venue_address2', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Address line 3 (venue)
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_address3} onChange={e => setField('venue_address3', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Town / City
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_town} onChange={e => setField('venue_town', e.target.value)} />
-                  </label>
-                  <label className="text-sm font-medium text-slate-600">
-                    Postcode
-                    <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.venue_postcode} onChange={e => setField('venue_postcode', e.target.value)} />
-                  </label>
-                </div>
-              </div>
-
-              
-
-              <div>
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Services & Notes</div>
-                <label className="text-sm font-medium text-slate-600">
-                  Service types / ensemble
-                  <textarea rows={2} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.service_types} onChange={e => setField('service_types', e.target.value)} />
-                </label>
-                <label className="text-sm font-medium text-slate-600">
-                  Specialist singers
-                  <textarea rows={2} className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.specialist_singers} onChange={e => setField('specialist_singers', e.target.value)} />
-                </label>
-                <label className="text-sm font-medium text-slate-600">
-                  Caterer name
-                  <input type="text" className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500" value={draft.caterer_name} onChange={e => setField('caterer_name', e.target.value)} />
-                </label>
-              </div>
-
-              <p className="text-[11px] text-slate-500">You can adjust or add missing fields in the editor after creation.</p>
-            </div>
-            <div className="mt-4 pt-4 border-t border-slate-200 flex items-center justify-end gap-3">
-              <button type="button" onClick={() => setOpen(false)} className="inline-flex items-center rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50">Cancel</button>
-              <button
-                type="button"
-                className="inline-flex items-center rounded bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
-                onClick={handleApply}
-              >
-                Create jobsheet
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </>
-  );
-}
-
 
 function InlineJobsheetEditorPanel({
   business,
@@ -5013,7 +4607,6 @@ function DocumentsInlinePanel({
   error,
   onRefresh,
   onGenerate,
-  onExportPdf,
   onToggleLock,
   locksOverride = {},
   onOpenFile,
@@ -6946,7 +6539,6 @@ function JobsheetEditor({
   definitionsLoading,
   onRefreshDocuments,
   onGenerateDocument,
-  onExportPdf,
   onOpenDocumentFile,
   onRevealDocument,
   onDeleteDocument,
@@ -7585,7 +7177,6 @@ function JobsheetEditor({
                             error={documentsError}
                             onRefresh={onRefreshDocuments}
                             onGenerate={onGenerateDocument}
-                            onExportPdf={onExportPdf}
                             onToggleLock={handleToggleDefinitionLockInline}
                             locksOverride={definitionLocks}
                             onOpenFile={onOpenDocumentFile}
@@ -9268,287 +8859,6 @@ function BusinessWorkspace({ business, onBusinessUpdate }) {
   );
 }
 
-function JobsheetDocumentsPanel({
-  jobsheetId,
-  documents,
-  documentDefinitions,
-  loading,
-  definitionsLoading,
-  error,
-  onRefresh,
-  onGenerate,
-  onRegenerate,
-  generatingKey,
-  workbookDefinition,
-  onOpenTemplate,
-  onEditTemplate,
-  onOpenOutputFolder,
-  onOpenOutputFile,
-  onOpenFile,
-  onRevealFile,
-  onDelete,
-  onExportPdf,
-  documentFolder,
-  lastOutputPath
-}) {
-  if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) return null;
-
-  const list = Array.isArray(documents) ? documents : [];
-  const workbooks = list.filter(doc => (doc?.doc_type || '').toLowerCase() === 'workbook');
-  const pdfExports = list.filter(doc => (doc?.doc_type || '').toLowerCase().includes('pdf'));
-  const otherDocuments = list.filter(doc => !workbooks.includes(doc) && !pdfExports.includes(doc));
-  // minimal generation actions
-  const workbookDefs = useMemo(() => (
-    Array.isArray(documentDefinitions)
-      ? documentDefinitions.filter(def => (def.doc_type || '').toLowerCase() === 'workbook')
-      : []
-  ), [documentDefinitions]);
-  const lastWorkbook = workbooks.length ? workbooks[0] : null;
-  const canExportPdfs = Boolean(lastWorkbook && lastWorkbook.file_path);
-  const [generatingAll, setGeneratingAll] = useState(false);
-  const handleGenerateAll = useCallback(async () => {
-    if (!onGenerate || !jobsheetId) return;
-    const ready = workbookDefs.filter(def => def && def.template_path);
-    if (!ready.length) return;
-    try {
-      setGeneratingAll(true);
-      for (const def of ready) {
-        // eslint-disable-next-line no-await-in-loop
-        await onGenerate(def.key);
-      }
-    } finally {
-      setGeneratingAll(false);
-    }
-  }, [onGenerate, jobsheetId, workbookDefs]);
-  const documentLabel = (doc) => {
-    return doc?.display_label
-      || doc?.definition_label
-      || (doc?.definition_key ? startCaseKey(doc.definition_key) : 'Document');
-  };
-
-  // generation UI removed; keep outputs only
-
-  const renderDocumentRow = (doc, options = {}) => {
-    if (!doc) return null;
-    const { showExport = false, showRegenerate = false } = options;
-    const rowKey = doc?.document_id != null
-      ? `doc-${doc.document_id}`
-      : doc?.file_path
-        ? `path-${doc.file_path}`
-        : `${doc?.doc_type || 'doc'}-${documentLabel(doc)}`;
-    const title = documentLabel(doc);
-    const fileName = doc?.file_name
-      || (doc?.file_path ? doc.file_path.split(/[\\/]+/).filter(Boolean).pop() : '');
-    const createdDisplay = doc?.created_at ? formatTimestampDisplay(doc.created_at) : '—';
-    const tooltip = doc?.file_path || title;
-    const missingFile = doc?.file_available === false;
-    const disableFileActions = !doc?.file_path || missingFile;
-    const canExport = showExport && typeof onExportPdf === 'function';
-    const canRegenerate = showRegenerate && typeof onRegenerate === 'function' && doc?.definition_key;
-    const isRegenerating = canRegenerate && generatingKey === doc.definition_key;
-
-    return (
-      <tr key={rowKey}>
-        <td className="px-3 py-2 align-top">
-          <div className="flex items-start gap-3">
-            <span className="text-lg" role="img" aria-label={title}>{getDocumentIcon(doc.doc_type)}</span>
-            <div className="space-y-1">
-              <div
-                className="text-xs font-medium text-slate-700 truncate"
-                style={{ maxWidth: '24rem' }}
-                title={tooltip}
-              >
-                {fileName || title}
-              </div>
-              {title && title !== fileName ? (
-                <div className="text-[11px] text-slate-500">{title}</div>
-              ) : null}
-            {null}
-              {missingFile ? (
-                <div className="text-[11px] text-rose-600">File missing on disk</div>
-              ) : null}
-            </div>
-          </div>
-        </td>
-        <td className="px-3 py-2 align-top text-sm text-slate-600">{createdDisplay}</td>
-        <td className="px-3 py-2 align-top">
-          <div className="flex flex-wrap justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => onOpenFile?.(doc.file_path)}
-              disabled={disableFileActions}
-              className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Open
-            </button>
-            <button
-              type="button"
-              onClick={() => onRevealFile?.(doc.file_path)}
-              disabled={disableFileActions}
-              className="inline-flex items-center rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              Reveal in Finder
-            </button>
-            {canExport ? (
-              <button
-                type="button"
-                onClick={() => onExportPdf?.(doc)}
-                disabled={disableFileActions}
-                className="inline-flex items-center rounded border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Export PDF
-              </button>
-            ) : null}
-            {canRegenerate ? (
-              <button
-                type="button"
-                onClick={() => onRegenerate?.(doc.definition_key, doc)}
-                disabled={isRegenerating}
-                className="inline-flex items-center rounded border border-indigo-200 px-2 py-1 text-xs font-medium text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isRegenerating ? 'Regenerating…' : 'Regenerate'}
-              </button>
-            ) : null}
-            {onDelete ? (
-              <button
-                type="button"
-                onClick={() => onDelete?.(doc)}
-                disabled={doc?.document_id == null}
-                className="inline-flex items-center rounded border border-rose-200 px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                Delete
-              </button>
-            ) : null}
-          </div>
-        </td>
-      </tr>
-    );
-  };
-
-  return (
-    <section className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
-      <div className="mb-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-slate-700">Documents</h2>
-          {documentFolder ? (
-            <div className="text-xs text-slate-500 break-all">{documentFolder}</div>
-          ) : null}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {workbookDefs.map(def => {
-              const disabled = !jobsheetId || !def.template_path || definitionsLoading;
-              return (
-                <button
-                  key={def.key}
-                  type="button"
-                  onClick={() => onGenerate?.(def.key)}
-                  disabled={disabled}
-                  className="inline-flex items-center rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-                  title={def.template_path || 'No template configured'}
-                >
-                  Generate {def.label || startCaseKey(def.key)}
-                </button>
-              );
-            })}
-          </div>
-          <button
-            type="button"
-            onClick={handleGenerateAll}
-            disabled={generatingAll || definitionsLoading || !jobsheetId || workbookDefs.every(d => !d.template_path)}
-            className="inline-flex items-center rounded border border-indigo-200 px-3 py-1.5 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {generatingAll ? 'Generating…' : 'Generate all'}
-          </button>
-          <button
-            type="button"
-            onClick={() => onExportPdf?.(lastWorkbook)}
-            disabled={!canExportPdfs}
-            className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            Export PDFs
-          </button>
-        </div>
-      </div>
-
-      {error ? (
-        <div className="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>
-      ) : null}
-
-      {/* Document generation UI removed as requested */}
-
-      <div className="space-y-4">
-
-        {workbooks.length === 0 && pdfExports.length === 0 && otherDocuments.length === 0 && !loading ? (
-          <div className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-500">
-            No documents generated yet.
-          </div>
-        ) : null}
-
-        {workbooks.length > 0 ? (
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-slate-600">Workbooks</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Workbook</th>
-                    <th className="px-3 py-2 text-left">Created</th>
-                    <th className="px-3 py-2 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {workbooks.map(doc => renderDocumentRow(doc, { showExport: true, showRegenerate: true }))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : null}
-
-        {pdfExports.length > 0 ? (
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-slate-600">Exports</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">PDF</th>
-                    <th className="px-3 py-2 text-left">Created</th>
-                    <th className="px-3 py-2 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {pdfExports.map(doc => renderDocumentRow(doc))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : null}
-
-        {otherDocuments.length > 0 ? (
-          <div className="space-y-2">
-            <div className="text-sm font-medium text-slate-600">Other documents</div>
-            <div className="overflow-x-auto">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-100 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Document</th>
-                    <th className="px-3 py-2 text-left">Created</th>
-                    <th className="px-3 py-2 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {otherDocuments.map(doc => renderDocumentRow(doc))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
 function JobsheetEditorWindow({
   businessId,
   businessName,
@@ -9578,7 +8888,6 @@ function JobsheetEditorWindow({
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [documentGeneratingKey, setDocumentGeneratingKey] = useState(null);
-  const [lastOutputPath, setLastOutputPath] = useState('');
   const [jobsheetDocuments, setJobsheetDocuments] = useState([]);
   const [jobsheetDocumentsFolder, setJobsheetDocumentsFolder] = useState('');
   const [jobsheetDocumentsLoading, setJobsheetDocumentsLoading] = useState(false);
@@ -9898,56 +9207,6 @@ function JobsheetEditorWindow({
     }
   }, []);
 
-  const handleExportWorkbookPdf = useCallback(async (doc, options = {}) => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setJobsheetDocumentsError('Document export is currently disabled.');
-      return;
-    }
-    if (!doc || !doc.file_path) {
-      setJobsheetDocumentsError('Workbook file not available for export');
-      return;
-    }
-    try {
-      setJobsheetDocumentsError('');
-      const payload = { businessId: numericBusinessId, filePath: doc.file_path };
-      if (options && Number.isInteger(options.requestedNumber) && options.requestedNumber > 0) {
-        payload.requestedNumber = Number(options.requestedNumber);
-      }
-      const result = await window.api?.exportWorkbookPdfs?.(payload);
-      if (result && result.ok === false) {
-        throw new Error(result.message || 'Unable to export workbook to PDF');
-      }
-
-      if (Array.isArray(result?.outputs)) {
-        const successes = result.outputs.filter(item => item && item.success && item.file_path);
-        if (successes.length) {
-          const firstPath = successes[0].file_path;
-          if (firstPath) {
-            setLastOutputPath(firstPath);
-          }
-          const labels = successes.map(item => item.label || item.sheet || 'PDF').join(', ');
-          setMessage(`Exported ${labels}`);
-          setTimeout(() => setMessage(''), 2500);
-        }
-      }
-
-      await refreshJobsheetDocuments();
-
-      window.api?.notifyJobsheetChange?.({
-        type: 'documents-updated',
-        businessId: numericBusinessId,
-        jobsheetId: jobsheetId != null ? Number(jobsheetId) : null
-      });
-      return result;
-    } catch (err) {
-      console.error('Failed to export workbook PDFs', err);
-      setJobsheetDocumentsError(err?.message || 'Unable to export workbook to PDF');
-      return { ok: false, message: err?.message || 'Unable to export workbook to PDF' };
-    }
-  }, [jobsheetId, numericBusinessId, refreshJobsheetDocuments, setMessage]);
-
-  
-
   const handleDeleteJobsheetDocument = useCallback(async (doc) => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setJobsheetDocumentsError('Document access is currently disabled.');
@@ -10119,30 +9378,6 @@ function JobsheetEditorWindow({
     }
   }, [definitionDraft.template_path]);
 
-  const handleNormalizeDraftTemplate = useCallback(async () => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setDefinitionModalError('Document generation features are disabled.');
-      return;
-    }
-    const templatePath = definitionDraft.template_path;
-    if (!templatePath) {
-      setDefinitionModalError('Select a template before normalizing it.');
-      return;
-    }
-    try {
-      const response = await window.api?.normalizeTemplate?.({ templatePath });
-      if (response && response.ok === false) {
-        throw new Error(response.message || 'Unable to normalize template');
-      }
-      setDefinitionModalError('');
-      setMessage('Template normalized');
-      setTimeout(() => setMessage(''), 1500);
-    } catch (err) {
-      console.error('Failed to normalize template', err);
-      setDefinitionModalError(err?.message || 'Unable to normalize template');
-    }
-  }, [definitionDraft.template_path, setMessage]);
-
   const handleSaveDefinition = useCallback(async () => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setDefinitionModalError('Document generation features are disabled.');
@@ -10189,15 +9424,6 @@ function JobsheetEditorWindow({
     setDefinitionSaving(true);
     try {
       await api.saveDocumentDefinition(numericBusinessId, payload);
-
-      if (payload.template_path && DOC_TYPE_META[payload.doc_type]?.supportsNormalize) {
-        try {
-          await window.api?.normalizeTemplate?.({ templatePath: payload.template_path });
-        } catch (normalizeErr) {
-          console.warn('Failed to normalize template', normalizeErr);
-        }
-      }
-
       await loadDocumentDefinitions();
       selectDefinitionKey(trimmedKey);
       handleCloseDefinitionModal();
@@ -10265,7 +9491,6 @@ function JobsheetEditorWindow({
   const modalDocMeta = DOC_TYPE_META[definitionDraft.doc_type] || {};
   const modalTemplatePath = definitionDraft.template_path || '';
   const modalHasTemplate = modalTemplatePath !== '';
-  const modalSupportsNormalize = modalDocMeta.supportsNormalize && modalHasTemplate && modalTemplatePath.toLowerCase().endsWith('.xlsx');
   const modalIsLocked = definitionModalMode === 'edit' && Boolean(definitionDraft.is_locked);
 
   useEffect(() => {
@@ -10312,8 +9537,6 @@ function JobsheetEditorWindow({
       setActiveEditorSection('client');
       sectionRestoredRef.current = true;
     }
-    setLastOutputPath('');
-
     if (nextTarget != null) {
       setLoading(true);
       setJobsheetId(nextTarget);
@@ -10881,7 +10104,7 @@ function JobsheetEditorWindow({
     return messages;
   }, [numericBusinessId]);
 
-  const handlePopulateExcel = useCallback(async (requestedDefinitionKey) => {
+  const handleGenerateDocument = useCallback(async (requestedDefinitionKey) => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
       setError('Document generation features are disabled.');
       return;
@@ -10905,7 +10128,7 @@ function JobsheetEditorWindow({
 
     const templatePath = definition.template_path || '';
     if (!templatePath) {
-      setError('Choose the workbook template before generating.');
+      setError('Choose the template file before generating.');
       openEditDefinitionModal(definition);
       return;
     }
@@ -10937,18 +10160,7 @@ function JobsheetEditorWindow({
     setDocumentGeneratingKey(definition.key);
     setError('');
     try {
-      if (templatePath && templatePath.toLowerCase().endsWith('.xlsx')) {
-        try {
-          await window.api?.normalizeTemplate?.({ templatePath });
-        } catch (normalizeErr) {
-          console.warn('Failed to normalize template', normalizeErr);
-        }
-      }
-
       const result = await api.createDocument(payload);
-      if (result?.file_path) {
-        setLastOutputPath(result.file_path);
-      }
 
       const suffix = result?.file_path ? ` saved to ${result.file_path}` : '';
       const baseLabel = definition.label || startCaseKey(definition.key);
@@ -10959,10 +10171,6 @@ function JobsheetEditorWindow({
         if (successes.length) {
           const labels = successes.map(item => item.label || item.sheet || 'File').join(', ');
           setMessage(prev => `${prev ? `${prev}. ` : ''}Generated ${labels}.`);
-          const firstPath = successes.find(item => item.file_path)?.file_path;
-          if (firstPath) {
-            setLastOutputPath(firstPath);
-          }
         }
         const failures = result.additional_outputs.filter(item => !item?.success);
         if (failures.length) {
@@ -10980,7 +10188,7 @@ function JobsheetEditorWindow({
       setTimeout(() => setMessage(''), 4000);
       await refreshJobsheetDocuments();
 
-      // Open freshly generated PDFs/workbooks
+      // Open freshly generated file
       const openPath = result?.file_path || result?.output_path || '';
       if (openPath) {
         setTimeout(() => {
@@ -11000,44 +10208,6 @@ function JobsheetEditorWindow({
       }
     }
   }, [selectedDefinitionKey, findDefinitionByKey, validateDocumentRequest, buildDocumentPayload, jobsheetId, numericBusinessId, refreshJobsheetDocuments, setError, setMessage, openEditDefinitionModal, activeEditorSection, setActiveEditorSection, storeSection]);
-
-  const handleRegenerateWorkbook = useCallback(async (definitionKey, existingDoc) => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setJobsheetDocumentsError('Document generation features are disabled.');
-      return;
-    }
-
-    const targetKey = definitionKey || 'workbook';
-    const currentDoc = existingDoc
-      || jobsheetDocuments.find(doc => doc?.definition_key === targetKey);
-
-    const proceed = window.confirm('Regenerate the workbook using the latest jobsheet details?');
-    if (!proceed) {
-      return;
-    }
-
-    let removeFile = false;
-    if (currentDoc?.file_path) {
-      removeFile = window.confirm('Overwrite the existing workbook file on disk? Choose Cancel to keep the old file (a new copy will be created).');
-    }
-
-    try {
-      setJobsheetDocumentsError('');
-      if (currentDoc?.document_id != null && window.api?.deleteDocument) {
-        await window.api.deleteDocument(currentDoc.document_id, { removeFile });
-      } else if (removeFile && currentDoc?.file_path && window.api?.deleteDocumentByPath) {
-        await window.api.deleteDocumentByPath({ businessId: numericBusinessId, absolutePath: currentDoc.file_path });
-      }
-    } catch (err) {
-      console.error('Failed to remove existing workbook', err);
-      setJobsheetDocumentsError(err?.message || 'Unable to remove existing workbook');
-      return;
-    }
-
-    await refreshJobsheetDocuments();
-    await handlePopulateExcel(targetKey);
-  }, [jobsheetDocuments, numericBusinessId, refreshJobsheetDocuments, handlePopulateExcel]);
-
 
   const handleOpenOutputFolder = useCallback(async () => {
     if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
@@ -11066,21 +10236,6 @@ function JobsheetEditorWindow({
       setError(response.message || 'Unable to open folder');
     }
   }, [jobsheetDocumentsFolder, resolvedBusiness, numericBusinessId, setBusiness]);
-
-  const handleOpenOutputFile = useCallback(async () => {
-    if (!DOCUMENT_GENERATION_ENABLED && !DOCUMENT_FEATURES_ENABLED) {
-      setError('Document generation features are disabled.');
-      return;
-    }
-    if (!lastOutputPath) {
-      setError('Generate the workbook before opening the file.');
-      return;
-    }
-    const response = await window.api?.openPath?.(lastOutputPath);
-    if (response && response.ok === false) {
-      setError(response.message || 'Unable to open file');
-    }
-  }, [lastOutputPath]);
 
   useEffect(() => {
     if (loading) return () => {};
@@ -11354,10 +10509,6 @@ function JobsheetEditorWindow({
     </div>
   );
 
-  const workbookDefinition = useMemo(() => (
-    (documentDefinitions || []).find(def => (def.doc_type || '').toLowerCase() === 'workbook') || null
-  ), [documentDefinitions]);
-
   const editorContent = loading ? (
     <div className="bg-white rounded-lg border border-slate-200 p-6 text-center text-slate-500">Loading jobsheet…</div>
   ) : (
@@ -11399,8 +10550,7 @@ function JobsheetEditorWindow({
         documentDefinitions={documentDefinitions}
         definitionsLoading={documentDefinitionsLoading}
         onRefreshDocuments={refreshJobsheetDocuments}
-        onGenerateDocument={handlePopulateExcel}
-        onExportPdf={handleExportWorkbookPdf}
+        onGenerateDocument={handleGenerateDocument}
         onOpenDocumentFile={handleOpenDocumentFile}
         onRevealDocument={handleRevealDocument}
         onDeleteDocument={handleDeleteJobsheetDocument}
@@ -11535,19 +10685,7 @@ function JobsheetEditorWindow({
                 >
                   Clear template
                 </button>
-                {modalSupportsNormalize ? (
-                  <button
-                    type="button"
-                    onClick={handleNormalizeDraftTemplate}
-                    className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                  >
-                    Normalize
-                  </button>
-                ) : null}
               </div>
-              {modalDocMeta.supportsNormalize ? (
-                <p className="mt-2 text-[11px] text-slate-500">Excel templates are automatically normalized each time you generate a document.</p>
-              ) : null}
             </div>
 
             <div className="flex flex-wrap gap-4 text-sm text-slate-600">

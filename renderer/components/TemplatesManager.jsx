@@ -10,7 +10,7 @@ const CATEGORY_LABELS = {
   other: 'Other'
 };
 
-const WORKBOOK_FILE_FILTERS = [{ name: 'Excel workbook or PDF', extensions: ['xlsx', 'pdf'] }];
+const TEMPLATE_FILE_FILTERS = [{ name: 'PDF', extensions: ['pdf'] }];
 
 const TEMPLATES_MANAGER_TABS = [
   { key: 'templates', label: 'Templates' },
@@ -26,7 +26,7 @@ function startCase(value) {
     .replace(/^\w/g, letter => letter.toUpperCase());
 }
 
-function slugify(value, fallback = 'workbook') {
+function slugify(value, fallback = 'template') {
   const base = (value || '')
     .toString()
     .toLowerCase()
@@ -58,7 +58,6 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
   const [dialogBusy, setDialogBusy] = useState(false);
   const [definitionSearch, setDefinitionSearch] = useState('');
   const [debouncedDefinitionSearch, setDebouncedDefinitionSearch] = useState('');
-  const [normalizeAllBusy, setNormalizeAllBusy] = useState(false);
   const [placeholdersCollapsed, setPlaceholdersCollapsed] = useState(false);
   const [templatesCollapsed, setTemplatesCollapsed] = useState(false);
   const [activeTab, setActiveTab] = useState('templates');
@@ -164,7 +163,13 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       }
       const data = await api.getDocumentDefinitions(business.id, { includeInactive: true });
       const allDefinitions = Array.isArray(data) ? data : [];
-      const filteredDefinitions = allDefinitions.filter(def => def?.key !== 'client_data' && def?.key !== 't_cs');
+      const filteredDefinitions = allDefinitions.filter(def => {
+        const docType = (def?.doc_type || '').toLowerCase();
+        return def?.key !== 'client_data'
+          && def?.key !== 't_cs'
+          && def?.key !== 'workbook'
+          && docType !== 'workbook';
+      });
       setDefinitions(filteredDefinitions);
 
       // One-time notice if any definitions are missing a template path
@@ -173,7 +178,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
         if (seen !== '1') {
           const missingCount = filteredDefinitions.filter(d => !d?.template_path).length;
           if (missingCount > 0) {
-            setMessage(`${missingCount} template${missingCount === 1 ? '' : 's'} need a workbook path. Use “Replace” to select a file.`);
+            setMessage(`${missingCount} template${missingCount === 1 ? '' : 's'} need a template file. Use “Replace” to select one.`);
             window.localStorage.setItem(MISSING_TPL_NOTICE_KEY, '1');
           }
         }
@@ -322,24 +327,15 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       const previousScroll = typeof window !== 'undefined' ? window.scrollY : 0;
       const selectedPath = await api.chooseFile({
         title: `Select template for ${definition.label || startCase(definition.key)}`,
-        filters: WORKBOOK_FILE_FILTERS
+        filters: TEMPLATE_FILE_FILTERS
       });
       if (!selectedPath) return;
 
       setBusyDefinitionKey(definition.key);
       setMessage('Updating template…');
 
-      try {
-        const lowerPath = String(selectedPath).toLowerCase();
-        if (lowerPath.endsWith('.xlsx')) {
-          await api.normalizeTemplate?.({ templatePath: selectedPath });
-        }
-      } catch (normalizeErr) {
-        console.warn('Normalize template failed', normalizeErr);
-      }
-
       await persistDefinition(definition, { template_path: selectedPath });
-      setMessage(`${definition.label || startCase(definition.key)} template updated${String(selectedPath).toLowerCase().endsWith('.xlsx') ? ' and normalized' : ''}.`);
+      setMessage(`${definition.label || startCase(definition.key)} template updated.`);
       await loadDefinitions();
       onTemplatesUpdated?.();
       restoreScroll(previousScroll);
@@ -354,7 +350,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
 
   const handleClearTemplate = useCallback(async (definition) => {
     if (!definition) return;
-    const confirmed = window.confirm('Clear the workbook template path? Documents will not generate until you pick a new file.');
+    const confirmed = window.confirm('Clear the template path? Documents will not generate until you pick a new file.');
     if (!confirmed) return;
     try {
       const previousScroll = typeof window !== 'undefined' ? window.scrollY : 0;
@@ -416,8 +412,8 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
     }
     try {
       const chosen = await api.chooseFile({
-        title: 'Select workbook template',
-        filters: WORKBOOK_FILE_FILTERS
+        title: 'Select template',
+        filters: TEMPLATE_FILE_FILTERS
       });
       if (chosen) {
         setDialogPath(chosen);
@@ -456,7 +452,7 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       }
     }
 
-    const docType = dialogTarget?.doc_type || 'workbook';
+    const docType = dialogTarget?.doc_type || 'contract';
 
     const isEdit = dialogMode === 'edit' && dialogTarget;
 
@@ -486,7 +482,6 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
       setDialogMode('create');
       setDialogTarget(null);
       setDialogLabel('');
-      setDialogDocType('workbook');
       setDialogPath('');
     } catch (err) {
       console.error('Failed to save template', err);
@@ -797,54 +792,14 @@ function TemplatesManager({ business, onTemplatesUpdated }) {
               >
                 {templatesCollapsed ? 'Expand' : 'Collapse'}
               </button>
-                <button
-                  type="button"
-                  onClick={handleOpenCreateDialog}
-                  disabled={dialogBusy}
-                  className="inline-flex items-center rounded border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
-                >
-                  {dialogBusy && dialogMode === 'create' ? 'Adding…' : 'Add template'}
-                </button>
               <button
                 type="button"
-                onClick={async () => {
-                  if (normalizeAllBusy) return;
-                  const api = window.api;
-                  if (!api || typeof api.normalizeTemplate !== 'function') {
-                    setError('Normalize API unavailable');
-                    setTimeout(() => setError(''), 2500);
-                    return;
-                  }
-                  const paths = definitions
-                    .map(def => def.template_path)
-                    .filter(path => typeof path === 'string' && path.trim())
-                    .filter(path => path.toLowerCase().endsWith('.xlsx'));
-                  if (!paths.length) {
-                    setMessage('No Excel templates to normalize');
-                    setTimeout(() => setMessage(''), 2000);
-                    return;
-                  }
-                  const previousScroll = typeof window !== 'undefined' ? window.scrollY : 0;
-                  setNormalizeAllBusy(true);
-                  setMessage('Normalizing templates…');
-                  try {
-                    await Promise.all(paths.map(path => api.normalizeTemplate({ templatePath: path })));
-                    setMessage('Templates normalized');
-                  } catch (err) {
-                    console.error('Normalize all failed', err);
-                    setError(err?.message || 'Unable to normalize templates');
-                  } finally {
-                    setNormalizeAllBusy(false);
-                    setTimeout(() => setMessage(''), 2500);
-                    restoreScroll(previousScroll);
-                  }
-                }}
-                disabled={normalizeAllBusy || !definitions.some(def => def.template_path)}
-                className="inline-flex items-center rounded border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-60"
-                >
-                  {normalizeAllBusy ? 'Normalizing…' : 'Normalize all'}
-                </button>
-                
+                onClick={handleOpenCreateDialog}
+                disabled={dialogBusy}
+                className="inline-flex items-center rounded border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-60"
+              >
+                {dialogBusy && dialogMode === 'create' ? 'Adding…' : 'Add template'}
+              </button>
             </div>
           </header>
           {!templatesCollapsed ? (
