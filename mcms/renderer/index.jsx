@@ -787,7 +787,7 @@ function App() {
                         if (invoiceModalMode !== 'edit') setInvoiceNumber(String(Number(res.number) + 1)); setInvoiceNumTouched(false);
                         setInvoiceModalOpen(false); setEditingDocument(null);
                         await refreshDocs();
-                        if (res.file_path) { try { await window.api?.showItemInFolder?.(res.file_path); await window.api?.quickLookPath?.(res.file_path); } catch(_) {} }
+                        if (res.file_path) { try { await window.api?.showItemInFolder?.(res.file_path); } catch(_) {} }
                       }
                     } catch (err) { setError(err?.message || 'Unable to create invoice'); } finally { setCreateBusy(false); }
                   }}
