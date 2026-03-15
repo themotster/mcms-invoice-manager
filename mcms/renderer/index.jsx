@@ -236,6 +236,22 @@ function App() {
       } catch (_) {}
     })();
   }, []);
+
+  // Auto-watch template file: when it changes on disk, copy to staging and show message
+  useEffect(() => {
+    if (!excelTemplatePath || !savePath || typeof window.api?.watchTemplateFile !== 'function') return;
+    const result = window.api.watchTemplateFile({
+      businessId: BUSINESS_ID,
+      templatePath: excelTemplatePath,
+      onChange: () => {
+        setMessage('Staging updated from template change.');
+        setTimeout(() => setMessage(''), 2500);
+      }
+    });
+    if (!result?.ok) return;
+    return () => { window.api?.unwatchTemplateFile?.(); };
+  }, [excelTemplatePath, savePath]);
+
   // Prefill invoice number (next) when opening invoices tab or on first load
   useEffect(() => {
     const run = async () => {
@@ -422,21 +438,6 @@ function App() {
                   <>
                     <button onClick={()=>window.api?.openPath?.(excelTemplatePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Open</button>
                     <button onClick={()=>window.api?.showItemInFolder?.(excelTemplatePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Show in Finder</button>
-                    <button
-                      style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
-                      disabled={!savePath}
-                      onClick={async () => {
-                        try {
-                          if (!savePath) {
-                            setError('Please set the save folder first.');
-                            return;
-                          }
-                          await window.api.copyTemplateToStaging(BUSINESS_ID, excelTemplatePath);
-                          setMessage('Staging file updated from current template.');
-                          setTimeout(() => setMessage(''), 2000);
-                        } catch (err) { setError(err?.message || 'Unable to refresh template'); }
-                      }}
-                    >Refresh template</button>
                   </>
                 ) : null}
               </div>
@@ -465,7 +466,7 @@ function App() {
             </div>
           </div>
           <p style={{ fontSize: 12, color: '#64748b', marginTop: 12, marginBottom: 0, maxWidth: 520 }}>
-            When you update the template, the app copies it to a staging file in the save folder. Excel always uses that same file to generate PDFs, so you only need to grant access once. After a template update, the first time you create an invoice Excel may ask for access to the staging file — grant it and you won&apos;t be asked again for that path.
+            The app watches the template file and copies it to a staging file in the save folder when you save changes. Excel always uses that same file to generate PDFs, so you only need to grant access once. After a template update, the first time you create an invoice Excel may ask for access to the staging file — grant it and you won&apos;t be asked again for that path.
           </p>
         </section>
         ) : null}

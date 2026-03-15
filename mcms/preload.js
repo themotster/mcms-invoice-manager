@@ -25,6 +25,8 @@ contextBridge.exposeInMainWorld('api', {
   createNumberedDocument: async (options) => await documentService.createNumberedDocument(options || {}),
   createMCMSInvoice: async (options) => await documentService.createMCMSInvoice(options || {}),
   copyTemplateToStaging: async (businessId, templatePath) => await documentService.copyTemplateToStaging(businessId, templatePath),
+  watchTemplateFile: (options) => documentService.watchTemplateFile(options || {}),
+  unwatchTemplateFile: () => documentService.unwatchTemplateFile(),
   getInvoiceLineItemsFromFile: async (filePath) => await documentService.getInvoiceLineItemsFromFile(filePath),
   deleteDocument: async (documentId, options) => await documentService.deleteDocument(documentId, options || {}),
   getMergeFields: async () => await db.getMergeFields(),

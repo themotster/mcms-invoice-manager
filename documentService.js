@@ -2513,6 +2513,9 @@ const documentWatchers = new Map();
 const watcherCallbacks = new Map();
 const watcherTimers = new Map();
 
+let templateFileWatcher = null;
+let templateFileWatcherTimer = null;
+
 async function watchDocumentsFolder(options = {}) {
   const businessId = Number(options.businessId ?? options.business_id ?? options.id);
   if (!Number.isInteger(businessId)) {
@@ -4439,6 +4442,65 @@ module.exports = {
     } catch (_) {}
 
     return { ok: true, file_path: pdfPath, document_id: insert?.id || null, number };
+  },
+  // MCMS: Watch template file and auto-copy to staging on change. Optional onChange() called after staging is updated.
+  watchTemplateFile: (options = {}) => {
+    const businessId = Number(options.businessId ?? options.business_id);
+    const templatePath = options.templatePath ?? options.template_path;
+    const onChange = typeof options.onChange === 'function' ? options.onChange : null;
+    if (!Number.isInteger(businessId) || !templatePath) {
+      return { ok: false, error: 'businessId and templatePath are required' };
+    }
+    const resolvedPath = path.resolve(templatePath);
+    if (templateFileWatcher) {
+      try { templateFileWatcher.close(); } catch (_) {}
+      templateFileWatcher = null;
+    }
+    if (templateFileWatcherTimer) {
+      clearTimeout(templateFileWatcherTimer);
+      templateFileWatcherTimer = null;
+    }
+    const copyToStaging = async () => {
+      try {
+        const business = await db.getBusinessById(businessId);
+        if (!business || !business.save_path) return;
+        const saveDir = path.resolve(business.save_path);
+        await ensureDirectoryExists(saveDir);
+        const stagingPath = path.join(saveDir, MCMS_STAGING_FILENAME);
+        await fs.promises.copyFile(resolvedPath, stagingPath);
+        if (onChange) try { onChange(); } catch (_) {}
+      } catch (err) {
+        console.error('Template watcher: copy to staging failed', err);
+      }
+    };
+    if (chokidar) {
+      templateFileWatcher = chokidar.watch(resolvedPath, {
+        persistent: true,
+        awaitWriteFinish: { stabilityThreshold: 400, pollInterval: 100 }
+      });
+      templateFileWatcher.on('change', () => {
+        if (templateFileWatcherTimer) clearTimeout(templateFileWatcherTimer);
+        templateFileWatcherTimer = setTimeout(copyToStaging, 500);
+      });
+      templateFileWatcher.on('error', err => console.error('Template watcher error', err));
+    } else {
+      templateFileWatcher = fs.watch(resolvedPath, () => {
+        if (templateFileWatcherTimer) clearTimeout(templateFileWatcherTimer);
+        templateFileWatcherTimer = setTimeout(copyToStaging, 600);
+      });
+    }
+    return { ok: true, watching: true };
+  },
+  unwatchTemplateFile: () => {
+    if (templateFileWatcher) {
+      try { templateFileWatcher.close(); } catch (_) {}
+      templateFileWatcher = null;
+    }
+    if (templateFileWatcherTimer) {
+      clearTimeout(templateFileWatcherTimer);
+      templateFileWatcherTimer = null;
+    }
+    return { ok: true, watching: false };
   },
   // MCMS: Create a numbered invoice from a single Excel template with simple line items
   // Copy the given template to the MCMS staging path so Excel always opens the same file (one-time Grant Access).
