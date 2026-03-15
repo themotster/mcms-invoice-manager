@@ -16,6 +16,7 @@
     "mcms:start:electron": "env -u ELECTRON_RUN_AS_NODE APP_MODE=mcms electron .",
     "mcms:start": "env -u ELECTRON_RUN_AS_NODE APP_MODE=mcms electronmon .",
     "mcms:dev": "npm run build:mcms:dev && concurrently \"npm:mcms:watch\" \"npm:mcms:start\"",
+    "open:mcms:dev": "npm run mcms:dev",
     "pack:mcms": "npm run build:mcms && electron-packager . 'MCMS Invoice Manager' --platform=darwin --arch=$(node -p \"process.arch\") --out=release --icon=icons/mcms.icns --overwrite",
     "open:mcms": "open -n ./release/MCMS\\ Invoice\\ Manager-darwin-*/MCMS\\ Invoice\\ Manager.app",
     "pack:mac": "node scripts/pack_mac.js",
@@ -24,7 +25,8 @@
     "pack:mac:clean": "npm run clean:release && npm run pack:mac",
     "pack:mcms:clean": "npm run clean:release && npm run pack:mcms",
     "migrate:import-jobsheets": "node scripts/import_jobsheets.js --dry-run",
-    "test": "jest"
+    "test": "jest",
+    "test:e2e:mcms": "jest __tests__/e2e-mcms-invoice.test.js"
   },
   "dependencies": {
     "@azure/msal-node": "^2.6.3",

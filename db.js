@@ -720,6 +720,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN reminder_sent_at TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN paid_at TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN is_locked INTEGER DEFAULT 0', logDuplicateColumn);
+    db.run('ALTER TABLE documents ADD COLUMN invoice_snapshot TEXT', logDuplicateColumn);
     db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
 
@@ -3505,6 +3506,7 @@ module.exports = {
       const documentDate = documentData?.document_date || null;
       const definitionKey = documentData?.definition_key || documentData?.document_definition_key || null;
       const invoiceVariant = documentData?.invoice_variant || null;
+      const invoiceSnapshot = documentData?.invoice_snapshot != null ? String(documentData.invoice_snapshot) : null;
 
       const requestedNumber = documentData?.number ? Number(documentData.number) : null;
       const counterColumn = getCounterColumn(docType);
@@ -3527,8 +3529,9 @@ module.exports = {
              event_date,
              document_date,
              definition_key,
-             invoice_variant
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             invoice_variant,
+             invoice_snapshot
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           ,
           [
             eventId,
@@ -3546,7 +3549,8 @@ module.exports = {
             eventDate,
             documentDate,
             definitionKey,
-            invoiceVariant
+            invoiceVariant,
+            invoiceSnapshot
           ],
           function (err) {
             if (err) {
@@ -3721,6 +3725,10 @@ module.exports = {
       if (data.event_date !== undefined) {
         updates.push('event_date = ?');
         params.push(data.event_date);
+      }
+      if (data.invoice_snapshot !== undefined) {
+        updates.push('invoice_snapshot = ?');
+        params.push(data.invoice_snapshot != null ? String(data.invoice_snapshot) : null);
       }
 
       if (!updates.length) {

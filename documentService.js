@@ -30,6 +30,7 @@ const os = require('os');
 const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
 const TEMPLATE_BINDING_KEY = 'ahmen_excel';
 const PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+const MCMS_STAGING_FILENAME = '_staging.xlsx';
 
 const PROCESS_TYPE = typeof process !== 'undefined' ? process.type : undefined;
 const IS_MAIN_PROCESS = PROCESS_TYPE === 'browser' || PROCESS_TYPE === undefined;
@@ -457,6 +458,17 @@ function formatDateHuman(dateInput) {
   }).format(date);
 }
 
+/** Format as dd/mm/yyyy for token filling; non-date strings (e.g. "On receipt") returned as-is */
+function formatDateDDMMYYYY(dateInput) {
+  if (dateInput === undefined || dateInput === null) return '';
+  const date = new Date(dateInput);
+  if (Number.isNaN(date.getTime())) return String(dateInput);
+  const d = date.getDate();
+  const m = date.getMonth() + 1;
+  const y = date.getFullYear();
+  return `${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}/${y}`;
+}
+
 const MAIL_TOKEN_REGEX = /{{\s*([a-zA-Z0-9_.-]+)(?:\|([^}]+))?\s*}}/g;
 const SIG_START = '<!--__IM_SIG_START__-->';
 const SIG_END = '<!--__IM_SIG_END__-->';
@@ -873,14 +885,14 @@ function coerceCellValue(rawValue, binding) {
   return rawValue;
 }
 
+/** Sets only number/date format (numFmt). Alignment and other cell formatting are never set here — always from template. */
 function applyNumberFormat(cell, binding) {
   if (!cell || !binding) return;
   const fmt = (binding.format || '').toLowerCase();
   const dataType = (binding.data_type || '').toLowerCase();
   let numFmt = null;
   if (dataType === 'date') {
-    // Enforce long UK-style date: 15 October 2025
-    numFmt = 'dd mmmm yyyy';
+    numFmt = 'dd/mm/yyyy';
   } else if (dataType === 'number') {
     if (fmt === 'percentage' || fmt === 'percent') numFmt = '0.00%';
     else if (fmt === 'integer' || fmt === 'whole') numFmt = '0';
@@ -952,6 +964,7 @@ function collectPlaceholderKeys(workbook) {
   return keys;
 }
 
+/** Replace {{tokens}} with values. Only sets cell.value and numFmt (number/date format); alignment and other formatting stay from template. */
 function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholderMap = new Map()) {
   const fallbackPaths = DEFAULT_FIELD_VALUE_SOURCES;
 
@@ -962,15 +975,21 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
     'extra_fees',
     'production_fees',
     'deposit_amount',
-    'balance_amount'
+    'balance_amount',
+    'subtotal',
+    'balance_due',
+    'received',
+    'discount_amount'
   ]);
 
-  // Keys that represent dates
+  // Keys that represent dates (token filling uses dd/mm/yyyy)
   const DATE_KEYS = new Set([
     'event_date',
     'balance_due_date',
     'balance_reminder_date',
-    'document_date'
+    'document_date',
+    'invoice_date',
+    'due_date'
   ]);
 
   const formatCurrency = (val) => {
@@ -1002,8 +1021,8 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
   const renderValueForPlaceholder = (fieldKey, value) => {
     const keyLower = String(fieldKey || '').toLowerCase();
     if (value === undefined || value === null) return '';
-    if (value instanceof Date) return formatDateHuman(value) || '';
-    if (DATE_KEYS.has(keyLower)) return formatDateHuman(value);
+    if (value instanceof Date) return formatDateDDMMYYYY(value) || '';
+    if (DATE_KEYS.has(keyLower)) return formatDateDDMMYYYY(value);
     if (CURRENCY_KEYS.has(keyLower)) return formatCurrency(value);
     if (typeof value === 'number' && Number.isFinite(value)) return value.toString();
     return value != null ? value.toString() : '';
@@ -1016,49 +1035,37 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
       row.eachCell(cell => {
         const current = cell?.value;
         if (typeof current === 'string') {
-          // If the entire cell is a single placeholder like {{AHMEN_FEE}}, write a typed value
-          const singleToken = current.trim().match(/^{{\s*([a-zA-Z0-9_.-]+)\s*}}$/);
-          if (singleToken) {
-            const rawKey = singleToken[1];
-            const mappedKey = placeholderMap.get(String(rawKey).toLowerCase()) || rawKey;
-            const resolved = resolvePlaceholder(rawKey);
-            if (resolved === undefined || resolved === null) {
-              cell.value = '';
-            } else if (DATE_KEYS.has(String(mappedKey).toLowerCase())) {
-              const dt = toExcelDate(resolved);
-              if (dt) {
-                cell.value = dt;
-                applyNumberFormat(cell, { data_type: 'date' });
-              } else if (typeof resolved === 'string') {
-                // Allow non-date strings like "On receipt"
-                cell.value = resolved;
-              } else {
-                cell.value = formatDateHuman(resolved) || '';
-              }
-            } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
-              cell.value = resolved;
-              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
-                applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
-              }
-            } else {
-              // Attempt to coerce numeric strings for currency keys
-              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
-                const n = toNumeric(resolved);
-                if (n !== null) {
-                  cell.value = n;
+          const trimmed = current.trim();
+          // Value-only cells: "0 {{subtotal}}" or "{{subtotal}}" → set whole cell to the value (no leading 0 or duplicate)
+          const singleTokenMatch = trimmed.match(/^\s*0?\s*{{\s*([a-zA-Z0-9_.-]+)\s*}}\s*$/);
+          if (singleTokenMatch) {
+            const key = singleTokenMatch[1];
+            const norm = String(key).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+            if (norm.startsWith('item')) {
+              // Do not clear: only the primary description column is filled in writeRepeatableItemRows; other cols may be part of the same merged cell—writing '' here can corrupt the merged display (logs showed H5 clearing 19,4 and 19,5 then bug persisted).
+              return;
+            }
+            const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
+              const resolved = resolvePlaceholder(key);
+              if (resolved !== undefined && resolved !== null) {
+                const keyLower = String(mappedKey || '').toLowerCase();
+                if (DATE_KEYS.has(keyLower)) {
+                  cell.value = formatDateDDMMYYYY(resolved) || '';
+                } else if (CURRENCY_KEYS.has(keyLower) && typeof resolved === 'number' && Number.isFinite(resolved)) {
+                  cell.value = resolved;
                   applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
                 } else {
                   cell.value = renderValueForPlaceholder(mappedKey, resolved);
                 }
-              } else {
-                cell.value = renderValueForPlaceholder(mappedKey, resolved);
               }
-            }
-            return; // handled this cell
+              return;
           }
+          // Always replace tokens in place so surrounding text is kept (e.g. "Invoice {{invoice_code}}" or "Date: {{invoice_date}}").
           PLACEHOLDER_PATTERN.lastIndex = 0;
           const updated = current.replace(PLACEHOLDER_PATTERN, (match, key) => {
             if (!key) return '';
+            const norm = String(key).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+            if (norm.startsWith('item')) return match; // item_* tokens are per-row; leave unchanged (item rows already filled)
             const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
             const resolved = resolvePlaceholder(key);
             return renderValueForPlaceholder(mappedKey, resolved);
@@ -1078,7 +1085,7 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
                   cell.value = toExcelDate(resolved) || '';
                   applyNumberFormat(cell, { data_type: 'date' });
                 } else {
-                  cell.value = formatDateHuman(resolved) || '';
+                  cell.value = formatDateDDMMYYYY(resolved) || '';
                 }
               } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
                 if (CURRENCY_KEYS.has(String(fieldKey).toLowerCase())) {
@@ -1097,7 +1104,7 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
                   } else if (typeof resolved === 'string') {
                     cell.value = resolved; // keep plain text like "On receipt"
                   } else {
-                    cell.value = formatDateHuman(resolved);
+                    cell.value = formatDateDDMMYYYY(resolved);
                   }
                 } else {
                   cell.value = resolved.toString();
@@ -1106,47 +1113,33 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
             }
           }
         } else if (current && typeof current === 'object' && Array.isArray(current.richText)) {
-          // If the entire richText content is a single placeholder token, write a typed value
           const fullText = current.richText.map(f => (f && typeof f.text === 'string' ? f.text : '')).join('');
-          const singleToken = fullText.trim().match(/^{{\s*([a-zA-Z0-9_.-]+)\s*}}$/);
-          if (singleToken) {
-            const rawKey = singleToken[1];
-            const mappedKey = placeholderMap.get(String(rawKey).toLowerCase()) || rawKey;
-            const resolved = resolvePlaceholder(rawKey);
-            if (resolved === undefined || resolved === null) {
-              cell.value = '';
-            } else if (DATE_KEYS.has(String(mappedKey).toLowerCase())) {
-              const dt = toExcelDate(resolved);
-              if (dt) {
-                cell.value = dt;
-                applyNumberFormat(cell, { data_type: 'date' });
-              } else if (typeof resolved === 'string') {
-                cell.value = resolved;
-              } else {
-                cell.value = formatDateHuman(resolved) || '';
-              }
-            } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
-              cell.value = resolved;
-              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
-                applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
-              }
-            } else {
-              if (CURRENCY_KEYS.has(String(mappedKey).toLowerCase())) {
-                const n = toNumeric(resolved);
-                if (n !== null) {
-                  cell.value = n;
+          const trimmed = fullText.trim();
+          // Value-only cells: "0 {{subtotal}}" or "{{subtotal}}" → set whole cell to the value
+          const singleTokenMatch = trimmed.match(/^\s*0?\s*{{\s*([a-zA-Z0-9_.-]+)\s*}}\s*$/);
+          if (singleTokenMatch) {
+            const key = singleTokenMatch[1];
+            const norm = String(key).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+            if (norm.startsWith('item')) {
+              return;
+            }
+            const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
+              const resolved = resolvePlaceholder(key);
+              if (resolved !== undefined && resolved !== null) {
+                const keyLower = String(mappedKey || '').toLowerCase();
+                if (DATE_KEYS.has(keyLower)) {
+                  cell.value = formatDateDDMMYYYY(resolved) || '';
+                } else if (CURRENCY_KEYS.has(keyLower) && typeof resolved === 'number' && Number.isFinite(resolved)) {
+                  cell.value = resolved;
                   applyNumberFormat(cell, { data_type: 'number', format: 'currency' });
                 } else {
                   cell.value = renderValueForPlaceholder(mappedKey, resolved);
                 }
-              } else {
-                cell.value = renderValueForPlaceholder(mappedKey, resolved);
               }
-            }
-            return; // handled this cell
+              return;
           }
-          // Also handle bare token without braces for the whole richText
-          const bare = fullText.trim().toLowerCase();
+          // Bare token without braces (whole cell is just the key)
+          const bare = trimmed.toLowerCase();
           if (tokenKeys.includes(bare)) {
             const mappedKey = placeholderMap.get(bare) || bare;
             const resolved = resolvePlaceholder(mappedKey);
@@ -1158,7 +1151,7 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
                 cell.value = dt;
                 applyNumberFormat(cell, { data_type: 'date' });
               } else {
-                cell.value = formatDateHuman(resolved) || '';
+                cell.value = formatDateDDMMYYYY(resolved) || '';
               }
             } else if (typeof resolved === 'number' && Number.isFinite(resolved)) {
               cell.value = resolved;
@@ -1178,34 +1171,18 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
             }
             return; // handled
           }
-          let changed = false;
-          const richText = current.richText.map(fragment => {
-            if (!fragment?.text) return fragment;
-            const original = fragment.text;
-            PLACEHOLDER_PATTERN.lastIndex = 0;
-            const updated = original.replace(PLACEHOLDER_PATTERN, (match, key) => {
-              if (!key) return '';
-              const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
-              const resolved = resolvePlaceholder(key);
-              return renderValueForPlaceholder(mappedKey, resolved);
-            });
-            if (updated !== original) {
-              changed = true;
-              return { ...fragment, text: updated };
-            }
-            // Fallback: exact token match without braces
-            const trimmedLower = original.trim().toLowerCase();
-            if (tokenKeys.includes(trimmedLower)) {
-              const fieldKey = placeholderMap.get(trimmedLower) || placeholderMap.get(normalizeTokenKey(trimmedLower)) || trimmedLower;
-              const resolved = resolvePlaceholder(fieldKey);
-              changed = true;
-              const textVal = renderValueForPlaceholder(fieldKey, resolved);
-              return { ...fragment, text: textVal };
-            }
-            return fragment;
+          // Replace tokens in full text and set as plain string so "Invoice No: {{invoice_code}}" → "Invoice No: INV-123" (avoids rich-text run issues in PDF)
+          PLACEHOLDER_PATTERN.lastIndex = 0;
+          const updated = fullText.replace(PLACEHOLDER_PATTERN, (match, key) => {
+            if (!key) return '';
+            const norm = String(key).toLowerCase().replace(/[^a-z0-9_]+/g, '_');
+            if (norm.startsWith('item')) return match; // item_* tokens are per-row; leave unchanged
+            const mappedKey = placeholderMap.get(String(key).toLowerCase()) || placeholderMap.get(normalizeTokenKey(key)) || key;
+            const resolved = resolvePlaceholder(key);
+            return renderValueForPlaceholder(mappedKey, resolved);
           });
-          if (changed) {
-            cell.value = { ...current, richText };
+          if (updated !== fullText) {
+            cell.value = updated;
           }
         }
       });
@@ -4229,9 +4206,59 @@ async function resolveTemplateDefaultAttachments(options = {}) {
   return { attachments: unique };
 }
 
+async function getInvoiceLineItemsFromFile(filePath) {
+  if (!filePath || typeof filePath !== 'string') return [];
+  const xlsxPath = filePath.replace(/\.pdf$/i, '.xlsx');
+  try {
+    if (!(await pathExists(xlsxPath))) return [];
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(xlsxPath);
+    const items = [];
+    const toDateStr = (v) => {
+      if (!v) return '';
+      if (v instanceof Date) return v.toISOString().slice(0, 10);
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) {
+        const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+        if (!Number.isNaN(d.valueOf())) return d.toISOString().slice(0, 10);
+      }
+      const s = String(v).trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+      return '';
+    };
+    const toNum = (v) => {
+      if (v == null) return null;
+      if (typeof v === 'number' && Number.isFinite(v)) return v;
+      const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+      return Number.isFinite(n) ? n : null;
+    };
+    const ws = wb.worksheets.find(s => /invoice/i.test(String(s.name || ''))) || wb.worksheets[0];
+    if (!ws) return [];
+    ws.eachRow((row) => {
+      const values = [];
+      row.eachCell({ includeEmpty: true }, (cell, colNum) => { values[colNum - 1] = cell.value; });
+      if (values.length < 3) return;
+      const a = values[0]; const b = values[1]; const c = values[2];
+      const dateStr = toDateStr(a);
+      const descVal = (b != null && typeof b === 'string') ? b.trim() : (b != null ? String(b).trim() : '');
+      const num = toNum(c);
+      if (dateStr && (descVal || num != null)) {
+        items.push({
+          date: dateStr,
+          description: descVal || '',
+          amount: num != null ? num : ''
+        });
+      }
+    });
+    return items;
+  } catch (_) {
+    return [];
+  }
+}
+
 ensureScheduledMailWorker();
 module.exports = {
   createDocument,
+  getInvoiceLineItemsFromFile,
   buildMCMSDocumentHtml,
   getHtmlTemplate: async (options = {}) => {
     const businessId = Number(options.businessId ?? options.business_id ?? options.id);
@@ -4414,26 +4441,45 @@ module.exports = {
     return { ok: true, file_path: pdfPath, document_id: insert?.id || null, number };
   },
   // MCMS: Create a numbered invoice from a single Excel template with simple line items
+  // Copy the given template to the MCMS staging path so Excel always opens the same file (one-time Grant Access).
+  // Call this when the user updates the template; then save the template path. Requires business save_path to be set.
+  copyTemplateToStaging: async (businessId, templatePath) => {
+    const id = Number(businessId);
+    if (!Number.isInteger(id)) throw new Error('business_id is required');
+    const business = await db.getBusinessById(id);
+    if (!business || !business.save_path) throw new Error('Save folder not set. Set the save folder first so the staging file can be updated.');
+    const resolvedTemplate = path.resolve(templatePath);
+    await ensureFileAccessible(resolvedTemplate);
+    const saveDir = path.resolve(business.save_path);
+    await ensureDirectoryExists(saveDir);
+    const stagingPath = path.join(saveDir, MCMS_STAGING_FILENAME);
+    await fs.promises.copyFile(resolvedTemplate, stagingPath);
+    return { ok: true, staging_path: stagingPath };
+  },
   // Options: { business_id, definition_key='invoice_balance', client_override, line_items: [{ description, quantity, unit, rate, amount }], total_amount, due_date, document_date }
   createMCMSInvoice: async (options = {}) => {
     const businessId = Number(options.business_id ?? options.businessId);
     if (!Number.isInteger(businessId)) throw new Error('business_id is required');
     const rawItems = Array.isArray(options.line_items || options.items) ? (options.line_items || options.items) : [];
+    const docDate = options.document_date || new Date().toISOString();
     const items = rawItems.map((it, idx) => {
       const desc = (it?.description || '').toString();
       const qty = Number(it?.quantity);
       const unit = (it?.unit || '').toString();
       const rate = Number(it?.rate);
       const amount = Number.isFinite(Number(it?.amount)) ? Number(it?.amount) : (Number.isFinite(qty) && Number.isFinite(rate) ? qty * rate : 0);
-      return { description: desc, quantity: Number.isFinite(qty) ? qty : null, unit, rate: Number.isFinite(rate) ? rate : null, amount, sort_order: idx };
+      const date = it?.date || it?.item_date || (typeof docDate === 'string' ? docDate.slice(0, 10) : null);
+      return { description: desc, quantity: Number.isFinite(qty) ? qty : null, unit, rate: Number.isFinite(rate) ? rate : null, amount, date, item_date: date, sort_order: idx };
     }).filter(x => x.description || (x.amount != null && Number.isFinite(x.amount)));
 
     const definitionKey = options.definition_key || 'invoice_balance';
     const business = await db.getBusinessById(businessId);
-    if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
+    const outputDir = options.save_path || business?.save_path;
+    if (!business) throw new Error('Business not found.');
+    if (!outputDir) throw new Error('Documents folder not configured for this business. Set save_path in Templates or pass options.save_path for tests.');
 
     const def = await db.getDocumentDefinition(businessId, definitionKey);
-    const templatePath = def?.template_path || options.template_path || options.templatePath;
+    const templatePath = options.template_path || options.templatePath || def?.template_path;
     if (!templatePath) throw new Error('Template path is not configured for this document. Set it in Templates.');
     const resolvedTemplate = path.resolve(templatePath);
     await ensureFileAccessible(resolvedTemplate);
@@ -4468,11 +4514,11 @@ module.exports = {
     };
     const context = buildContext(payload, business);
 
-    // Use flat main folder; defer final naming until number known
-    const directory = path.resolve(business.save_path);
+    // Use flat main folder; write to fixed staging path so Excel only ever opens one path (avoids repeated "Grant Access" prompts)
+    const directory = path.resolve(outputDir);
     await ensureDirectoryExists(directory);
-    // Temporary workbook path to avoid collisions; will rename after writing
-    let workbookPath = path.join(directory, `.tmp_mcms_invoice_${Date.now()}_${Math.random().toString(36).slice(2)}.xlsx`);
+    const stagingPath = path.join(directory, MCMS_STAGING_FILENAME);
+    let workbookPath = stagingPath;
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(resolvedTemplate);
@@ -4505,6 +4551,7 @@ module.exports = {
     // Ensure MCMS-relevant placeholders point to context paths (override AhMen defaults)
     const ensure = (key, path) => { if (!valueSources[key]) valueSources[key] = { source_type: 'contextPath', source_path: path }; };
     ensure('client_name', 'client.name');
+    ensure('client', 'client.name'); // template may use {{Client}}
     ensure('client_email', 'client.email');
     ensure('client_phone', 'client.phone');
     ensure('client_address1', 'client.address1');
@@ -4516,9 +4563,41 @@ module.exports = {
     ensure('issue_date', 'issueDate');
     ensure('due_date', 'dueDate');
     ensure('total_amount', 'totalAmount');
+    ensure('subtotal', 'totalAmount');
+    ensure('balance_due', 'totalAmount');
 
     // Apply explicit field overrides passed from UI to match template tokens exactly
-    const overrides = (options.field_values || options.placeholders || {});
+    const overrides = { ...(options.field_values || {}), ...(options.placeholders || {}) };
+    // Force client name from context so {{client_name}} / {{Client}} are always filled
+    if (context.client && (context.client.name != null && context.client.name !== '')) {
+      overrides.client_name = context.client.name;
+      overrides.client = context.client.name;
+    }
+    // Subtotal = sum of line items or total_amount override; discount and received as negative; balance_due = subtotal - discount - received
+    const subtotalVal = options.total_amount != null && Number.isFinite(Number(options.total_amount))
+      ? Number(options.total_amount)
+      : (items.reduce((s, it) => s + (Number.isFinite(it.amount) ? it.amount : 0), 0) || 0);
+    const discountVal = Math.abs(Number(options.discount_amount) || 0);
+    const receivedVal = Math.abs(Number(options.amount_received) || 0);
+    const balanceDueComputed = Math.max(0, subtotalVal - discountVal - receivedVal);
+    overrides.subtotal = subtotalVal;
+    overrides.balance_due = balanceDueComputed;
+    // Label cells: use {{subtotal_label}} / {{received_label}} in template for the words "Subtotal" / "Received", and {{subtotal}} / {{received}} only in the value cells (set in valueSources/placeholderMap immediately before replaceWorkbookPlaceholders)
+    overrides.subtotal_label = 'Subtotal';
+    overrides.received_label = 'Received';
+    if (options.amount_received != null && options.amount_received !== '') {
+      const n = Number(options.amount_received);
+      overrides.received = Number.isFinite(n) ? -Math.abs(n) : 0;
+    } else if (!Object.prototype.hasOwnProperty.call(overrides, 'received')) {
+      overrides.received = 0;
+    }
+    if (options.discount_description != null && options.discount_description !== '') {
+      overrides.discount_description = options.discount_description;
+    }
+    if (options.discount_amount != null && options.discount_amount !== '' && Number(options.discount_amount) !== 0) {
+      const n = Number(options.discount_amount);
+      overrides.discount_amount = Number.isFinite(n) ? -Math.abs(n) : 0;
+    }
     if (overrides && typeof overrides === 'object') {
       for (const [key, value] of Object.entries(overrides)) {
         if (!key) continue;
@@ -4538,6 +4617,76 @@ module.exports = {
         placeholderMap.set(exactKey.replace(/[^a-z0-9]+/gi, '_'), exactKey);
       }
     }
+
+    // Remove discount row from workbook when no discount (so it doesn't appear on PDF)
+    const removeDiscountRowIfEmpty = () => {
+      const hasDiscount = options.discount_amount != null && options.discount_amount !== '' && Number(options.discount_amount) !== 0;
+      if (hasDiscount) return;
+      const tokenRe = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+      workbook.eachSheet(ws => {
+        let rowToRemove = null;
+        ws.eachRow((row, r) => {
+          if (rowToRemove != null) return;
+          row.eachCell(cell => {
+            if (rowToRemove != null) return;
+            const v = cell && cell.value;
+            const check = (text) => {
+              if (!text) return;
+              let m; tokenRe.lastIndex = 0;
+              while ((m = tokenRe.exec(text)) !== null) {
+                const key = (m[1] || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                if (key === 'discount_amount' || key === 'discount_description') {
+                  rowToRemove = r;
+                  break;
+                }
+              }
+            };
+            if (typeof v === 'string') check(v);
+            else if (v && typeof v === 'object' && Array.isArray(v.richText)) {
+              check(v.richText.map(f => f && f.text ? f.text : '').join(''));
+            }
+          });
+        });
+        if (rowToRemove != null) {
+          try { ws.spliceRows(rowToRemove, 1); } catch (_) {}
+        }
+      });
+    };
+
+    // Remove "amount received" row when nothing entered (avoid showing 0)
+    const removeReceivedRowIfEmpty = () => {
+      const hasReceived = options.amount_received != null && options.amount_received !== '' && Number(options.amount_received) !== 0;
+      if (hasReceived) return;
+      const tokenRe = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
+      workbook.eachSheet(ws => {
+        let rowToRemove = null;
+        ws.eachRow((row, r) => {
+          if (rowToRemove != null) return;
+          row.eachCell(cell => {
+            if (rowToRemove != null) return;
+            const v = cell && cell.value;
+            const check = (text) => {
+              if (!text) return;
+              let m; tokenRe.lastIndex = 0;
+              while ((m = tokenRe.exec(text)) !== null) {
+                const key = (m[1] || '').toLowerCase().replace(/[^a-z0-9]+/g, '_');
+                if (key === 'received') {
+                  rowToRemove = r;
+                  break;
+                }
+              }
+            };
+            if (typeof v === 'string') check(v);
+            else if (v && typeof v === 'object' && Array.isArray(v.richText)) {
+              check(v.richText.map(f => f && f.text ? f.text : '').join(''));
+            }
+          });
+        });
+        if (rowToRemove != null) {
+          try { ws.spliceRows(rowToRemove, 1); } catch (_) {}
+        }
+      });
+    };
 
     // Helper: find a specific token cell (e.g., invoice_code) prior to replacement
     const findTokenCellAddress = (tokenName) => {
@@ -4574,8 +4723,8 @@ module.exports = {
       if (/(qty|quantity|hours)$/.test(s)) return 'quantity';
       if (/unit$/.test(s)) return 'unit';
       if (/(rate|price|cost)$/.test(s)) return 'rate';
-      if (/(amount|line[_-]?total|total)$/.test(s)) return 'amount';
-      if (/(date)$/.test(s)) return 'date';
+      if (/(amount|line[_-]?total|total|fee)$/.test(s)) return 'amount';
+      if (/(date)$/.test(s) || /_date$/.test(s)) return 'date'; // item_date, item1date, etc.
       return '';
     };
 
@@ -4666,43 +4815,62 @@ module.exports = {
           });
         }
       }
+      const descColsForLog = [...colToField.entries()].filter(([, f]) => f === 'description').map(([col]) => col);
+      const primaryDescCol = descColsForLog.length > 0 ? Math.min(...descColsForLog) : null;
 
-      // Fill each item row
+      // Fill each item row (row templateRowNumber + idx gets items[idx]; ensure template has one row per line item)
       const reReplace = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
       items.forEach((it, idx) => {
-        const r = targetSheet.getRow(templateRowNumber + idx);
+        const rowNum = templateRowNumber + idx;
+        const r = targetSheet.getRow(rowNum);
         r.eachCell((cell, c) => {
           const v = cell && cell.value;
           const field = colToField.get(c) || '';
+          const cellText = typeof v === 'string' ? v : (v && typeof v === 'object' && Array.isArray(v.richText) ? v.richText.map(f => f && f.text ? f.text : '').join('') : '');
           const computeAmount = () => (it.amount != null && Number.isFinite(it.amount))
             ? it.amount
             : ((Number.isFinite(it.quantity) && Number.isFinite(it.rate)) ? (it.quantity * it.rate) : null);
           const replacements = {
-            description: it.description || '',
+            description: (it.description != null ? String(it.description) : '').trim() || '',
             quantity: (it.quantity != null && Number.isFinite(it.quantity)) ? it.quantity : null,
             unit: it.unit || '',
             rate: (it.rate != null && Number.isFinite(it.rate)) ? it.rate : null,
             amount: computeAmount(),
             date: it.date || it.item_date || null
           };
+          // Only set number/date format (numFmt). Alignment and all other formatting come from the template.
           const applyFormat = (f, ce) => {
-            if (!ce) return;
+            if (!ce || f === 'description') return; // description: value only, template keeps alignment etc.
             try {
               if (f === 'rate' || f === 'amount') applyNumberFormat(ce, { data_type: 'number', format: 'currency' });
               else if (f === 'quantity') applyNumberFormat(ce, { data_type: 'number', format: 'decimal_2' });
               else if (f === 'date') applyNumberFormat(ce, { data_type: 'date' });
-              if (f === 'description') {
-                ce.alignment = Object.assign({}, ce.alignment || {}, { wrapText: true, vertical: 'top' });
-              }
             } catch (_) {}
           };
 
-          // Replace item tokens within the cell text if present
+          // Description: use plain string so PDF/Excel display is reliable (richText in merged or duplicated rows can show truncated/duplicate text).
+          const setDescriptionOnly = (cell, text) => {
+            const s = (text != null ? String(text) : '').trim() || '';
+            cell.value = null;
+            cell.value = s;
+          };
+          if (/{{\s*item_description\s*}}/i.test(cellText)) {
+            if (primaryDescCol == null || c === primaryDescCol) setDescriptionOnly(cell, replacements.description);
+            return;
+          }
+          if (field === 'description') {
+            if (primaryDescCol == null || c === primaryDescCol) setDescriptionOnly(cell, replacements.description);
+            return;
+          }
           if (typeof v === 'string') {
-            // If this column is a typed field (e.g., date), prefer typed value over inline text replacement
+            // Typed fields: set cell value so number/date format applies (currency, date)
             if (field === 'date') {
               const dt = toExcelDate(replacements.date);
               cell.value = dt || '';
+              applyFormat(field, cell);
+            } else if (field === 'amount' || field === 'rate') {
+              const num = field === 'amount' ? replacements.amount : replacements.rate;
+              cell.value = (num != null && Number.isFinite(num)) ? num : '';
               applyFormat(field, cell);
             } else {
               const newText = v.replace(reReplace, (_m, keyRaw) => {
@@ -4711,7 +4879,6 @@ module.exports = {
                 const f = classifyItemField(k.replace(/^item[_\.]?/, ''));
                 const val = replacements[f];
                 if (val == null) return '';
-                if (typeof val === 'number' && (f === 'rate' || f === 'amount')) return String(val);
                 return String(val);
               });
               cell.value = newText;
@@ -4719,9 +4886,19 @@ module.exports = {
             }
           } else if (v && typeof v === 'object' && Array.isArray(v.richText)) {
             const text = v.richText.map(f => f && f.text ? f.text : '').join('');
+            // If any run had {{item_description}}, set whole cell to only the description. Clear first so ExcelJS
+            // doesn't merge with existing rich-text runs (which causes truncation/duplication for row 2+).
+            if (/{{\s*item_description\s*}}/i.test(text)) {
+              if (primaryDescCol == null || c === primaryDescCol) setDescriptionOnly(cell, replacements.description);
+              return;
+            }
             if (field === 'date') {
               const dt = toExcelDate(replacements.date);
               cell.value = dt || '';
+              applyFormat(field, cell);
+            } else if (field === 'amount' || field === 'rate') {
+              const num = field === 'amount' ? replacements.amount : replacements.rate;
+              cell.value = (num != null && Number.isFinite(num)) ? num : '';
               applyFormat(field, cell);
             } else {
               const newText = text.replace(reReplace, (_m, keyRaw) => {
@@ -4730,7 +4907,6 @@ module.exports = {
                 const f = classifyItemField(k.replace(/^item[_\.]?/, ''));
                 const val = replacements[f];
                 if (val == null) return '';
-                if (typeof val === 'number' && (f === 'rate' || f === 'amount')) return String(val);
                 return String(val);
               });
               cell.value = newText; // flatten to string
@@ -4754,6 +4930,56 @@ module.exports = {
           }
         });
       });
+
+      // Second pass: (1) Explicitly set description column(s) from template mapping so duplicated rows get correct value.
+      // (2) Fix any cell containing {{item_description}} or containing the description but malformed (truncated/duplicated).
+      const itemDescRe = /{{\s*item_description\s*}}/i;
+      const descCols = [...colToField.entries()].filter(([, f]) => f === 'description').map(([col]) => col);
+      const primaryDescColSecond = descCols.length > 0 ? Math.min(...descCols) : null;
+      for (let idx = 0; idx < items.length; idx++) {
+        const rowNum = templateRowNumber + idx;
+        const descOnly = (items[idx].description != null ? String(items[idx].description) : '').trim() || '';
+        for (let col = 1; col <= 20; col++) {
+          try {
+            const cell = targetSheet.getCell(rowNum, col);
+            const val = cell && cell.value;
+            const text = typeof val === 'string' ? val : (val && typeof val === 'object' && Array.isArray(val.richText) ? val.richText.map(f => f && f.text ? f.text : '').join('') : '');
+            const isDescCol = descCols.includes(col);
+            const hasToken = text && itemDescRe.test(text);
+            const hasDescButMalformed = descOnly && text && text.includes(descOnly) && String(text).trim() !== descOnly;
+            if (primaryDescColSecond != null && col === primaryDescColSecond && (isDescCol || hasToken || hasDescButMalformed)) {
+              cell.value = null;
+              cell.value = descOnly;
+            }
+          } catch (_) {}
+        }
+      }
+      // Unmerge description range for each item row, set only primary to value and others to '', re-merge so the merge displays a single value (fixes "se" + gap + "second" when all cols were filled).
+      if (descCols.length > 1 && primaryDescColSecond != null) {
+        const maxDescCol = Math.max(...descCols);
+        const merges = targetSheet._merges || {};
+        // Find and remove any merge that overlaps the description columns in our item rows (e.g. one merge C18:E19 must be deleted before we can create C18:E18 and C19:E19).
+        for (const key of Object.keys(merges)) {
+          const r = merges[key] && merges[key].model;
+          if (!r) continue;
+          const overlaps = r.top <= templateRowNumber + items.length - 1 && r.bottom >= templateRowNumber
+            && r.left <= maxDescCol && r.right >= primaryDescColSecond;
+          if (overlaps) delete merges[key];
+        }
+        for (let idx = 0; idx < items.length; idx++) {
+          const rowNum = templateRowNumber + idx;
+          const descOnly = (items[idx].description != null ? String(items[idx].description) : '').trim() || '';
+          try {
+            for (const col of descCols) {
+              const c = targetSheet.getCell(rowNum, col);
+              if (col === primaryDescColSecond) c.value = descOnly;
+              else { c.value = null; c.value = ''; }
+            }
+            targetSheet.mergeCells(rowNum, primaryDescColSecond, rowNum, maxDescCol);
+            targetSheet.getCell(rowNum, primaryDescColSecond).value = descOnly;
+          } catch (_) {}
+        }
+      }
 
       return true;
     };
@@ -4780,7 +5006,7 @@ module.exports = {
       // Clear the anchor token
       try { anchorSheet.getCell(anchor.row, anchor.col).value = ''; } catch (_) {}
 
-      // Copy simple style from anchor row if present
+      // Copy style from template anchor row (alignment and other formatting from template)
       const styleRow = anchorSheet.getRow(anchor.row);
 
       items.forEach((it, idx) => {
@@ -4799,11 +5025,10 @@ module.exports = {
           ? it.amount
           : ((it.quantity != null && Number.isFinite(it.quantity) && it.rate != null && Number.isFinite(it.rate)) ? (it.quantity * it.rate) : null);
 
-        // Apply number formats
         try { applyNumberFormat(rateCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
         try { applyNumberFormat(amtCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
 
-        // Shallow style copy
+        // Copy style and alignment from template row (alignment from template throughout)
         try {
           const srcDesc = styleRow.getCell(anchor.col);
           const srcQty = styleRow.getCell(anchor.col + 1);
@@ -4815,12 +5040,17 @@ module.exports = {
           if (srcUnit && srcUnit.style) unitCell.style = { ...srcUnit.style };
           if (srcRate && srcRate.style) rateCell.style = { ...srcRate.style };
           if (srcAmt && srcAmt.style) amtCell.style = { ...srcAmt.style };
+          if (srcDesc && srcDesc.alignment) descCell.alignment = JSON.parse(JSON.stringify(srcDesc.alignment));
+          if (srcQty && srcQty.alignment) qtyCell.alignment = JSON.parse(JSON.stringify(srcQty.alignment));
+          if (srcUnit && srcUnit.alignment) unitCell.alignment = JSON.parse(JSON.stringify(srcUnit.alignment));
+          if (srcRate && srcRate.alignment) rateCell.alignment = JSON.parse(JSON.stringify(srcRate.alignment));
+          if (srcAmt && srcAmt.alignment) amtCell.alignment = JSON.parse(JSON.stringify(srcAmt.alignment));
         } catch (_) {}
       });
     };
 
-    // Fill placeholders and items
-    const issueDate = new Date();
+    // Fill placeholders and items (use document_date / field_values.invoice_date for {{invoice_date}})
+    const issueDate = (options.field_values && options.field_values.invoice_date) ? options.field_values.invoice_date : (payload.document_date ? String(payload.document_date).slice(0, 10) : new Date().toISOString().slice(0, 10));
     const dueDate = options.due_date || null;
     const amount = options.total_amount ?? (items.reduce((s, it) => s + (Number.isFinite(it.amount) ? it.amount : 0), 0) || null);
 
@@ -4832,7 +5062,7 @@ module.exports = {
       number: (options.invoice_number != null && Number.isFinite(Number(options.invoice_number))) ? Number(options.invoice_number) : undefined,
       status: 'issued',
       total_amount: amount,
-      balance_due: amount,
+      balance_due: balanceDueComputed,
       due_date: dueDate || null,
       client_name: context.client?.name || null,
       event_name: null,
@@ -4882,6 +5112,7 @@ module.exports = {
           rateCell.value = it.rate != null && Number.isFinite(it.rate) ? it.rate : null;
           const amountVal = (it.amount != null && Number.isFinite(it.amount)) ? it.amount : ((Number.isFinite(it.quantity) && Number.isFinite(it.rate)) ? (it.quantity * it.rate) : null);
           amtCell.value = amountVal;
+          // Copy style and alignment from template row so alignment comes from template
           try { if (sr) {
             const c1 = sr.getCell(anchor.col), c2 = sr.getCell(anchor.col+1), c3 = sr.getCell(anchor.col+2), c4 = sr.getCell(anchor.col+3), c5 = sr.getCell(anchor.col+4);
             if (c1 && c1.style) descCell.style = { ...c1.style };
@@ -4889,6 +5120,11 @@ module.exports = {
             if (c3 && c3.style) unitCell.style = { ...c3.style };
             if (c4 && c4.style) rateCell.style = { ...c4.style };
             if (c5 && c5.style) amtCell.style = { ...c5.style };
+            if (c1 && c1.alignment) descCell.alignment = JSON.parse(JSON.stringify(c1.alignment));
+            if (c2 && c2.alignment) qtyCell.alignment = JSON.parse(JSON.stringify(c2.alignment));
+            if (c3 && c3.alignment) unitCell.alignment = JSON.parse(JSON.stringify(c3.alignment));
+            if (c4 && c4.alignment) rateCell.alignment = JSON.parse(JSON.stringify(c4.alignment));
+            if (c5 && c5.alignment) amtCell.alignment = JSON.parse(JSON.stringify(c5.alignment));
           } } catch (_) {}
           try { applyNumberFormat(rateCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
           try { applyNumberFormat(amtCell, { data_type: 'number', format: 'currency' }); } catch (_) {}
@@ -4898,6 +5134,15 @@ module.exports = {
       try { writeLineItems(); } catch (_) {}
     }
 
+    removeDiscountRowIfEmpty();
+    removeReceivedRowIfEmpty();
+
+    // Ensure label placeholders are set immediately before replace (so {{subtotal_label}} → "Subtotal", {{received_label}} → "Received")
+    valueSources['subtotal_label'] = { source_type: 'literal', literal_value: 'Subtotal' };
+    valueSources['received_label'] = { source_type: 'literal', literal_value: 'Received' };
+    placeholderMap.set('subtotal_label', 'subtotal_label');
+    placeholderMap.set('received_label', 'received_label');
+
     // Replace remaining placeholders (non-item tokens) after items are populated
     replaceWorkbookPlaceholders(workbook, valueSources, enrichedContext, placeholderMap);
     workbook.calcProperties = workbook.calcProperties || {};
@@ -4905,9 +5150,13 @@ module.exports = {
     sanitizeWorkbookValues(workbook);
     await workbook.xlsx.writeFile(workbookPath);
 
-    // Move and rename to flat main folder with number-first naming: INV-#### - Client - YYYY-MM-DD
-    const baseDir = path.resolve(business.save_path);
-    await ensureDirectoryExists(baseDir);
+    const e2eKeepWorkbook = options._e2eKeepWorkbook === true;
+    if (e2eKeepWorkbook) {
+      return { ok: true, workbook_path: workbookPath, document_id: insert?.id || null, number };
+    }
+
+    // Build final PDF path: INV-#### - Client - YYYY-MM-DD.pdf (staging file stays as _staging.xlsx for next run)
+    const baseDir = path.resolve(outputDir);
     const clientNameSafe = sanitizeFilenameSegment(context.client?.name || '');
     const invoiceDateToken = (options && options.field_values && options.field_values.invoice_date) ? options.field_values.invoice_date : (payload.document_date || new Date().toISOString());
     const invoiceDateIso = formatDateISO(invoiceDateToken);
@@ -4917,54 +5166,35 @@ module.exports = {
       invoiceDateIso || null
     ].filter(Boolean).map(sanitizeFilenameSegment).join(' - ');
 
-    let newWorkbookPath = path.join(baseDir, `${fileBase}.xlsx`);
-    {
-      let k = 2;
-      while (await pathExists(newWorkbookPath)) {
-        newWorkbookPath = path.join(baseDir, `${fileBase} (${k}).xlsx`);
-        k += 1;
-        if (k > 1000) break;
-      }
-    }
-    try {
-      if (!isSubPath(baseDir, workbookPath) || path.basename(workbookPath) !== path.basename(newWorkbookPath)) {
-        await fs.promises.rename(workbookPath, newWorkbookPath);
-      }
-      workbookPath = newWorkbookPath;
-    } catch (_) {
-      // If rename fails, fall back to using the new path for PDF output
-      workbookPath = newWorkbookPath;
-    }
-
-    // Build PDF file name and export with stamping (same base as workbook)
-    const baseName = path.basename(workbookPath, '.xlsx');
-    let pdfPath = path.join(baseDir, `${baseName}.pdf`);
+    let pdfPath = path.join(baseDir, `${fileBase}.pdf`);
     {
       let n = 2;
       while (await pathExists(pdfPath)) {
-        pdfPath = path.join(baseDir, `${baseName} (${n}).pdf`);
+        pdfPath = path.join(baseDir, `${fileBase} (${n}).pdf`);
         n += 1;
         if (n > 1000) break;
       }
     }
 
-    // Choose stamp cell: prefer cell with {{invoice_code}}, fallback to F14 per template, else E9
-    let stampCell = findTokenCellAddress('invoice_code') || 'F14' || 'E9';
-    let stampText = suffixCode;
-    try {
-      const prefix = await readInvoicePrefixFromWorkbook(workbookPath);
-      stampText = `${prefix}${number}`;
-    } catch (_) {}
-    await saveWorkbookAsPdf(workbookPath, pdfPath, { stampCell, stampText });
+    // Workbook already has all placeholders filled; Excel opens the fixed staging path (one-time "Grant Access" per path)
+    if (!e2eKeepWorkbook) {
+      await saveWorkbookAsPdf(stagingPath, pdfPath);
+    }
 
     // Update record with final path
-    await db.updateDocumentStatus(insert.id, {
+    const statusUpdate = {
       file_path: pdfPath,
       status: 'issued',
       total_amount: amount,
-      balance_due: amount,
+      balance_due: balanceDueComputed,
       due_date: dueDate || null
-    });
+    };
+    if (options.form_snapshot != null && options.form_snapshot !== '') {
+      statusUpdate.invoice_snapshot = typeof options.form_snapshot === 'string' ? options.form_snapshot : JSON.stringify(options.form_snapshot);
+    }
+    await db.updateDocumentStatus(insert.id, statusUpdate);
+
+    // Leave staging file in place (overwritten each run); only the PDF is the final output
 
     try {
       const cb = watcherCallbacks.get(businessId);

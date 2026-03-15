@@ -1,9 +1,77 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
+function IconButton({ label, onClick, disabled, className = '', children, size = 'md' }) {
+  const sizePx = size === 'sm' ? 28 : (size === 'lg' ? 40 : 36);
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick?.(e); }}
+      disabled={disabled}
+      style={{
+        width: sizePx, height: sizePx, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.6 : 1
+      }}
+      aria-label={label}
+      title={label}
+    >
+      {children}
+    </button>
+  );
+}
+function EyeIcon({ style }) {
+  return (
+    <svg style={{ width: 16, height: 16, ...style }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.25 12s2.75-6.75 9.75-6.75 9.75 6.75 9.75 6.75-2.75 6.75-9.75 6.75S2.25 12 2.25 12Z" />
+      <path d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" />
+    </svg>
+  );
+}
+function RevealIcon({ style }) {
+  return (
+    <svg style={{ width: 16, height: 16, ...style }} viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 6.25A2.25 2.25 0 0 1 6.25 4h4.086c.414 0 .812.165 1.105.459L13.5 6.5H19A2 2 0 0 1 21 8.5V9H4V6.25Z" fill="currentColor" opacity="0.5" />
+      <path d="M3 9.75A1.75 1.75 0 0 1 4.75 8h15.5A1.75 1.75 0 0 1 22 9.75v7.5A2.75 2.75 0 0 1 19.25 20H6A3 3 0 0 1 3 17V9.75Z" fill="currentColor" />
+    </svg>
+  );
+}
+function DeleteIcon({ style }) {
+  return (
+    <svg style={{ width: 16, height: 16, ...style }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 7h12" /><path d="M9.5 7V5.75A1.75 1.75 0 0 1 11.25 4h1.5A1.75 1.75 0 0 1 14.5 5.75V7" /><path d="M17 7v10.25A1.75 1.75 0 0 1 15.25 19h-6.5A1.75 1.75 0 0 1 7 17.25V7" /><path d="M10 11v5" /><path d="M14 11v5" />
+    </svg>
+  );
+}
+function PencilIcon({ style }) {
+  return (
+    <svg style={{ width: 16, height: 16, ...style }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M16.5 3.5L20.5 7.5L7 21H3V17L16.5 3.5Z" /><path d="M15 5L19 9" />
+    </svg>
+  );
+}
+
+function Spinner({ size = 20, style = {} }) {
+  return (
+    <span
+      role="status"
+      aria-label="Loading"
+      style={{
+        display: 'inline-block',
+        width: size,
+        height: size,
+        border: '2px solid #e2e8f0',
+        borderTopColor: '#4f46e5',
+        borderRadius: '50%',
+        animation: 'mcms-spin 0.7s linear infinite',
+        ...style
+      }}
+    />
+  );
+}
+
 function App() {
   const BUSINESS_ID = 1; // MCMS
-  const [activeTab, setActiveTab] = useState('invoices'); // 'invoices' | 'contacts'
+  const [activeTab, setActiveTab] = useState('invoices'); // 'invoices' | 'contacts' | 'templates'
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -17,14 +85,7 @@ function App() {
   const [excelBusy, setExcelBusy] = useState(false);
   // Delete modal state
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
-  const [deleteModalData, setDeleteModalData] = useState({
-    selected: null,
-    xlsxDoc: null,
-    pdfDoc: null,
-    removeSelectedFile: false,
-    deleteXlsx: false,
-    deletePdf: false
-  });
+  const [deleteModalData, setDeleteModalData] = useState({ selected: null });
   // Placeholders UI removed (Excel-first flow)
 
   const [docs, setDocs] = useState([]);
@@ -72,6 +133,20 @@ function App() {
   const [invoiceNumChecking, setInvoiceNumChecking] = useState(false);
   const [invoiceNumError, setInvoiceNumError] = useState('');
   const [savePath, setSavePath] = useState('');
+
+  // Create invoice form state
+  const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const [invoiceDate, setInvoiceDate] = useState(todayISO);
+  const [dueDate, setDueDate] = useState('On receipt');
+  const [lineItems, setLineItems] = useState([{ date: todayISO, description: '', amount: '' }]);
+  const [totalOverride, setTotalOverride] = useState('');
+  const [amountReceived, setAmountReceived] = useState('');
+  const [discountDescription, setDiscountDescription] = useState('');
+  const [discountAmount, setDiscountAmount] = useState('');
+  const [createBusy, setCreateBusy] = useState(false);
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false);
+  const [invoiceModalMode, setInvoiceModalMode] = useState('new'); // 'new' | 'edit'
+  const [editingDocument, setEditingDocument] = useState(null); // when edit, the doc row
 
   // Contacts editor state
   const [contactQuery, setContactQuery] = useState('');
@@ -231,8 +306,52 @@ function App() {
     return () => { try { unsub?.(); api.unwatchDocuments?.({ businessId: BUSINESS_ID }); } catch (_) {} };
   }, [refreshDocs]);
 
+  // Load snapshot when opening invoice modal for edit
+  useEffect(() => {
+    if (!invoiceModalOpen || invoiceModalMode !== 'edit' || !editingDocument) return;
+    (async () => {
+      try {
+        const doc = await window.api?.getDocumentById?.(editingDocument.document_id);
+        if (doc?.invoice_snapshot) {
+          const snap = JSON.parse(doc.invoice_snapshot);
+          setClientQuery(snap.client_name || '');
+          setInvoiceDate(snap.invoice_date || todayISO);
+          setDueDate(snap.due_date != null ? snap.due_date : 'On receipt');
+          setLineItems(Array.isArray(snap.line_items) && snap.line_items.length ? snap.line_items.map(it => {
+            const desc = (it.description || '').toString().trim();
+            const useDesc = desc.toLowerCase() === '(from existing invoice)' ? '' : (it.description || '');
+            return { date: it.date || todayISO, description: useDesc, amount: it.amount ?? '' };
+          }) : [{ date: todayISO, description: '', amount: '' }]);
+          setTotalOverride(snap.total_override != null && snap.total_override !== '' ? String(snap.total_override) : '');
+          setAmountReceived(snap.amount_received != null && snap.amount_received !== '' ? String(snap.amount_received) : '');
+          setDiscountDescription(snap.discount_description || '');
+          setDiscountAmount(snap.discount_amount != null && snap.discount_amount !== '' ? String(snap.discount_amount) : '');
+          if (snap.invoice_number != null) { setInvoiceNumber(String(snap.invoice_number)); setInvoiceNumTouched(true); }
+        } else {
+          setClientQuery(doc?.client_name || '');
+          setInvoiceDate(doc?.document_date ? doc.document_date.slice(0, 10) : todayISO);
+          setDueDate(doc?.due_date || 'On receipt');
+          const fallbackLine = { date: doc?.document_date ? doc.document_date.slice(0, 10) : todayISO, description: '', amount: doc?.total_amount ?? '' };
+          try {
+            const fromFile = doc?.file_path ? await window.api?.getInvoiceLineItemsFromFile?.(doc.file_path) : [];
+            const loaded = Array.isArray(fromFile) && fromFile.length ? fromFile.map(it => ({ date: it.date || fallbackLine.date, description: it.description ?? '', amount: it.amount ?? '' })) : [fallbackLine];
+            setLineItems(loaded);
+          } catch (_) {
+            setLineItems([fallbackLine]);
+          }
+          setTotalOverride('');
+          setAmountReceived('');
+          setDiscountDescription('');
+          setDiscountAmount('');
+          if (doc?.number != null) { setInvoiceNumber(String(doc.number)); setInvoiceNumTouched(true); }
+        }
+      } catch (_) {}
+    })();
+  }, [invoiceModalOpen, invoiceModalMode, editingDocument?.document_id]);
+
   return (
     <div style={{ minHeight: '100vh', background: '#f1f5f9', color: '#0f172a' }}>
+      <style dangerouslySetInnerHTML={{ __html: '@keyframes mcms-spin { to { transform: rotate(360deg); } }' }} />
       <header style={{ background: '#fff', borderBottom: '1px solid #e2e8f0' }}>
         <div style={{ maxWidth: 1100, margin: '0 auto', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
@@ -240,6 +359,7 @@ function App() {
             <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
               <button onClick={()=>setActiveTab('invoices')} style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid #e2e8f0', background: activeTab==='invoices' ? '#eef2ff' : '#fff', color: activeTab==='invoices' ? '#3730a3' : '#475569' }}>Invoices</button>
               <button onClick={()=>{ setActiveTab('contacts'); if (!clients.length) refreshClients(); }} style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid #e2e8f0', background: activeTab==='contacts' ? '#eef2ff' : '#fff', color: activeTab==='contacts' ? '#3730a3' : '#475569' }}>Contacts</button>
+              <button onClick={()=>setActiveTab('templates')} style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid #e2e8f0', background: activeTab==='templates' ? '#eef2ff' : '#fff', color: activeTab==='templates' ? '#3730a3' : '#475569' }}>Templates</button>
             </div>
           </div>
         </div>
@@ -249,177 +369,104 @@ function App() {
         {message ? (<div style={{ background: '#dcfce7', color: '#166534', border: '1px solid #bbf7d0', padding: 10, borderRadius: 6, marginBottom: 12 }}>{message}</div>) : null}
         {activeTab === 'invoices' ? (
         <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>Generate from Excel template</div>
-          <div style={{ marginTop: 8 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-              <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Invoices</div>
+            <button
+              onClick={() => {
+                setInvoiceModalMode('new');
+                setEditingDocument(null);
+                setClientQuery('');
+                setSelectedClient(null);
+                setInvoiceDate(todayISO);
+                setDueDate('On receipt');
+                setLineItems([{ date: todayISO, description: '', amount: '' }]);
+                setTotalOverride('');
+                setAmountReceived('');
+                setDiscountDescription('');
+                setDiscountAmount('');
+                setInvoiceNumTouched(false);
+                setInvoiceModalOpen(true);
+              }}
+              style={{ fontSize: 14, padding: '10px 16px', border: '1px solid #4f46e5', borderRadius: 6, color: '#fff', background: '#4f46e5' }}
+            >New invoice</button>
+          </div>
+        </section>
+        ) : null}
+
+        {activeTab === 'templates' ? (
+        <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Template and save folder</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
               <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Template</div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                  <button
-                    style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
-                    onClick={async () => {
-                      try {
-                        const file = await window.api.chooseFile({ title: 'Select invoice template (xlsx)', filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }] });
-                        if (!file) return;
-                        await window.api.saveDocumentDefinition(BUSINESS_ID, { key: 'invoice_balance', doc_type: 'invoice', label: 'Invoice – Balance', template_path: file, is_active: 1, is_locked: 0 });
-                        setExcelTemplatePath(file);
-                        setMessage('Template set'); setTimeout(() => setMessage(''), 1200);
-                      } catch (err) { setError(err?.message || 'Unable to set template'); }
-                    }}
-                  >Set template…</button>
-                  {excelTemplatePath ? (
-                    <>
-                      <button onClick={()=>window.api?.openPath?.(excelTemplatePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Open</button>
-                      <button onClick={()=>window.api?.showItemInFolder?.(excelTemplatePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Show in Finder</button>
-                    </>
-                  ) : null}
-                </div>
-                <div style={{ fontSize: 12, color: excelTemplatePath ? '#64748b' : '#b91c1c', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{excelTemplatePath || 'No template set'}</div>
-              </div>
-              <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Save folder</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                  <button
-                    onClick={async ()=>{
-                      try {
-                        const dir = await window.api?.chooseDirectory?.({ title: 'Choose invoice save folder' });
-                        if (!dir) return;
-                        await window.api?.updateBusinessSettings?.(BUSINESS_ID, { save_path: dir });
-                        setSavePath(dir);
-                        setMessage('Save folder updated'); setTimeout(()=>setMessage(''), 1200);
-                      } catch (err) { setError(err?.message || 'Unable to set folder'); }
-                    }}
-                    style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
-                  >Set save folder…</button>
-                  {savePath ? (
-                    <button onClick={()=>window.api?.openPath?.(savePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Open</button>
-                  ) : null}
-                </div>
-                <div style={{ fontSize: 12, color: savePath ? '#64748b' : '#b91c1c', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{savePath || 'Not set'}</div>
-              </div>
-            </div>
-          </div>
-          </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end', marginTop: 12 }}>
-              <div style={{ display: 'flex', flexDirection: 'column', minWidth: 280, position: 'relative' }}>
-                <label style={{ fontSize: 12, color: '#64748b' }}>Client</label>
-                <input
-                  value={clientQuery}
-                  onChange={e=>setClientQuery(e.target.value)}
-                  onFocus={()=>setClientFocus(true)}
-                  onBlur={()=>setTimeout(()=>setClientFocus(false), 120)}
-                  placeholder="Type a client name…"
-                  style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }}
-                />
-                {(clientFocus && (clientQuery||'').trim()) ? (
-                  <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderTop: 'none', borderBottomLeftRadius: 6, borderBottomRightRadius: 6, maxHeight: 220, overflow: 'auto', zIndex: 10 }}>
-                    {(() => {
-                      const q = (clientQuery || '').trim().toLowerCase();
-                      const scored = clients
-                        .filter(c => !c.business_id || c.business_id === BUSINESS_ID)
-                        .map(c => {
-                          const name = String(c.name || '');
-                          const email = String(c.email || '');
-                          const hay = `${name}\n${email}`.toLowerCase();
-                          const idx = hay.indexOf(q);
-                          const score = idx < 0 ? Infinity : idx + Math.abs(hay.length - q.length) * 0.01;
-                          return { c, score };
-                        })
-                        .filter(x => x.score !== Infinity)
-                        .sort((a,b) => a.score - b.score)
-                        .slice(0, 8);
-                      if (!scored.length) {
-                        return (
-                          <div style={{ padding: 8, color: '#64748b' }}>No matches</div>
-                        );
+                <button
+                  style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
+                  onClick={async () => {
+                    try {
+                      if (!savePath) {
+                        setError('Please set the save folder first so the staging file can be updated.');
+                        return;
                       }
-                      return scored.map(({ c }) => (
-                        <div key={c.client_id} onMouseDown={()=>{ setSelectedClient(c); setClientQuery(c.name || ''); }} style={{ padding: 8, cursor: 'pointer', display: 'flex', flexDirection: 'column' }}>
-                          <div style={{ fontSize: 14 }}>{c.name}</div>
-                          {(c.email || c.phone) ? (<div style={{ fontSize: 12, color: '#64748b' }}>{[c.email, c.phone].filter(Boolean).join(' • ')}</div>) : null}
-                        </div>
-                      ));
-                    })()}
-                  </div>
-                ) : null}
-                {clientQuery && (!selectedClient || (selectedClient && String(selectedClient.name || '').toLowerCase() !== String(clientQuery || '').toLowerCase())) ? (
-                  <div style={{ marginTop: 6 }}>
+                      const file = await window.api.chooseFile({ title: 'Select invoice template (xlsx)', filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }] });
+                      if (!file) return;
+                      await window.api.copyTemplateToStaging(BUSINESS_ID, file);
+                      await window.api.saveDocumentDefinition(BUSINESS_ID, { key: 'invoice_balance', doc_type: 'invoice', label: 'Invoice – Balance', template_path: file, is_active: 1, is_locked: 0 });
+                      setExcelTemplatePath(file);
+                      setMessage('Template and staging file updated. On first invoice after an update, Excel may ask for access — grant it once.');
+                      setTimeout(() => setMessage(''), 4000);
+                    } catch (err) { setError(err?.message || 'Unable to set template'); }
+                  }}
+                >Set template…</button>
+                {excelTemplatePath ? (
+                  <>
+                    <button onClick={()=>window.api?.openPath?.(excelTemplatePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Open</button>
+                    <button onClick={()=>window.api?.showItemInFolder?.(excelTemplatePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Show in Finder</button>
                     <button
-                      onClick={async ()=>{
+                      style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
+                      disabled={!savePath}
+                      onClick={async () => {
                         try {
-                          const name = (clientQuery || '').trim();
-                          if (!name) return;
-                          // Avoid duplicate by name (business scoped)
-                          try {
-                            const existing = await window.api.getClientByName(BUSINESS_ID, name);
-                            if (existing) { setSelectedClient(existing); setClientQuery(existing.name || name); setMessage('Client exists; selected'); setTimeout(()=>setMessage(''), 1000); return; }
-                          } catch (_) {}
-                          const newId = await window.api.addClient({ business_id: BUSINESS_ID, name });
-                          await refreshClients();
-                          try { const row = await window.api.getClient(newId); if (row) setSelectedClient(row); } catch(_e) {}
-                          // Open full editor modal for new client
-                          await loadClientDetails(newId);
-                          setContactModalOpen(true);
-                          setMessage('Client saved'); setTimeout(()=>setMessage(''), 1000);
-                          } catch (err) { setError(err?.message || 'Unable to save client'); }
+                          if (!savePath) {
+                            setError('Please set the save folder first.');
+                            return;
+                          }
+                          await window.api.copyTemplateToStaging(BUSINESS_ID, excelTemplatePath);
+                          setMessage('Staging file updated from current template.');
+                          setTimeout(() => setMessage(''), 2000);
+                        } catch (err) { setError(err?.message || 'Unable to refresh template'); }
                       }}
-                      style={{ fontSize: 12, padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}
-                    >Save new client</button>
-                  </div>
+                    >Refresh template</button>
+                  </>
                 ) : null}
               </div>
-              {/* Invoice date picker removed — Excel handles dates */}
-              <div style={{ display: 'flex', flexDirection: 'column' }}>
-                <label style={{ fontSize: 12, color: '#64748b' }}>Invoice #</label>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <input
-                    type="number"
-                    min="1"
-                    value={invoiceNumber}
-                    onChange={e=>{ setInvoiceNumber(e.target.value); setInvoiceNumTouched(true); }}
-                    placeholder="auto"
-                    style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 140 }}
-                  />
-                  <div style={{ fontSize: 12 }}>
-                    {invoiceNumChecking ? (<span style={{ color: '#64748b' }}>Checking…</span>) : null}
-                    {!invoiceNumChecking && invoiceNumError ? (<span style={{ color: '#b91c1c' }}>{invoiceNumError}</span>) : null}
-                    {!invoiceNumChecking && !invoiceNumError && invoiceNumber && (invoiceNumTaken ? (<span style={{ color: '#b91c1c' }}>Number already in use</span>) : (<span style={{ color: '#16a34a' }}>Available</span>))}
-                  </div>
-                </div>
-              </div>
-              {/* Action button at far right */}
-              <div style={{ marginLeft: 'auto' }}>
+              <div style={{ fontSize: 12, color: excelTemplatePath ? '#64748b' : '#b91c1c', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{excelTemplatePath || 'No template set'}</div>
+            </div>
+            <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Save folder</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
                 <button
                   onClick={async ()=>{
                     try {
-                      // Ensure save path
-                      if (!savePath) {
-                        const dir = await window.api?.chooseDirectory?.({ title: 'Choose invoice save folder' });
-                        if (!dir) return; await window.api?.updateBusinessSettings?.(BUSINESS_ID, { save_path: dir }); setSavePath(dir);
-                      }
-                      const nameTyped = (clientQuery || '').trim();
-                      if (!selectedClient && !nameTyped) { setError('Enter a client (name is used in filename)'); return; }
-                      if (invoiceNumber && (invoiceNumTaken || invoiceNumError)) { setError('Invoice number invalid or taken'); return; }
-                      const client = selectedClient || null;
-                      const res = await window.api?.createNumberedWorkbookSimple?.({
-                        business_id: BUSINESS_ID,
-                        definition_key: 'invoice_balance',
-                        invoice_number: (invoiceNumber && Number.isFinite(Number(invoiceNumber)) ? Number(invoiceNumber) : undefined),
-                        client_name: client?.name || nameTyped
-                      });
-                      if (res && res.number != null) {
-                        setMessage(`Workbook created for INV-${res.number}`); setTimeout(()=>setMessage(''), 1200);
-                        try { const next = Number(res.number) + 1; if (Number.isFinite(next)) { setInvoiceNumber(String(next)); setInvoiceNumTouched(false); } } catch(_){}
-                      }
-                    } catch (err) { setError(err?.message || 'Unable to create workbook'); }
+                      const dir = await window.api?.chooseDirectory?.({ title: 'Choose invoice save folder' });
+                      if (!dir) return;
+                      await window.api?.updateBusinessSettings?.(BUSINESS_ID, { save_path: dir });
+                      setSavePath(dir);
+                      setMessage('Save folder updated'); setTimeout(()=>setMessage(''), 1200);
+                    } catch (err) { setError(err?.message || 'Unable to set folder'); }
                   }}
-                  style={{ fontSize: 12, padding: '8px 12px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#0f172a', background: '#f1f5f9' }}
-                >New numbered workbook…</button>
+                  style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
+                >Set save folder…</button>
+                {savePath ? (
+                  <button onClick={()=>window.api?.openPath?.(savePath)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}>Open</button>
+                ) : null}
               </div>
-            
+              <div style={{ fontSize: 12, color: savePath ? '#64748b' : '#b91c1c', marginTop: 6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{savePath || 'Not set'}</div>
+            </div>
           </div>
-          {/* Simplified: no additional fields or line items in Excel-driven flow */}
+          <p style={{ fontSize: 12, color: '#64748b', marginTop: 12, marginBottom: 0, maxWidth: 520 }}>
+            When you update the template, the app copies it to a staging file in the save folder. Excel always uses that same file to generate PDFs, so you only need to grant access once. After a template update, the first time you create an invoice Excel may ask for access to the staging file — grant it and you won&apos;t be asked again for that path.
+          </p>
         </section>
         ) : null}
 
@@ -569,6 +616,7 @@ function App() {
           </section>
         ) : null}
 
+        {activeTab === 'invoices' ? (
         <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
             <div style={{ fontSize: 16, fontWeight: 600 }}>Invoice Log</div>
@@ -600,43 +648,29 @@ function App() {
                     <td style={{ padding: '8px' }}>{d.display_client_name || d.client_name || ''}</td>
                     <td style={{ padding: '8px' }}>{d.event_date || d.document_date || d.created_at || ''}</td>
                     <td style={{ padding: '8px', textAlign: 'right' }}>
-                      <button style={{ fontSize: 12, padding: '6px 8px', marginRight: 6, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={() => window.api.openPath(d.file_path)}>Open</button>
-                      <button style={{ fontSize: 12, padding: '6px 8px', marginRight: 6, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={() => window.api.showItemInFolder(d.file_path)}>Reveal</button>
-                      {String(d.status || '').toLowerCase() === 'paid' ? (
-                        <button style={{ fontSize: 12, padding: '6px 8px', marginRight: 6, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={async ()=>{ try { await window.api?.updateDocumentStatus?.(d.document_id, { status: 'issued', paid_at: null }); setMessage('Marked unpaid'); setTimeout(()=>setMessage(''), 800); refreshDocs(); } catch (err) { setError(err?.message || 'Unable to update'); } }}>Mark unpaid</button>
-                      ) : (
-                        <button style={{ fontSize: 12, padding: '6px 8px', marginRight: 6, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={async ()=>{ try { await window.api?.updateDocumentStatus?.(d.document_id, { status: 'paid', paid_at: new Date().toISOString() }); setMessage('Marked paid'); setTimeout(()=>setMessage(''), 800); refreshDocs(); } catch (err) { setError(err?.message || 'Unable to update'); } }}>Mark paid</button>
-                      )}
-                      <button
-                        style={{ fontSize: 12, padding: '6px 8px', border: '1px solid #fecaca', color: '#b91c1c', borderRadius: 6, background: '#fff' }}
-                        onClick={async () => {
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                        <IconButton label="Open" onClick={() => window.api?.openPath?.(d.file_path)} size="sm"><EyeIcon /></IconButton>
+                        <IconButton label="Reveal" onClick={() => window.api?.showItemInFolder?.(d.file_path)} size="sm"><RevealIcon /></IconButton>
+                        <IconButton label="Edit" onClick={() => { setEditingDocument(d); setInvoiceModalMode('edit'); setInvoiceModalOpen(true); }} size="sm"><PencilIcon /></IconButton>
+                        <IconButton
+                          label="Delete"
+                          onClick={async () => {
                           if (!d || !d.document_id) return;
                         try {
-                          const same = await window.api?.getDocumentsByNumber?.(BUSINESS_ID, 'invoice', d.number);
-                          const list = Array.isArray(same) ? same : [];
-                          const lower = (p)=> (p||'').toString().toLowerCase();
-                          const base = (p)=>{ const s=(p||'').toString(); const name = s.split(/\\\\|\//).pop() || ''; return name.replace(/\.[^.]+$/, ''); };
-                          const dir = (p)=>{ const s=(p||'').toString(); const parts = s.split(/\\\\|\//); parts.pop(); return parts.join('/'); };
-                          const selBase = base(d.file_path || '');
-                          const selDir = dir(d.file_path || '');
-                          // Only consider counterparts in the same directory and base
-                          let xlsxDoc = list.find(x => dir(x.file_path||'') === selDir && base(x.file_path||'') === selBase && lower(x.file_path||'').endsWith('.xlsx')) || null;
-                          let pdfDoc = list.find(x => dir(x.file_path||'') === selDir && base(x.file_path||'') === selBase && lower(x.file_path||'').endsWith('.pdf')) || null;
-                          const isSelectedXlsx = !!(xlsxDoc && xlsxDoc.document_id === d.document_id);
-                          const isSelectedPdf = !!(pdfDoc && pdfDoc.document_id === d.document_id);
                           setDeleteModalData({
                             selected: d,
-                            xlsxDoc,
-                            pdfDoc,
-                            removeSelectedFile: false,
-                            // Only pre-check counterpart files, not the selected one
-                            deleteXlsx: !!(xlsxDoc && !isSelectedXlsx),
-                            deletePdf: !!(pdfDoc && !isSelectedPdf)
+                            deletePdf: !!(d.file_path && (d.file_path || '').toLowerCase().endsWith('.pdf'))
                           });
                           setDeleteModalOpen(true);
                         } catch (err) { setError(err?.message || 'Unable to prepare delete'); }
-                      }}
-                      >Delete</button>
+                          }}
+                        ><DeleteIcon /></IconButton>
+                        {String(d.status || '').toLowerCase() === 'paid' ? (
+                          <button style={{ fontSize: 12, padding: '6px 8px', marginLeft: 4, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={async ()=>{ try { await window.api?.updateDocumentStatus?.(d.document_id, { status: 'issued', paid_at: null }); setMessage('Marked unpaid'); setTimeout(()=>setMessage(''), 800); refreshDocs(); } catch (err) { setError(err?.message || 'Unable to update'); } }}>Mark unpaid</button>
+                        ) : (
+                          <button style={{ fontSize: 12, padding: '6px 8px', marginLeft: 4, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff' }} onClick={async ()=>{ try { await window.api?.updateDocumentStatus?.(d.document_id, { status: 'paid', paid_at: new Date().toISOString() }); setMessage('Marked paid'); setTimeout(()=>setMessage(''), 800); refreshDocs(); } catch (err) { setError(err?.message || 'Unable to update'); } }}>Mark paid</button>
+                        )}
+                      </span>
                     </td>
                   </tr>
                 ))}
@@ -647,7 +681,121 @@ function App() {
             </table>
           )}
         </section>
+        ) : null}
       </main>
+      {/* Invoice modal (New / Edit) */}
+      {invoiceModalOpen ? (
+        <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, zIndex: 50 }} onClick={(e)=>{ if(e.target===e.currentTarget) setInvoiceModalOpen(false); }}>
+          <div style={{ width: 'min(640px, 96vw)', maxHeight: '90vh', background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, boxShadow: '0 10px 30px rgba(0,0,0,0.15)', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ padding: '14px 16px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>{invoiceModalMode === 'edit' && editingDocument?.number != null ? `Edit invoice INV-${editingDocument.number}` : 'New invoice'}</div>
+              <button onClick={()=>setInvoiceModalOpen(false)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}>Close</button>
+            </div>
+            <div style={{ padding: 16, overflow: 'auto', flex: 1 }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 200, position: 'relative' }}>
+                  <label style={{ fontSize: 12, color: '#64748b' }}>Client</label>
+                  <input value={clientQuery} onChange={e=>setClientQuery(e.target.value)} onFocus={()=>setClientFocus(true)} onBlur={()=>setTimeout(()=>setClientFocus(false), 120)} placeholder="Type a client name…" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                  {(clientFocus && (clientQuery||'').trim()) ? (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderTop: 'none', borderRadius: '0 0 6px 6px', maxHeight: 180, overflow: 'auto', zIndex: 10 }}>
+                      {clients.filter(c => !c.business_id || c.business_id === BUSINESS_ID).filter(c => String(c.name||'').toLowerCase().includes((clientQuery||'').trim().toLowerCase())).slice(0, 8).map(c => (
+                        <div key={c.client_id} onMouseDown={()=>{ setSelectedClient(c); setClientQuery(c.name || ''); }} style={{ padding: 8, cursor: 'pointer' }}>{c.name}</div>
+                      ))}
+                    </div>
+                  ) : null}
+                  {clientQuery && (!selectedClient || String(selectedClient.name||'').toLowerCase() !== String(clientQuery||'').toLowerCase()) ? (
+                    <button type="button" onClick={async ()=>{ const name = (clientQuery||'').trim(); if (!name) return; try { const existing = await window.api.getClientByName(BUSINESS_ID, name); if (existing) { setSelectedClient(existing); setClientQuery(existing.name||name); setMessage('Client exists'); setTimeout(()=>setMessage(''), 1000); return; } } catch(_){} const newId = await window.api.addClient({ business_id: BUSINESS_ID, name }); await refreshClients(); const row = await window.api.getClient(newId); if (row) setSelectedClient(row); setMessage('Saved'); setTimeout(()=>setMessage(''), 1000); }} style={{ fontSize: 12, padding: '4px 8px', marginTop: 4, border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}>Save new client</button>
+                  ) : null}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <label style={{ fontSize: 12, color: '#64748b' }}>Invoice #</label>
+                  <input type="number" min="1" value={invoiceNumber} onChange={e=>{ setInvoiceNumber(e.target.value); setInvoiceNumTouched(true); }} placeholder="auto" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 100 }} />
+                  {invoiceNumError ? <span style={{ fontSize: 12, color: '#b91c1c' }}>{invoiceNumError}</span> : null}
+                  {invoiceNumber && !invoiceNumError && (invoiceNumTaken ? <span style={{ fontSize: 12, color: '#b91c1c' }}>Taken</span> : <span style={{ fontSize: 12, color: '#16a34a' }}>OK</span>)}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}><label style={{ fontSize: 12, color: '#64748b' }}>Invoice date</label><input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} /></div>
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}><label style={{ fontSize: 12, color: '#64748b' }}>Due date</label><input value={dueDate} onChange={e=>setDueDate(e.target.value)} placeholder="On receipt or 30 days" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} /></div>
+              </div>
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Line items</div>
+                {lineItems.map((item, idx) => (
+                  <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                    <input type="date" value={item.date||''} onChange={e=>setLineItems(prev=>{ const n=[...prev]; n[idx]={ ...n[idx], date: e.target.value }; return n; })} style={{ width: 130, fontSize: 13, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                    <input placeholder="Description" value={item.description||''} onChange={e=>setLineItems(prev=>{ const n=[...prev]; n[idx]={ ...n[idx], description: e.target.value }; return n; })} style={{ flex: 1, fontSize: 13, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                    <input type="number" step="0.01" placeholder="Amount" value={item.amount===''?'':item.amount} onChange={e=>setLineItems(prev=>{ const n=[...prev]; n[idx]={ ...n[idx], amount: e.target.value }; return n; })} style={{ width: 90, fontSize: 13, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                    <button type="button" onClick={()=>setLineItems(prev=>prev.filter((_,i)=>i!==idx))} disabled={lineItems.length<=1} style={{ fontSize: 12, padding: '4px 8px', border: '1px solid #fecaca', borderRadius: 6, color: '#b91c1c', background: '#fff' }}>Remove</button>
+                  </div>
+                ))}
+                <button type="button" onClick={()=>setLineItems(prev=>[...prev, { date: invoiceDate||todayISO, description: '', amount: '' }])} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}>Add line</button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 12 }}>
+                <div><label style={{ fontSize: 12, color: '#64748b' }}>Total override</label><input type="number" step="0.01" value={totalOverride} onChange={e=>setTotalOverride(e.target.value)} placeholder="auto" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 100, display: 'block' }} /></div>
+                <div><label style={{ fontSize: 12, color: '#64748b' }}>Amount received</label><input type="number" step="0.01" value={amountReceived} onChange={e=>setAmountReceived(e.target.value)} style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 100, display: 'block' }} /></div>
+                <div><label style={{ fontSize: 12, color: '#64748b' }}>Discount desc</label><input value={discountDescription} onChange={e=>setDiscountDescription(e.target.value)} style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 120, display: 'block' }} /></div>
+                <div><label style={{ fontSize: 12, color: '#64748b' }}>Discount amt</label><input type="number" step="0.01" value={discountAmount} onChange={e=>setDiscountAmount(e.target.value)} style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 80, display: 'block' }} /></div>
+              </div>
+              <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12 }}>
+                {createBusy ? (
+                  <>
+                    <Spinner size={22} />
+                    <span style={{ fontSize: 14, color: '#64748b' }}>
+                      {invoiceModalMode === 'edit' ? 'Regenerating PDF…' : 'Generating PDF…'}
+                    </span>
+                  </>
+                ) : null}
+                <button
+                  disabled={createBusy}
+                  style={{ fontSize: 14, padding: '10px 16px', border: '1px solid #4f46e5', borderRadius: 6, color: '#fff', background: createBusy ? '#a5b4fc' : '#4f46e5', cursor: createBusy ? 'not-allowed' : 'pointer' }}
+                  onClick={async ()=>{
+                    setError('');
+                    setCreateBusy(true);
+                    try {
+                      if (!savePath) { const dir = await window.api?.chooseDirectory?.({ title: 'Choose invoice save folder' }); if (!dir) return; await window.api?.updateBusinessSettings?.(BUSINESS_ID, { save_path: dir }); setSavePath(dir); }
+                      const nameTyped = (clientQuery||'').trim();
+                      if (!nameTyped) { setError('Enter a client name'); setCreateBusy(false); return; }
+                      const validItems = lineItems.filter(it => (it.description||'').trim() || (it.amount !== '' && it.amount != null));
+                      if (validItems.length === 0) { setError('Add at least one line item'); setCreateBusy(false); return; }
+                      const invNum = invoiceModalMode === 'edit' && editingDocument?.number != null ? editingDocument.number : (invoiceNumber && Number.isFinite(Number(invoiceNumber)) ? Number(invoiceNumber) : undefined);
+                      if (invoiceModalMode !== 'edit' && invNum != null && (invoiceNumTaken || invoiceNumError)) { setError('Invoice number invalid or taken'); setCreateBusy(false); return; }
+                      let clientForInvoice = selectedClient;
+                      if (!clientForInvoice && nameTyped) { try { const existing = await window.api?.getClientByName?.(BUSINESS_ID, nameTyped); if (existing) clientForInvoice = existing; } catch(_) {} if (!clientForInvoice) { const newId = await window.api?.addClient?.({ business_id: BUSINESS_ID, name: nameTyped }); await refreshClients(); const row = await window.api?.getClient?.(newId); if (row) clientForInvoice = row; } }
+                      let clientOverride = { name: nameTyped };
+                      if (clientForInvoice?.client_id) { const det = await window.api?.getClientDetails?.(clientForInvoice.client_id); if (det?.client) { const pe = (det.emails||[]).find(e=>e.is_primary) || (det.emails||[])[0]; const pp = (det.phones||[]).find(p=>p.is_primary) || (det.phones||[])[0]; const pa = (det.addresses||[]).find(a=>a.is_primary) || (det.addresses||[])[0]; clientOverride = { name: det.client.name || nameTyped, email: pe?.email || '', phone: pp?.phone || '', address1: pa?.address1 || '', address2: pa?.address2 || '', town: pa?.town || '', postcode: pa?.postcode || '' }; } }
+                      const invDate = invoiceDate || todayISO;
+                      let dueDateValue = (dueDate||'').trim();
+                      const daysMatch = dueDateValue.match(/^(\d+)\s*days?$/i);
+                      if (daysMatch) { const d = new Date(invDate); d.setDate(d.getDate() + parseInt(daysMatch[1], 10)); dueDateValue = d.toISOString().slice(0, 10); }
+                      const items = validItems.map(it => ({ description: (it.description||'').trim(), amount: Number(it.amount)||0, date: it.date||invDate }));
+                      const autoTotal = items.reduce((s,it)=>s+(Number.isFinite(it.amount)?it.amount:0), 0);
+                      const totalVal = totalOverride !== '' && Number.isFinite(Number(totalOverride)) ? Number(totalOverride) : autoTotal;
+                      const fieldValues = { invoice_date: invDate, due_date: dueDateValue || 'On receipt', amount_received: amountReceived !== '' && Number.isFinite(Number(amountReceived)) ? Number(amountReceived) : 0 };
+                      if ((discountDescription||'').trim()) fieldValues.discount_description = discountDescription.trim();
+                      if (discountAmount !== '' && Number(discountAmount) !== 0) fieldValues.discount_amount = Number(discountAmount);
+                      const formSnapshot = JSON.stringify({ client_name: nameTyped, line_items: items.map(it => ({ date: it.date, description: it.description, amount: it.amount })), invoice_date: invDate, due_date: dueDateValue || 'On receipt', total_override: totalOverride, amount_received: amountReceived, discount_description: discountDescription, discount_amount: discountAmount, invoice_number: invNum });
+                      if (invoiceModalMode === 'edit' && editingDocument?.number != null) {
+                        const sameNumDocs = await window.api?.getDocumentsByNumber?.(BUSINESS_ID, 'invoice', editingDocument.number) || [];
+                        for (const doc of sameNumDocs) { try { await window.api?.deleteDocument?.(doc.document_id, { removeFile: true }); } catch(_) {} }
+                      }
+                      const res = await window.api?.createMCMSInvoice?.({
+                        business_id: BUSINESS_ID, definition_key: 'invoice_balance', client_override: clientOverride, line_items: items, document_date: invDate, due_date: dueDateValue || null, total_amount: totalVal,
+                        invoice_number: invNum, amount_received: fieldValues.amount_received, discount_description: fieldValues.discount_description, discount_amount: fieldValues.discount_amount, field_values: fieldValues, form_snapshot: formSnapshot
+                      });
+                      if (res?.number != null) {
+                        setMessage(invoiceModalMode === 'edit' ? `Invoice INV-${res.number} regenerated` : `Invoice INV-${res.number} created`);
+                        setTimeout(() => setMessage(''), 2000);
+                        if (invoiceModalMode !== 'edit') setInvoiceNumber(String(Number(res.number) + 1)); setInvoiceNumTouched(false);
+                        setInvoiceModalOpen(false); setEditingDocument(null);
+                        await refreshDocs();
+                        if (res.file_path) { try { await window.api?.showItemInFolder?.(res.file_path); await window.api?.quickLookPath?.(res.file_path); } catch(_) {} }
+                      }
+                    } catch (err) { setError(err?.message || 'Unable to create invoice'); } finally { setCreateBusy(false); }
+                  }}
+                >{invoiceModalMode === 'edit' ? 'Regenerate' : 'Create invoice'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {/* Placeholders modal removed */}
       {contactModalOpen ? (
         <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={(e)=>{ if(e.target===e.currentTarget) setContactModalOpen(false); }}>
@@ -727,65 +875,26 @@ function App() {
         <div role="dialog" aria-modal="true" style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }} onClick={(e)=>{ if(e.target===e.currentTarget) setDeleteModalOpen(false); }}>
           <div style={{ background: '#fff', borderRadius: 12, border: '1px solid #e2e8f0', width: 420, maxWidth: '96vw', padding: 16, boxShadow: '0 10px 30px rgba(0,0,0,0.15)' }}>
             <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8 }}>Delete invoice</div>
-            <div style={{ fontSize: 13, color: '#475569', marginBottom: 12 }}>Choose what to delete from disk. The database record is always removed.</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                <input type="checkbox" checked={deleteModalData.deleteXlsx} onChange={e=>setDeleteModalData(prev=>({ ...prev, deleteXlsx: e.target.checked }))} />
-                Delete Excel workbook (.xlsx)
-              </label>
-              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13 }}>
-                <input type="checkbox" checked={deleteModalData.deletePdf} onChange={e=>setDeleteModalData(prev=>({ ...prev, deletePdf: e.target.checked }))} />
-                Delete PDF (.pdf)
-              </label>
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+            <div style={{ fontSize: 13, color: '#475569', marginBottom: 16 }}>This will remove the invoice record and delete the PDF from disk. Continue?</div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <button onClick={()=>setDeleteModalOpen(false)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}>Cancel</button>
               <button
                 onClick={async ()=>{
                   const d = deleteModalData.selected;
                   if (!d || !d.document_id) { setDeleteModalOpen(false); return; }
-                  const lower = (p)=> (p||'').toString().toLowerCase();
-                  const xlsxDoc = deleteModalData.xlsxDoc || null;
-                  const pdfDoc = deleteModalData.pdfDoc || null;
-                  const { deleteXlsx, deletePdf } = deleteModalData;
-                  const isSelectedXlsx = d.file_path && lower(d.file_path).endsWith('.xlsx');
-                  const isSelectedPdf = d.file_path && lower(d.file_path).endsWith('.pdf');
-                  const removeSelectedFile = (isSelectedXlsx && deleteXlsx) || (isSelectedPdf && deletePdf);
 
                   const deleteByPathSafe = async (absPath) => {
                     if (!absPath) return;
-                    // Only allow deletion inside configured documents folder; never unlink outside
                     try { await window.api?.deleteDocumentByPath?.({ businessId: BUSINESS_ID, absolutePath: absPath }); }
                     catch (e) { throw new Error(e?.message || 'Unable to delete by path'); }
                   };
 
                   try {
-                    // Remove selected document row; delete file by path if toggled
-                    if (removeSelectedFile && d.file_path) {
-                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete selected file'); }
+                    if (d.file_path) {
+                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete PDF'); }
                     }
                     await window.api.deleteDocument(d.document_id, { removeFile: false });
-                    if (deleteXlsx && isSelectedXlsx) {
-                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete Excel'); }
-                    } else if (deleteXlsx && xlsxDoc && xlsxDoc.document_id !== d.document_id) {
-                      try { await deleteByPathSafe(xlsxDoc.file_path); } catch (e) { setError(e?.message || 'Unable to delete Excel'); }
-                      try { await window.api.deleteDocument(xlsxDoc.document_id, { removeFile: false }); } catch (_) {}
-                    } else if (deleteXlsx && !xlsxDoc && isSelectedPdf && d.file_path) {
-                      const twin = d.file_path.replace(/\.pdf$/i, '.xlsx');
-                      try { await deleteByPathSafe(twin); } catch (_) {}
-                    }
 
-                    if (deletePdf && isSelectedPdf) {
-                      try { await deleteByPathSafe(d.file_path); } catch (e) { setError(e?.message || 'Unable to delete PDF'); }
-                    } else if (deletePdf && pdfDoc && pdfDoc.document_id !== d.document_id) {
-                      try { await deleteByPathSafe(pdfDoc.file_path); } catch (e) { setError(e?.message || 'Unable to delete PDF'); }
-                      try { await window.api.deleteDocument(pdfDoc.document_id, { removeFile: false }); } catch (_) {}
-                    } else if (deletePdf && !pdfDoc && isSelectedXlsx && d.file_path) {
-                      const twin = d.file_path.replace(/\.xlsx$/i, '.pdf');
-                      try { await deleteByPathSafe(twin); } catch (_) {}
-                    }
-
-                    // Ensure invoice counter reflects current max after any deletions
                     try {
                       const max = await window.api?.getMaxInvoiceNumber?.(BUSINESS_ID);
                       const next = Number.isFinite(Number(max)) ? Number(max) : 0;
