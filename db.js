@@ -69,16 +69,10 @@ const pushCandidate = (value) => {
   if (!candidatePaths.includes(value)) candidatePaths.push(value);
 };
 
-// CRITICAL: Dev and packaged app must use same path by default. Prevents data loss when
-// switching between dev and released app. Only honour env when set (e.g. tests).
-if (!isPackaged) {
-  if (normalizedEnv) pushCandidate(normalizedEnv);
-  pushCandidate(sharedDbPath);
-} else {
-  pushCandidate(normalizedEnv);
-  pushCandidate(sharedDbPath);
-}
-pushCandidate(normalizedSettings);
+// User-chosen path (settings) wins when set; then env (e.g. tests); then default.
+if (normalizedSettings) pushCandidate(normalizedSettings);
+if (normalizedEnv) pushCandidate(normalizedEnv);
+pushCandidate(sharedDbPath);
 if (!candidatePaths.length) pushCandidate(sharedDbPath);
 
 const ensureDbFile = (targetPath) => {
@@ -302,8 +296,13 @@ function migrateDropAhmenFk(done) {
           FOREIGN KEY (business_id) REFERENCES business_settings(id)
         )`, next);
       },
-      (next) => { db.run('INSERT INTO email_log_new SELECT id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at FROM email_log', next); },
-      (next) => { db.run('DROP TABLE email_log', next); },
+      (next) => {
+        db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='email_log'", (err, row) => {
+          if (err || !row) return next();
+          db.run('INSERT INTO email_log_new SELECT id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at FROM email_log', next);
+        });
+      },
+      (next) => { db.run('DROP TABLE IF EXISTS email_log', next); },
       (next) => { db.run('ALTER TABLE email_log_new RENAME TO email_log', next); },
       (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails_new', next); },
       (next) => {
@@ -330,8 +329,13 @@ function migrateDropAhmenFk(done) {
           FOREIGN KEY (business_id) REFERENCES business_settings(id)
         )`, next);
       },
-      (next) => { db.run('INSERT INTO scheduled_emails_new SELECT id, email_log_id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, is_html, send_at, status, attempt_count, last_error, sent_at, created_at, updated_at FROM scheduled_emails', next); },
-      (next) => { db.run('DROP TABLE scheduled_emails', next); },
+      (next) => {
+        db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_emails'", (err, row) => {
+          if (err || !row) return next();
+          db.run('INSERT INTO scheduled_emails_new SELECT id, email_log_id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, is_html, send_at, status, attempt_count, last_error, sent_at, created_at, updated_at FROM scheduled_emails', next);
+        });
+      },
+      (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails', next); },
       (next) => { db.run('ALTER TABLE scheduled_emails_new RENAME TO scheduled_emails', next); }
     ];
 
@@ -3885,22 +3889,23 @@ module.exports.queueScheduledEmail = ({
   });
 };
 
-module.exports.listDueScheduledEmails = ({ limit = 10 } = {}) => {
-  return new Promise((resolve, reject) => {
-    const cap = Number(limit) || 10;
-    db.all(
-      `SELECT * FROM scheduled_emails
-       WHERE status = 'pending' AND send_at <= datetime('now')
-       ORDER BY send_at ASC
-       LIMIT ?`,
-      [cap],
-      (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }
-    );
+module.exports.listDueScheduledEmails = ({ limit = 10 } = {}) =>
+  dbReady.then(() => {
+    return new Promise((resolve, reject) => {
+      const cap = Number(limit) || 10;
+      db.all(
+        `SELECT * FROM scheduled_emails
+         WHERE status = 'pending' AND send_at <= datetime('now')
+         ORDER BY send_at ASC
+         LIMIT ?`,
+        [cap],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
   });
-};
 
 module.exports.markScheduledEmailSent = ({ id, sent_at = null }) => {
   return new Promise((resolve, reject) => {
@@ -3948,27 +3953,29 @@ module.exports.markScheduledEmailFailed = ({ id, error, retryInMinutes = 5 }) =>
   });
 };
 
-module.exports.listScheduledEmails = ({ status = null, limit = 100, jobsheet_id = null, business_id = null, to = null, subject = null } = {}) => {
-  return new Promise((resolve, reject) => {
-    const where = [];
-    const params = [];
-    if (status) { where.push('status = ?'); params.push(status); }
-    if (Number.isInteger(jobsheet_id)) { where.push('jobsheet_id = ?'); params.push(Number(jobsheet_id)); }
-    if (Number.isInteger(business_id)) { where.push('business_id = ?'); params.push(Number(business_id)); }
-    if (to) { where.push('to_address = ?'); params.push(String(to)); }
-    if (subject) { where.push('subject = ?'); params.push(String(subject)); }
-    const limitVal = Number(limit) || 100;
-    params.push(limitVal);
-    db.all(
-      `SELECT * FROM scheduled_emails
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-       ORDER BY send_at ASC
-       LIMIT ?`,
-      params,
-      (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }
-    );
+module.exports.listScheduledEmails = (opts = {}) =>
+  dbReady.then(() => {
+    const { status = null, limit = 100, jobsheet_id = null, business_id = null, to = null, subject = null } = opts;
+    return new Promise((resolve, reject) => {
+      const where = [];
+      const params = [];
+      if (status) { where.push('status = ?'); params.push(status); }
+      if (Number.isInteger(jobsheet_id)) { where.push('jobsheet_id = ?'); params.push(Number(jobsheet_id)); }
+      if (Number.isInteger(business_id)) { where.push('business_id = ?'); params.push(Number(business_id)); }
+      if (to) { where.push('to_address = ?'); params.push(String(to)); }
+      if (subject) { where.push('subject = ?'); params.push(String(subject)); }
+      const limitVal = Number(limit) || 100;
+      params.push(limitVal);
+      db.all(
+        `SELECT * FROM scheduled_emails
+         ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+         ORDER BY send_at ASC
+         LIMIT ?`,
+        params,
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows || []);
+        }
+      );
+    });
   });
-};

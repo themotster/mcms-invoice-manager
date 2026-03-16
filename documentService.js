@@ -4230,7 +4230,17 @@ async function getInvoiceLineItemsFromFile(filePath) {
 }
 
 ensureScheduledMailWorker();
+function setDatabasePath(filePath) {
+  const resolved = filePath ? path.resolve(String(filePath).trim()) : '';
+  const s = readSettings();
+  s.db_path = resolved || undefined;
+  if (!s.db_path) delete s.db_path;
+  writeSettings(s);
+  return Promise.resolve({ ok: true, path: s.db_path || null });
+}
+
 module.exports = {
+  setDatabasePath,
   createDocument,
   getInvoiceLineItemsFromFile,
   buildMCMSDocumentHtml,

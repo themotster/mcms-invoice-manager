@@ -10,6 +10,7 @@ ipcRenderer.on('documents-change', (_event, payload) => {
 
 contextBridge.exposeInMainWorld('api', {
   getDbPath: () => db.getDbPath(),
+  setDatabasePath: async (filePath) => documentService.setDatabasePath(filePath),
   getClients: async () => await db.getClients(),
   getClient: async (clientId) => await db.getClient(clientId),
   getClientByName: async (businessId, name) => await db.getClientByName(businessId, name),

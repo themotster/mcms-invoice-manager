@@ -422,8 +422,39 @@ function App() {
 
         {activeTab === 'templates' ? (
         <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
-            Database: {dbPath || '…'}
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Database location</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              <button
+                onClick={async () => {
+                  try {
+                    if (!window.api?.chooseDirectory || !window.api?.setDatabasePath) return;
+                    const dir = await window.api.chooseDirectory({ title: 'Choose folder for database (invoice_master.db will be used here)' });
+                    if (!dir) return;
+                    await window.api.setDatabasePath(dir + '/invoice_master.db');
+                    setMessage('Database location saved. Restart the app for it to take effect.');
+                    setTimeout(() => setMessage(''), 5000);
+                  } catch (err) { setError(err?.message || 'Unable to set database location'); }
+                }}
+                style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
+              >Set database folder…</button>
+              <button
+                onClick={async () => {
+                  try {
+                    if (!window.api?.chooseFile || !window.api?.setDatabasePath) return;
+                    const file = await window.api.chooseFile({ title: 'Select existing database file', filters: [{ name: 'Database', extensions: ['db'] }] });
+                    if (!file) return;
+                    await window.api.setDatabasePath(file);
+                    setMessage('Database location saved. Restart the app for it to take effect.');
+                    setTimeout(() => setMessage(''), 5000);
+                  } catch (err) { setError(err?.message || 'Unable to set database location'); }
+                }}
+                style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
+              >Choose existing database file…</button>
+            </div>
+            <div style={{ fontSize: 11, color: '#64748b', marginTop: 6, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+              {dbPath || '…'}
+            </div>
           </div>
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Template and save folder</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
