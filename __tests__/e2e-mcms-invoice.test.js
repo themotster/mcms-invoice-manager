@@ -54,11 +54,17 @@ describe('E2E MCMS invoice', () => {
   let tempDir;
   let templatePath;
   let businessId;
+  let dbPath;
 
   beforeAll(async () => {
-    documentService = require('../documentService');
-    db = require('../db');
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcms-e2e-'));
+    dbPath = path.join(tempDir, 'e2e.db');
+    process.env.MCMS_DB_PATH = dbPath;
+    jest.isolateModules(() => {
+      db = require('../db');
+      documentService = require('../documentService');
+    });
+    await (db.dbReady || Promise.resolve());
     templatePath = path.join(tempDir, 'template.xlsx');
     await buildMinimalInvoiceTemplate(templatePath);
     businessId = 1;

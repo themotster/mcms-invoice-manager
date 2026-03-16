@@ -4,7 +4,10 @@ const fsp = fs.promises;
 const path = require('path');
 const os = require('os');
 
-const settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json')));
+let settings = {};
+try {
+  settings = JSON.parse(fs.readFileSync(path.join(__dirname, 'settings.json'), 'utf-8'));
+} catch (_) {}
 const sharedSupportDir = path.join(os.homedir(), 'Library', 'Application Support', 'MCMS Invoice Manager');
 const sharedDbPath = path.join(sharedSupportDir, 'invoice_master.db');
 
@@ -66,8 +69,15 @@ const pushCandidate = (value) => {
   if (!candidatePaths.includes(value)) candidatePaths.push(value);
 };
 
-pushCandidate(normalizedEnv);
-if (isPackaged) pushCandidate(sharedDbPath);
+// CRITICAL: Dev and packaged app must use same path by default. Prevents data loss when
+// switching between dev and released app. Only honour env when set (e.g. tests).
+if (!isPackaged) {
+  if (normalizedEnv) pushCandidate(normalizedEnv);
+  pushCandidate(sharedDbPath);
+} else {
+  pushCandidate(normalizedEnv);
+  pushCandidate(sharedDbPath);
+}
 pushCandidate(normalizedSettings);
 if (!candidatePaths.length) pushCandidate(sharedDbPath);
 
@@ -100,6 +110,10 @@ const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CR
   }
 });
 db.configure('busyTimeout', 5000);
+
+let dbReadyResolve;
+const dbReady = new Promise((r) => { dbReadyResolve = r; });
+
 const mergeFieldDefaults = require('./config/mergeFields.json');
 
 function escapeLikePattern(value) {
@@ -122,16 +136,9 @@ const DEFAULT_BUSINESSES = [
   {
     id: 1,
     business_name: 'Motti Cohen Music Services',
-    last_invoice_number: 704,
+    last_invoice_number: 0,
     last_quote_number: 0,
     save_path: '/Users/Shared/Invoices/MCMS'
-  },
-  {
-    id: 2,
-    business_name: 'AhMen A Cappella Ltd',
-    last_invoice_number: 882,
-    last_quote_number: 0,
-    save_path: '/Users/Shared/Invoices/AhMen'
   }
 ];
 
@@ -317,15 +324,118 @@ const MERGE_FIELD_BINDING_UNIQUE_COLUMNS = ['field_key', 'template', 'sheet', 'c
 
 function logDuplicateColumn(err) {
   if (!err) return;
-  const duplicateMsg = 'duplicate column name';
-  if (err.message && err.message.toLowerCase().includes(duplicateMsg)) return;
+  const msg = (err.message || '').toLowerCase();
+  if (msg.includes('duplicate column name')) return;
+  if (msg.includes('no such table')) return; // table not created yet in init order
   console.error('SQLite schema migration error:', err.message || err);
+}
+
+// MCMS-only: recreate documents/email_log/scheduled_emails without FK to ahmen_jobsheets (no data loss).
+function migrateDropAhmenFk(done) {
+  db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'", (err, row) => {
+    if (err || !row) return done();
+
+    const steps = [
+      (next) => { db.run('DROP TABLE IF EXISTS documents_new', next); },
+      (next) => {
+        db.run(`CREATE TABLE documents_new (
+          document_id INTEGER PRIMARY KEY AUTOINCREMENT,
+          event_id INTEGER,
+          jobsheet_id INTEGER,
+          business_id INTEGER,
+          doc_type TEXT NOT NULL,
+          number INTEGER,
+          status TEXT,
+          total_amount REAL,
+          balance_due REAL,
+          due_date TEXT,
+          file_path TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now')),
+          client_name TEXT,
+          event_name TEXT,
+          event_date TEXT,
+          document_date TEXT,
+          definition_key TEXT,
+          invoice_variant TEXT,
+          reminder_date TEXT,
+          reminder_sent_at TEXT,
+          paid_at TEXT,
+          is_locked INTEGER DEFAULT 0,
+          invoice_snapshot TEXT,
+          FOREIGN KEY (event_id) REFERENCES events(event_id),
+          FOREIGN KEY (business_id) REFERENCES business_settings(id)
+        )`, next);
+      },
+      (next) => { db.run(`INSERT INTO documents_new SELECT document_id, event_id, jobsheet_id, business_id, doc_type, number, status, total_amount, balance_due, due_date, file_path, created_at, updated_at,
+        client_name, event_name, event_date, document_date, definition_key, invoice_variant, reminder_date, reminder_sent_at, paid_at, is_locked, invoice_snapshot FROM documents`, next); },
+      (next) => { db.run('DROP TABLE documents', next); },
+      (next) => { db.run('ALTER TABLE documents_new RENAME TO documents', next); },
+      (next) => { db.run('DROP TABLE IF EXISTS email_log_new', next); },
+      (next) => {
+        db.run(`CREATE TABLE email_log_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          business_id INTEGER,
+          jobsheet_id INTEGER,
+          to_address TEXT NOT NULL,
+          cc_address TEXT,
+          bcc_address TEXT,
+          subject TEXT,
+          body TEXT,
+          attachments TEXT,
+          provider TEXT DEFAULT 'graph',
+          status TEXT DEFAULT 'sent',
+          message_id TEXT,
+          sent_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (business_id) REFERENCES business_settings(id)
+        )`, next);
+      },
+      (next) => { db.run('INSERT INTO email_log_new SELECT id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at FROM email_log', next); },
+      (next) => { db.run('DROP TABLE email_log', next); },
+      (next) => { db.run('ALTER TABLE email_log_new RENAME TO email_log', next); },
+      (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails_new', next); },
+      (next) => {
+        db.run(`CREATE TABLE scheduled_emails_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email_log_id INTEGER,
+          business_id INTEGER,
+          jobsheet_id INTEGER,
+          to_address TEXT NOT NULL,
+          cc_address TEXT,
+          bcc_address TEXT,
+          subject TEXT,
+          body TEXT,
+          attachments TEXT,
+          is_html INTEGER DEFAULT 1,
+          send_at TEXT NOT NULL,
+          status TEXT DEFAULT 'pending',
+          attempt_count INTEGER DEFAULT 0,
+          last_error TEXT,
+          sent_at TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          updated_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (email_log_id) REFERENCES email_log(id) ON DELETE SET NULL,
+          FOREIGN KEY (business_id) REFERENCES business_settings(id)
+        )`, next);
+      },
+      (next) => { db.run('INSERT INTO scheduled_emails_new SELECT id, email_log_id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, is_html, send_at, status, attempt_count, last_error, sent_at, created_at, updated_at FROM scheduled_emails', next); },
+      (next) => { db.run('DROP TABLE scheduled_emails', next); },
+      (next) => { db.run('ALTER TABLE scheduled_emails_new RENAME TO scheduled_emails', next); }
+    ];
+
+    const run = (i) => {
+      if (i >= steps.length) return done();
+      steps[i]((err) => { if (err) { console.error('migrateDropAhmenFk error:', err); return done(); } run(i + 1); });
+    };
+    run(0);
+  });
 }
 
 function initializeDatabase() {
   db.serialize(() => {
-    db.run('PRAGMA foreign_keys = ON');
+    db.run('PRAGMA foreign_keys = OFF');
 
+    migrateDropAhmenFk(() => {
     db.run(`CREATE TABLE IF NOT EXISTS business_settings (
       id INTEGER PRIMARY KEY,
       business_name TEXT NOT NULL UNIQUE,
@@ -467,7 +577,6 @@ function initializeDatabase() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (event_id) REFERENCES events(event_id),
-      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id),
       FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
@@ -503,8 +612,7 @@ function initializeDatabase() {
       status TEXT DEFAULT 'sent',
       message_id TEXT,
       sent_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (business_id) REFERENCES business_settings(id),
-      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id)
+      FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS scheduled_emails (
@@ -527,38 +635,13 @@ function initializeDatabase() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY (email_log_id) REFERENCES email_log(id) ON DELETE SET NULL,
-      FOREIGN KEY (business_id) REFERENCES business_settings(id),
-      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id)
+      FOREIGN KEY (business_id) REFERENCES business_settings(id)
     )`);
 
     db.run(`CREATE INDEX IF NOT EXISTS idx_scheduled_emails_status_sendat
       ON scheduled_emails (status, send_at)`);
 
     db.run('ALTER TABLE scheduled_emails ADD COLUMN is_html INTEGER DEFAULT 1', logDuplicateColumn);
-
-    db.run(`CREATE TABLE IF NOT EXISTS planner_actions (
-      action_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      business_id INTEGER NOT NULL,
-      jobsheet_id INTEGER NOT NULL,
-      action_key TEXT NOT NULL,
-      scheduled_for TEXT NOT NULL,
-      status TEXT DEFAULT 'pending',
-      completed_at TEXT,
-      last_notified_at TEXT,
-      last_email_at TEXT,
-      last_error TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (business_id) REFERENCES business_settings(id),
-      FOREIGN KEY (jobsheet_id) REFERENCES ahmen_jobsheets(jobsheet_id),
-      UNIQUE (business_id, jobsheet_id, action_key, scheduled_for)
-    )`);
-
-    db.run(`CREATE INDEX IF NOT EXISTS idx_planner_actions_status_date
-      ON planner_actions (status, scheduled_for)`);
-
-    db.run(`CREATE INDEX IF NOT EXISTS idx_planner_actions_business
-      ON planner_actions (business_id, jobsheet_id)`);
 
   db.run(`CREATE TABLE IF NOT EXISTS document_definitions (
     definition_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -588,18 +671,6 @@ function initializeDatabase() {
     PRIMARY KEY (business_id, key)
   )`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS jobsheet_template_overrides (
-      override_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      jobsheet_id INTEGER NOT NULL,
-      definition_key TEXT NOT NULL,
-      template_path TEXT NOT NULL,
-      updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE (jobsheet_id, definition_key)
-    )`);
-
-    db.run(`CREATE INDEX IF NOT EXISTS idx_jobsheet_template_overrides_jobsheet
-      ON jobsheet_template_overrides (jobsheet_id)`);
-
     db.run(`CREATE TABLE IF NOT EXISTS event_musicians (
       musician_id INTEGER PRIMARY KEY AUTOINCREMENT,
       event_id INTEGER NOT NULL,
@@ -624,82 +695,6 @@ function initializeDatabase() {
       FOREIGN KEY (event_id) REFERENCES events(event_id)
     )`);
 
-    db.run(`CREATE TABLE IF NOT EXISTS ahmen_venues (
-      venue_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      business_id INTEGER NOT NULL,
-      name TEXT NOT NULL,
-      address1 TEXT,
-      address2 TEXT,
-      address3 TEXT,
-      town TEXT,
-      postcode TEXT,
-      is_private INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (business_id) REFERENCES business_settings(id)
-    )`);
-
-    db.run(`CREATE TABLE IF NOT EXISTS ahmen_jobsheets (
-      jobsheet_id INTEGER PRIMARY KEY AUTOINCREMENT,
-      business_id INTEGER NOT NULL,
-      status TEXT DEFAULT 'enquiry',
-      client_name TEXT NOT NULL,
-      client_email TEXT,
-      client_phone TEXT,
-      client_address TEXT,
-      client_address1 TEXT,
-      client_address2 TEXT,
-      client_address3 TEXT,
-      client_town TEXT,
-      client_postcode TEXT,
-      event_type TEXT,
-      event_date TEXT,
-      event_start TEXT,
-      event_end TEXT,
-      venue_id INTEGER,
-      venue_name TEXT,
-      venue_address TEXT,
-      venue_address1 TEXT,
-      venue_address2 TEXT,
-      venue_address3 TEXT,
-      venue_town TEXT,
-      venue_postcode TEXT,
-      caterer_name TEXT,
-      venue_same_as_client INTEGER DEFAULT 0,
-      ahmen_fee REAL,
-      specialist_fees REAL,
-      production_fees REAL,
-      vat_amount REAL,
-      deposit_amount REAL,
-      balance_amount REAL,
-      balance_due_date TEXT,
-      balance_reminder_date TEXT,
-      service_types TEXT,
-      specialist_singers TEXT,
-      special_conditions TEXT,
-      gig_info TEXT,
-      notes TEXT,
-      pricing_service_id TEXT,
-      pricing_selected_singers TEXT,
-      pricing_custom_fees TEXT,
-      pricing_discount REAL,
-      pricing_discount_type TEXT,
-      pricing_discount_value REAL,
-      vat_enabled INTEGER DEFAULT 0,
-      pricing_production_items TEXT,
-      pricing_production_subtotal REAL,
-      pricing_production_discount TEXT,
-      pricing_production_discount_type TEXT,
-      pricing_production_discount_value REAL,
-      pricing_production_total REAL,
-      pricing_total REAL,
-      archived_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      FOREIGN KEY (business_id) REFERENCES business_settings(id),
-      FOREIGN KEY (venue_id) REFERENCES ahmen_venues(venue_id)
-    )`);
-
     // Extend existing clients table with new columns if they do not yet exist
     db.run('ALTER TABLE clients ADD COLUMN contact TEXT', logDuplicateColumn);
     db.run('ALTER TABLE clients ADD COLUMN address1 TEXT', logDuplicateColumn);
@@ -721,36 +716,7 @@ function initializeDatabase() {
     db.run('ALTER TABLE documents ADD COLUMN paid_at TEXT', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN is_locked INTEGER DEFAULT 0', logDuplicateColumn);
     db.run('ALTER TABLE documents ADD COLUMN invoice_snapshot TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN caterer_name TEXT', logDuplicateColumn);
     db.run('ALTER TABLE document_definitions ADD COLUMN sheet_exports TEXT', logDuplicateColumn);
-
-    // Template path columns removed; definitions manage their own template_path now.
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_type TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount_value REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_items TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_subtotal REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_discount TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_discount_type TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_discount_value REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_production_total REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN venue_id INTEGER', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN venue_same_as_client INTEGER DEFAULT 0', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_service_id TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_selected_singers TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_custom_fees TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN vat_amount REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN vat_enabled INTEGER DEFAULT 0', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_discount REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN pricing_total REAL', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN gig_info TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN archived_at TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN client_address TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN venue_address TEXT', logDuplicateColumn);
-    db.run('ALTER TABLE ahmen_jobsheets ADD COLUMN special_conditions TEXT', logDuplicateColumn);
-    
-    db.run(`UPDATE ahmen_jobsheets SET status='enquiry' WHERE status IS NULL OR status='' OR status='draft'`, err => {
-      if (err) console.error('Failed to normalize jobsheet status:', err);
-    });
 
     seedBusinesses();
     syncLegacyBusinessesTable();
@@ -759,60 +725,6 @@ function initializeDatabase() {
       `UPDATE ${MERGE_FIELD_TABLE}
        SET placeholder = 'TOTAL_FEES', updated_at = datetime('now')
        WHERE field_key = 'total_amount' AND (placeholder IS NULL OR placeholder = '' OR placeholder = 'TOTAL')`
-    );
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET cell = 'B30'
-       WHERE field_key = 'total_amount' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
-    );
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET cell = 'B31'
-       WHERE field_key = 'deposit_amount' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
-    );
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET cell = 'B32'
-       WHERE field_key = 'balance_amount' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
-    );
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET cell = 'B33'
-       WHERE field_key = 'balance_due_date' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
-    );
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET cell = 'B34'
-       WHERE field_key = 'balance_reminder_date' AND template = 'ahmen_excel' AND sheet = 'Client Data'`
-    );
-    db.run(
-      `INSERT OR IGNORE INTO ${MERGE_FIELD_BINDINGS_TABLE} (field_key, template, sheet, cell, data_type, style, format)
-       VALUES ('ahmen_fee', 'ahmen_excel', 'Client Data', 'B27', 'number', '12', NULL)`
-    );
-    // Ensure numeric currency formatting on key fee fields (don't override if already set)
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET data_type = 'number', format = 'currency', updated_at = datetime('now')
-       WHERE template = 'ahmen_excel' AND (data_type IS NULL OR data_type = '' OR data_type = 'string')
-         AND field_key IN ('total_amount','deposit_amount','balance_amount','production_fees','extra_fees')`
-    );
-    // Ensure date data type on date fields
-    db.run(
-      `UPDATE ${MERGE_FIELD_BINDINGS_TABLE}
-       SET data_type = 'date', updated_at = datetime('now')
-       WHERE template = 'ahmen_excel' AND (data_type IS NULL OR data_type = '' OR data_type = 'string')
-         AND field_key IN ('event_date','balance_due_date','balance_reminder_date')`
-    );
-    // Cleanup: remove legacy AHMEN_FEE bindings on Quote/Invoice F21 now that templates use curly placeholders
-    db.run(
-      `DELETE FROM ${MERGE_FIELD_BINDINGS_TABLE}
-       WHERE field_key = 'ahmen_fee' AND template = 'ahmen_excel' AND cell = 'F21'
-         AND sheet IN ('Quote','Quotes','QUOTE','Invoice','INVOICE','Invoice – Deposit','Invoice - Deposit','Invoice – Balance','Invoice - Balance')`
-    );
-    db.run(
-      `DELETE FROM ${MERGE_FIELD_BINDINGS_TABLE}
-       WHERE field_key = 'ahmen_fee' AND template = 'ahmen_excel' AND cell = 'F49'
-         AND sheet IN ('Booking Schedule','Booking schedule')`
     );
     seedMergeFieldValueSources();
     migrateBusinessSettingsDropTemplateColumns(() => {
@@ -836,17 +748,22 @@ function initializeDatabase() {
                   }
                 });
               }
+              db.run('PRAGMA foreign_keys = ON');
+              if (typeof dbReadyResolve === 'function') dbReadyResolve();
             }
           );
-        } catch (_err) {}
+        } catch (_err) {
+          db.run('PRAGMA foreign_keys = ON');
+          if (typeof dbReadyResolve === 'function') dbReadyResolve();
+        }
       });
+    });
     });
   });
 }
 
 function seedBusinesses() {
-  const allowedNames = DEFAULT_BUSINESSES.map(b => b.business_name);
-
+  // Never delete existing business rows — preserves user save_path, template paths, etc.
   DEFAULT_BUSINESSES.forEach(business => {
     db.run(
       `INSERT OR IGNORE INTO business_settings (
@@ -876,14 +793,6 @@ function seedBusinesses() {
       ]
     );
   });
-
-  if (allowedNames.length) {
-    const placeholders = allowedNames.map(() => '?').join(', ');
-    db.run(
-      `DELETE FROM business_settings WHERE business_name NOT IN (${placeholders})`,
-      allowedNames
-    );
-  }
 }
 
 function seedMergeFieldDefaults() {
@@ -2190,80 +2099,15 @@ function reorderDocumentDefinitions(businessId, orderedKeys) {
   });
 }
 
-function getJobsheetTemplateOverrides(jobsheetId) {
-  return new Promise((resolve, reject) => {
-    const id = Number(jobsheetId);
-    if (!Number.isInteger(id)) {
-      reject(new Error('Invalid jobsheet id'));
-      return;
-    }
-
-    db.all(
-      `SELECT definition_key, template_path FROM jobsheet_template_overrides WHERE jobsheet_id = ?`,
-      [id],
-      (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }
-    );
-  });
+// MCMS-only: jobsheet_template_overrides table removed; no-op stubs.
+function getJobsheetTemplateOverrides() {
+  return Promise.resolve([]);
 }
-
-function setJobsheetTemplateOverride(jobsheetId, definitionKey, templatePath) {
-  return new Promise((resolve, reject) => {
-    const id = Number(jobsheetId);
-    if (!Number.isInteger(id)) {
-      reject(new Error('Invalid jobsheet id'));
-      return;
-    }
-    const key = (definitionKey || '').trim();
-    if (!key) {
-      reject(new Error('Definition key is required'));
-      return;
-    }
-    const pathValue = (templatePath || '').trim();
-    if (!pathValue) {
-      reject(new Error('Template path is required'));
-      return;
-    }
-
-    db.run(
-      `INSERT INTO jobsheet_template_overrides (jobsheet_id, definition_key, template_path, updated_at)
-       VALUES (?, ?, ?, datetime('now'))
-       ON CONFLICT(jobsheet_id, definition_key) DO UPDATE SET
-         template_path = excluded.template_path,
-         updated_at = excluded.updated_at`,
-      [id, key, pathValue],
-      function (err) {
-        if (err) reject(err);
-        else resolve({ overrideId: this.lastID || null, template_path: pathValue });
-      }
-    );
-  });
+function setJobsheetTemplateOverride() {
+  return Promise.resolve({ overrideId: null, template_path: '' });
 }
-
-function clearJobsheetTemplateOverride(jobsheetId, definitionKey) {
-  return new Promise((resolve, reject) => {
-    const id = Number(jobsheetId);
-    if (!Number.isInteger(id)) {
-      reject(new Error('Invalid jobsheet id'));
-      return;
-    }
-    const key = (definitionKey || '').trim();
-    if (!key) {
-      reject(new Error('Definition key is required'));
-      return;
-    }
-
-    db.run(
-      `DELETE FROM jobsheet_template_overrides WHERE jobsheet_id = ? AND definition_key = ?`,
-      [id, key],
-      function (err) {
-        if (err) reject(err);
-        else resolve({ removed: this.changes || 0 });
-      }
-    );
-  });
+function clearJobsheetTemplateOverride() {
+  return Promise.resolve({ removed: 0 });
 }
 
 // No longer sync template paths from business settings; managed per-definition only
@@ -2690,41 +2534,13 @@ function mapAhmenVenueRow(row) {
   };
 }
 
-function getAhmenJobsheets(options = {}) {
-  const conditions = [];
-  const params = [];
-  if (options.businessId) {
-    conditions.push('business_id = ?');
-    params.push(options.businessId);
-  }
-  if (!options.includeArchived) {
-    conditions.push('archived_at IS NULL');
-  }
-  let query = 'SELECT * FROM ahmen_jobsheets';
-  if (conditions.length) {
-    query += ` WHERE ${conditions.join(' AND ')}`;
-  }
-  query += ' ORDER BY datetime(updated_at) DESC, datetime(created_at) DESC';
-
-  return new Promise((resolve, reject) => {
-    db.all(query, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows.map(mapAhmenJobsheetRow));
-    });
-  });
+// MCMS-only: AhMen jobsheet tables removed; stubs for documentService compatibility.
+function getAhmenJobsheets() {
+  return Promise.resolve([]);
 }
 
-function getAhmenJobsheet(jobsheetId) {
-  const id = Number(jobsheetId);
-  if (!Number.isInteger(id)) {
-    return Promise.reject(new Error('Invalid jobsheet id'));
-  }
-  return new Promise((resolve, reject) => {
-    db.get('SELECT * FROM ahmen_jobsheets WHERE jobsheet_id = ?', [id], (err, row) => {
-      if (err) reject(err);
-      else resolve(mapAhmenJobsheetRow(row));
-    });
-  });
+function getAhmenJobsheet() {
+  return Promise.resolve(null);
 }
 
 function addAhmenJobsheet(data) {
@@ -3014,6 +2830,9 @@ function deleteAhmenVenue(venueId) {
 }
 
 module.exports = {
+  getDbPath: () => dbPath,
+  dbReady,
+
   getInvoices: () => {
     return new Promise((resolve, reject) => {
       db.all(`
@@ -3420,17 +3239,23 @@ module.exports = {
     });
   },
 
-  getDocuments: (options = {}) => {
+  getDocuments: (options = {}) => dbReady.then(() => {
     const params = [];
     const where = [];
 
     if (options.docType) {
-      where.push('documents.doc_type = ?');
-      params.push(options.docType);
+      where.push('LOWER(TRIM(documents.doc_type)) = LOWER(TRIM(?))');
+      params.push(String(options.docType));
     }
-    if (options.businessId) {
-      where.push('documents.business_id = ?');
-      params.push(options.businessId);
+    if (options.businessId != null) {
+      const id = Number(options.businessId);
+      // MCMS-only: show invoices for business 1 or legacy business 2 so existing DB rows appear
+      if (Number(id) === 1) {
+        where.push('(documents.business_id = 1 OR documents.business_id = 2)');
+      } else {
+        where.push('documents.business_id = ?');
+        params.push(id);
+      }
     }
     if (options.eventId) {
       where.push('documents.event_id = ?');
@@ -3471,7 +3296,7 @@ module.exports = {
         }
       );
     });
-  },
+  }),
 
   getDocumentDefinitions: (businessId, options) => getDocumentDefinitionsForBusiness(businessId, options),
   getDocumentDefinition: (businessId, identifier) => getDocumentDefinitionRecord(businessId, identifier),
@@ -3907,7 +3732,7 @@ module.exports = {
     });
   },
 
-  businessSettings: () => {
+  businessSettings: () => dbReady.then(() => {
     return new Promise((resolve, reject) => {
       db.all(
         `SELECT * FROM business_settings ORDER BY id`,
@@ -3918,9 +3743,9 @@ module.exports = {
         }
       );
     });
-  },
+  }),
 
-  updateBusinessSettings: (businessId, updates) => updateBusinessSettingsRecord(businessId, updates),
+  updateBusinessSettings: (businessId, updates) => dbReady.then(() => updateBusinessSettingsRecord(businessId, updates)),
 
   getClientById: (clientId) => {
     return new Promise((resolve, reject) => {
@@ -3948,20 +3773,18 @@ module.exports = {
     });
   },
 
-  getBusinessById: (businessId) => fetchBusinessRecord(businessId),
+  getBusinessById: (businessId) => dbReady.then(() => fetchBusinessRecord(businessId)),
 
-  getDocumentById: (documentId) => {
-    return new Promise((resolve, reject) => {
-      db.get(
-        `SELECT * FROM documents WHERE document_id = ?`,
-        [documentId],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
-  },
+  getDocumentById: (documentId) => dbReady.then(() => new Promise((resolve, reject) => {
+    db.get(
+      `SELECT * FROM documents WHERE document_id = ?`,
+      [documentId],
+      (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      }
+    );
+  })),
 
   getDocumentByFilePath: (businessId, filePath) => {
     return new Promise((resolve, reject) => {

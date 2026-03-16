@@ -133,6 +133,7 @@ function App() {
   const [invoiceNumChecking, setInvoiceNumChecking] = useState(false);
   const [invoiceNumError, setInvoiceNumError] = useState('');
   const [savePath, setSavePath] = useState('');
+  const [dbPath, setDbPath] = useState('');
 
   // Create invoice form state
   const todayISO = useMemo(() => new Date().toISOString().slice(0, 10), []);
@@ -191,11 +192,12 @@ function App() {
       try { await window.api?.cleanOrphanDocuments?.({ businessId: BUSINESS_ID }); } catch (_) {}
       const items = await window.api?.getDocuments?.({ businessId: BUSINESS_ID, docType: 'invoice' });
       const list = Array.isArray(items) ? items : [];
-      let filtered = list;
+      // Include all invoices from DB (includeMissing: true) so log isn't blank if paths changed or files moved
+      let enriched = list;
       try {
-        filtered = await window.api?.filterDocumentsByExistingFiles?.(list, { includeMissing: false });
+        enriched = await window.api?.filterDocumentsByExistingFiles?.(list, { includeMissing: true });
       } catch (_) {}
-      setDocs(Array.isArray(filtered) ? filtered : list);
+      setDocs(Array.isArray(enriched) ? enriched : list);
     } catch (err) {
       setError(err?.message || 'Unable to load invoices');
       setDocs([]);
@@ -236,6 +238,17 @@ function App() {
       } catch (_) {}
     })();
   }, []);
+
+  // Show DB path on Templates tab (for due diligence: see where dev app's DB is)
+  useEffect(() => {
+    if (activeTab !== 'templates') return;
+    try {
+      const p = typeof window.api?.getDbPath === 'function' ? window.api.getDbPath() : '';
+      setDbPath(p || '');
+    } catch (_) {
+      setDbPath('');
+    }
+  }, [activeTab]);
 
   // Auto-watch template file: when it changes on disk, copy to staging and show message
   useEffect(() => {
@@ -381,8 +394,6 @@ function App() {
         </div>
       </header>
       <main style={{ maxWidth: 1100, margin: '0 auto', padding: 24 }}>
-        {error ? (<div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca', padding: 10, borderRadius: 6, marginBottom: 12 }}>{error}</div>) : null}
-        {message ? (<div style={{ background: '#dcfce7', color: '#166534', border: '1px solid #bbf7d0', padding: 10, borderRadius: 6, marginBottom: 12 }}>{message}</div>) : null}
         {activeTab === 'invoices' ? (
         <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 16 }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -411,6 +422,9 @@ function App() {
 
         {activeTab === 'templates' ? (
         <section style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: 16, marginBottom: 16 }}>
+          <div style={{ fontSize: 11, color: '#64748b', marginBottom: 12, fontFamily: 'monospace', wordBreak: 'break-all' }}>
+            Database: {dbPath || '…'}
+          </div>
           <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>Template and save folder</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
             <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12 }}>
@@ -449,12 +463,28 @@ function App() {
                 <button
                   onClick={async ()=>{
                     try {
-                      const dir = await window.api?.chooseDirectory?.({ title: 'Choose invoice save folder' });
-                      if (!dir) return;
-                      await window.api?.updateBusinessSettings?.(BUSINESS_ID, { save_path: dir });
+                      if (!window.api || typeof window.api.chooseDirectory !== 'function') {
+                        setError('App not ready — try again in a moment.');
+                        return;
+                      }
+                      const dir = await window.api.chooseDirectory({ title: 'Choose invoice save folder' });
+                      if (!dir) {
+                        setMessage('No folder selected');
+                        setTimeout(() => setMessage(''), 1500);
+                        return;
+                      }
+                      if (typeof window.api.updateBusinessSettings !== 'function') {
+                        setError('Cannot save settings.');
+                        return;
+                      }
+                      await window.api.updateBusinessSettings(BUSINESS_ID, { save_path: dir });
                       setSavePath(dir);
-                      setMessage('Save folder updated'); setTimeout(()=>setMessage(''), 1200);
-                    } catch (err) { setError(err?.message || 'Unable to set folder'); }
+                      setError('');
+                      setMessage('Save folder updated');
+                      setTimeout(() => setMessage(''), 1200);
+                    } catch (err) {
+                      setError(err?.message || 'Unable to set folder');
+                    }
                   }}
                   style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, color: '#475569', background: '#fff' }}
                 >Set save folder…</button>
@@ -915,6 +945,15 @@ function App() {
           </div>
         </div>
       ) : null}
+      {/* Fixed-position toasts so they don't cause layout jump */}
+      <div style={{ position: 'fixed', bottom: 16, right: 16, zIndex: 9999, display: 'flex', flexDirection: 'column', gap: 8, pointerEvents: 'none' }}>
+        {error ? (
+          <div style={{ background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca', padding: '10px 14px', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', maxWidth: 360 }}>{error}</div>
+        ) : null}
+        {message ? (
+          <div style={{ background: '#dcfce7', color: '#166534', border: '1px solid #bbf7d0', padding: '10px 14px', borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', maxWidth: 360 }}>{message}</div>
+        ) : null}
+      </div>
     </div>
   );
 }

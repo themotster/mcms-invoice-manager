@@ -1,51 +1,22 @@
-# Invoice Master Dashboard
+# MCMS Invoice Manager
 
-## Development Workflow
+Desktop app (Electron) for **Motti Cohen Music Services**: create and manage invoices from an Excel template, track invoice numbers, and store client details. PDFs are generated via Excel and saved to a configurable folder.
 
-Use the live-reload setup when iterating on the Electron app:
+## Development
 
-1. Install dependencies with `npm install`.
-2. Start the watcher-driven dev environment with `npm run dev`.
-   - Webpack runs in watch mode for renderer changes.
-   - Electron restarts automatically via `electronmon` when main or renderer bundles change.
-3. The command performs an initial development build before launching, so the renderer bundle is always ready when Electron starts.
-
-Use `npm start` for the production-style launch (it still performs a fresh production build first via `prestart`).
+1. Install dependencies: `npm install`
+2. Run in dev mode (live reload): `npm run dev` or use the double-click launcher in **Motti - run this for dev mode**
+3. Build for production: `npm run build`
+4. Pack macOS app: `npm run pack:mcms` (output in `release/`)
 
 ## Features
 
-- Jobsheet list supports search, status filters, and sorting.
+- **Invoices**: New invoice from template with placeholders filled (client, dates, line items, totals, discount, amount received). Edit and regenerate existing invoices. Staging file strategy keeps Excel file-access prompts to a minimum.
+- **Templates**: Set Excel template and save folder per business. Template file is watched; changes are copied to a staging file automatically.
+- **Clients**: Type-ahead client selection with optional new contact creation.
+- **Invoice log**: List documents, view/open PDFs, reveal in Finder, mark paid/unpaid, delete.
 
-## Roadmap
+## Tests
 
-- In review / follow-ups
-  - Per-business template path settings UI. Current flow uses Templates Manager to set per-definition templates; decide if Settings needs separate defaults for invoice/quote/contract.
-  - Import existing job files to auto-create jobsheets (partial: invoice filename importer exists; extend to create jobsheets when missing).
-
-- Backlog
-  - Calendar of upcoming deadlines/reminders with background macOS notifications.
-  - Outbound email to send generated documents to clients (templated, with attachments).
-  - WhatsApp workflow for AhMen enquiries, gig sheets, and personnel follow-ups.
-  
-
-## One-off Migration: Import jobsheets from folders
-
-Use the temporary script to create jobsheets from existing folders named like:
-
-- `YYYY-MM-DD - Client Name - 14 June 2025`
-
-Commands:
-
-- Dry run (no writes):
-  - `npm run migrate:import-jobsheets`
-- Apply to a specific business id 2, link invoices from filenames:
-  - `node scripts/import_jobsheets.js --business 2 --link-invoices`
-
-Flags:
-
-- `--business <id>` limit to one business
-- `--dry-run` preview only
-- `--max-depth <n>` directory depth (default 3)
-- `--link-invoices` also import invoice PDFs (INV-###) using the existing indexer
-
-This script is intended for one-time use and can be removed afterward.
+- Unit / E2E: `npm test`
+- E2E invoice generation: `npm run test:e2e:mcms`

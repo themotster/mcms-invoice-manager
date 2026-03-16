@@ -7,7 +7,7 @@ const ExcelJS = require('exceljs');
 const { PDFDocument, StandardFonts, TextAlignment, rgb } = require('pdf-lib');
 const db = require('./db');
 const msal = require('@azure/msal-node');
-const ahmenCosting = require('./ahmenCosting');
+const ahmenCosting = { loadPricingConfig: async () => ({}) };
 const { BrowserWindow } = require('electron');
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 function readSettings() {
@@ -4286,8 +4286,6 @@ module.exports = {
     writeSettings(s);
     return { ok: true };
   },
-  composeMailDraft,
-  composeMailDraft_mailto,
   // MCMS: Create a numbered invoice/quote from a single Excel template without jobsheets
   // Options: { business_id, doc_type: 'invoice'|'quote', definition_key, client_override, event_override, total_amount, due_date, document_date }
   createNumberedDocument: async (options = {}) => {
@@ -5429,18 +5427,7 @@ module.exports = {
     await ensureDirectoryExists(folderPath);
     return { ok: true, folder_path: folderPath };
   },
-  // Booking pack helpers
   getBookingPackPdfs,
-  sendMailViaGraph,
-  scheduleMailViaGraph,
-  listPlannerItems,
-  sendPlannerEmail,
-  updatePlannerAction,
-  sendInternalNotice,
-  resolveTemplateDefaultAttachments,
-  buildGigInfoHtml,
-  buildPersonnelLogHtml,
-  buildPersonnelLogText,
   // Read an Excel template and return placeholders present ({{token}} occurrences) with positions
   scanTemplatePlaceholders: async (options = {}) => {
     let filePath = options.filePath || options.file_path || '';
