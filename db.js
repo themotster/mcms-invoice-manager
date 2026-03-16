@@ -2099,17 +2099,6 @@ function reorderDocumentDefinitions(businessId, orderedKeys) {
   });
 }
 
-// MCMS-only: jobsheet_template_overrides table removed; no-op stubs.
-function getJobsheetTemplateOverrides() {
-  return Promise.resolve([]);
-}
-function setJobsheetTemplateOverride() {
-  return Promise.resolve({ overrideId: null, template_path: '' });
-}
-function clearJobsheetTemplateOverride() {
-  return Promise.resolve({ removed: 0 });
-}
-
 // No longer sync template paths from business settings; managed per-definition only
 
 function getMergeFields() {
@@ -2534,29 +2523,6 @@ function mapAhmenVenueRow(row) {
   };
 }
 
-// MCMS-only: AhMen jobsheet tables removed; stubs for documentService compatibility.
-function getAhmenJobsheets() {
-  return Promise.resolve([]);
-}
-
-function getAhmenJobsheet() {
-  return Promise.resolve(null);
-}
-
-// MCMS-only: AhMen tables removed; stubs so callers don't throw.
-function addAhmenJobsheet() { return Promise.resolve(0); }
-function updateAhmenJobsheet() { return Promise.resolve(0); }
-function updateAhmenJobsheetStatus() { return Promise.resolve(0); }
-function setJobsheetArchived() { return Promise.resolve(0); }
-function deleteAhmenJobsheet() { return Promise.resolve(0); }
-async function deleteJobsheetCompletely() {
-  return { filesTrashed: 0, documentsRemoved: 0, emailsRemoved: 0, scheduledRemoved: 0, plannerRemoved: 0, overridesRemoved: 0, jobsheetsRemoved: 0, fileErrors: [] };
-}
-
-function getAhmenVenues() { return Promise.resolve([]); }
-function saveAhmenVenue() { return Promise.resolve({ venue_id: 0, changes: 0 }); }
-function deleteAhmenVenue() { return Promise.resolve(0); }
-
 module.exports = {
   getDbPath: () => dbPath,
   dbReady,
@@ -2956,9 +2922,6 @@ module.exports = {
   saveDocumentDefinition: (businessId, definition) => saveDocumentDefinition(businessId, definition),
   deleteDocumentDefinition: (businessId, identifier) => deleteDocumentDefinition(businessId, identifier),
   reorderDocumentDefinitions: (businessId, orderedKeys) => reorderDocumentDefinitions(businessId, orderedKeys),
-  getJobsheetTemplateOverrides: (jobsheetId) => getJobsheetTemplateOverrides(jobsheetId),
-  setJobsheetTemplateOverride: (jobsheetId, definitionKey, templatePath) => setJobsheetTemplateOverride(jobsheetId, definitionKey, templatePath),
-  clearJobsheetTemplateOverride: (jobsheetId, definitionKey) => clearJobsheetTemplateOverride(jobsheetId, definitionKey),
 
   addDocument: (documentData) => {
     return new Promise((resolve, reject) => {
@@ -3949,16 +3912,6 @@ module.exports = {
     });
   },
 
-  getAhmenJobsheets,
-  getAhmenJobsheet,
-  addAhmenJobsheet,
-  updateAhmenJobsheet,
-  updateAhmenJobsheetStatus,
-  setJobsheetArchived,
-  deleteAhmenJobsheet,
-  getAhmenVenues,
-  saveAhmenVenue,
-  deleteAhmenVenue,
   getMergeFields,
   getMergeFieldBindingsByTemplate,
   getMergeFieldValueSources,
@@ -3973,8 +3926,7 @@ module.exports = {
   listDocumentTree,
   deleteDocumentFolder,
   deleteDocumentByPath,
-  deleteJobsheetCompletely,
-emptyDocumentsTrash
+  emptyDocumentsTrash
 };
 
 // Email log helpers (exported after main object)
@@ -4181,111 +4133,6 @@ module.exports.listScheduledEmails = ({ status = null, limit = 100, jobsheet_id 
       (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      }
-    );
-  });
-};
-
-module.exports.listPlannerActions = ({ business_id = null, jobsheet_id = null, status = null, action_key = null, after = null, before = null, limit = 500 } = {}) => {
-  return new Promise((resolve, reject) => {
-    const where = [];
-    const params = [];
-    if (Number.isInteger(business_id)) { where.push('business_id = ?'); params.push(Number(business_id)); }
-    if (Number.isInteger(jobsheet_id)) { where.push('jobsheet_id = ?'); params.push(Number(jobsheet_id)); }
-    if (status) { where.push('status = ?'); params.push(String(status)); }
-    if (action_key) { where.push('action_key = ?'); params.push(String(action_key)); }
-    const afterVal = toSqliteDateTime(after);
-    if (afterVal) { where.push('scheduled_for >= ?'); params.push(afterVal); }
-    const beforeVal = toSqliteDateTime(before);
-    if (beforeVal) { where.push('scheduled_for <= ?'); params.push(beforeVal); }
-    const limitVal = Number(limit) || 500;
-    params.push(limitVal);
-    db.all(
-      `SELECT * FROM planner_actions
-       ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-       ORDER BY scheduled_for ASC
-       LIMIT ?`,
-      params,
-      (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }
-    );
-  });
-};
-
-module.exports.upsertPlannerAction = ({
-  business_id,
-  jobsheet_id,
-  action_key,
-  scheduled_for,
-  status = null,
-  completed_at = null,
-  last_notified_at = null,
-  last_email_at = null,
-  last_error = null
-}) => {
-  return new Promise((resolve, reject) => {
-    const bizId = Number(business_id);
-    const jobId = Number(jobsheet_id);
-    if (!Number.isInteger(bizId) || !Number.isInteger(jobId)) {
-      reject(new Error('business_id and jobsheet_id are required'));
-      return;
-    }
-    const key = String(action_key || '').trim();
-    if (!key) { reject(new Error('action_key is required')); return; }
-    const scheduledFor = toSqliteDateTime(scheduled_for);
-    if (!scheduledFor) { reject(new Error('scheduled_for is invalid')); return; }
-    const completedAt = toSqliteDateTime(completed_at);
-    const notifiedAt = toSqliteDateTime(last_notified_at);
-    const emailedAt = toSqliteDateTime(last_email_at);
-    const statusVal = status ? String(status) : null;
-    const errorText = last_error != null ? String(last_error).slice(0, 500) : null;
-    db.run(
-      `INSERT INTO planner_actions (business_id, jobsheet_id, action_key, scheduled_for, status, completed_at, last_notified_at, last_email_at, last_error, created_at, updated_at)
-       VALUES (?, ?, ?, ?, COALESCE(?, 'pending'), ?, ?, ?, ?, datetime('now'), datetime('now'))
-       ON CONFLICT(business_id, jobsheet_id, action_key, scheduled_for)
-       DO UPDATE SET
-         status = COALESCE(excluded.status, planner_actions.status),
-         completed_at = COALESCE(excluded.completed_at, planner_actions.completed_at),
-         last_notified_at = COALESCE(excluded.last_notified_at, planner_actions.last_notified_at),
-         last_email_at = COALESCE(excluded.last_email_at, planner_actions.last_email_at),
-         last_error = COALESCE(excluded.last_error, planner_actions.last_error),
-         updated_at = datetime('now')`,
-      [bizId, jobId, key, scheduledFor, statusVal, completedAt, notifiedAt, emailedAt, errorText],
-      function (err) {
-        if (err) reject(err);
-        else resolve({ ok: true, id: this.lastID });
-      }
-    );
-  });
-};
-
-module.exports.updatePlannerActionById = ({ action_id, status = null, completed_at = null, last_notified_at = null, last_email_at = null, last_error = null } = {}) => {
-  return new Promise((resolve, reject) => {
-    const id = Number(action_id);
-    if (!Number.isInteger(id) || id <= 0) {
-      reject(new Error('Invalid action id'));
-      return;
-    }
-    const statusVal = status ? String(status) : null;
-    const completedAt = toSqliteDateTime(completed_at);
-    const notifiedAt = toSqliteDateTime(last_notified_at);
-    const emailedAt = toSqliteDateTime(last_email_at);
-    const errorText = last_error != null ? String(last_error).slice(0, 500) : null;
-    db.run(
-      `UPDATE planner_actions
-       SET status = COALESCE(?, status),
-           completed_at = COALESCE(?, completed_at),
-           last_notified_at = COALESCE(?, last_notified_at),
-           last_email_at = COALESCE(?, last_email_at),
-           last_error = COALESCE(?, last_error),
-           updated_at = datetime('now')
-       WHERE action_id = ?`,
-      [statusVal, completedAt, notifiedAt, emailedAt, errorText, id],
-      function (err) {
-        if (err) reject(err);
-        else resolve({ updated: this.changes || 0 });
       }
     );
   });

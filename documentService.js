@@ -1543,12 +1543,8 @@ async function buildPersonnelLogHtml(options = {}) {
   const business = await db.getBusinessById(businessId);
   if (!business || !business.save_path) throw new Error('Documents folder not configured for this business.');
 
-  const fromDate = options.fromDate || options.from_date || new Date().toISOString().slice(0, 10);
-  const toDate = options.toDate || options.to_date || null;
-
-  const includeArchived = options.includeArchived === true || options.include_archived === true;
-
-  const all = await db.getAhmenJobsheets({ businessId, includeArchived });
+  // MCMS-only: no jobsheet data; return empty personnel log
+  const all = [];
 
   const isOnOrAfter = (d, base) => {
     try {
@@ -1734,7 +1730,8 @@ async function buildPersonnelLogText(options = {}) {
   const toDate = options.toDate || options.to_date || null;
   const includeArchived = options.includeArchived === true || options.include_archived === true;
 
-  const all = await db.getAhmenJobsheets({ businessId, includeArchived });
+  // MCMS-only: no jobsheet data; return empty
+  const all = [];
 
   const isOnOrAfter = (d, base) => {
     try { const a = new Date(String(d)); const b = new Date(String(base)); if (Number.isNaN(a) || Number.isNaN(b)) return true; return a.toISOString().slice(0,10) >= b.toISOString().slice(0,10); } catch (_) { return true; }
@@ -2793,7 +2790,8 @@ async function buildGigInfoHtml(options = {}) {
   if (!Number.isInteger(businessId)) throw new Error('businessId is required');
   if (!Number.isInteger(jobsheetId)) throw new Error('jobsheetId is required');
 
-  const js = await db.getAhmenJobsheet(jobsheetId);
+  // MCMS-only: no jobsheet data
+  const js = null;
   if (!js) throw new Error('Jobsheet not found');
 
   let info = {};
@@ -3782,10 +3780,11 @@ async function listPlannerItems(options = {}) {
   const todayKey = new Date().toISOString().slice(0, 10);
   const horizonDate = horizonMonths > 0 ? addMonthsISO(todayKey, horizonMonths) : todayKey;
 
+  // MCMS-only: no jobsheets or planner actions
   const [jobsheets, documents, existingActions, scheduledEmails] = await Promise.all([
-    db.getAhmenJobsheets({ businessId, includeArchived: false }),
+    Promise.resolve([]),
     db.getDocuments({ businessId }),
-    db.listPlannerActions({ business_id: businessId }),
+    Promise.resolve([]),
     db.listScheduledEmails({ business_id: businessId, status: 'pending', limit: 1000 })
   ]);
 
@@ -3870,15 +3869,7 @@ async function listPlannerItems(options = {}) {
       const mapKey = `${jobsheetId}|${action_key}|${dateKey}`;
       const existing = actionMap.get(mapKey) || null;
       if (!existing && sync) {
-        try {
-          await db.upsertPlannerAction({
-            business_id: businessId,
-            jobsheet_id: jobsheetId,
-            action_key,
-            scheduled_for: dateKey,
-            status: 'pending'
-          });
-        } catch (_err) {}
+        // MCMS-only: planner actions not used; skip db write
       }
       const status = existing?.status || 'pending';
       if (!includeCompleted && completedStatuses.has(String(status).toLowerCase())) return null;
@@ -3978,7 +3969,8 @@ async function sendPlannerEmail(options = {}) {
   }
   if (!actionKeyRaw) throw new Error('actionKey is required');
 
-  const jobsheet = await db.getAhmenJobsheet(jobsheetId);
+  // MCMS-only: no jobsheet data
+  const jobsheet = null;
   if (!jobsheet) throw new Error('Jobsheet not found');
   const to = String(jobsheet.client_email || '').trim();
   if (!to) throw new Error('Client email missing on jobsheet');
@@ -4057,21 +4049,14 @@ async function updatePlannerAction(options = {}) {
   const lastEmailAt = options.last_email_at ?? options.lastEmailAt ?? null;
   const lastError = options.last_error ?? options.lastError ?? null;
 
+  // MCMS-only: planner actions not used; no-op
   if (actionId != null) {
-    const result = await db.updatePlannerActionById({
-      action_id: actionId,
-      status,
-      completed_at: completedAt,
-      last_notified_at: lastNotifiedAt,
-      last_email_at: lastEmailAt,
-      last_error: lastError
-    });
     broadcastJobsheetChange({
       type: 'planner-updated',
       businessId: Number.isInteger(businessId) ? businessId : null,
       jobsheetId: Number.isInteger(jobsheetId) ? jobsheetId : null
     });
-    return result;
+    return {};
   }
 
   const actionKey = String(options.action_key || options.actionKey || '').trim();
@@ -4079,17 +4064,7 @@ async function updatePlannerAction(options = {}) {
   if (!Number.isInteger(businessId) || !Number.isInteger(jobsheetId) || !actionKey || !scheduledFor) {
     throw new Error('action_id or full planner key is required');
   }
-  const result = await db.upsertPlannerAction({
-    business_id: businessId,
-    jobsheet_id: jobsheetId,
-    action_key: actionKey,
-    scheduled_for: scheduledFor,
-    status,
-    completed_at: completedAt,
-    last_notified_at: lastNotifiedAt,
-    last_email_at: lastEmailAt,
-    last_error: lastError
-  });
+  const result = {};
   broadcastJobsheetChange({
     type: 'planner-updated',
     businessId,
@@ -5420,7 +5395,7 @@ module.exports = {
 
     let snapshot = (options.jobsheetSnapshot && typeof options.jobsheetSnapshot === 'object') ? { ...options.jobsheetSnapshot } : {};
     if ((!snapshot || Object.keys(snapshot).length === 0) && Number.isInteger(jobsheetId)) {
-      try { snapshot = await db.getAhmenJobsheet(jobsheetId) || {}; } catch (_) { snapshot = {}; }
+      snapshot = {};
     }
     if (!snapshot.client_name && Number.isInteger(jobsheetId)) {
       snapshot.client_name = `Job ${jobsheetId}`;
@@ -5514,138 +5489,8 @@ module.exports = {
     if (!business || !business.save_path) {
       throw new Error('Documents folder not configured for this business.');
     }
-    const js = await db.getAhmenJobsheet(jobsheetId);
-    if (!js) throw new Error('Jobsheet not found');
-
-    // Compute expected new folder path from current snapshot
-    const payload = { business_id: businessId, jobsheet_id: jobsheetId, jobsheet_snapshot: js };
-    const context = buildContext(payload, business);
-    const expectedFolder = buildOutputDirectory(business, context, payload, 'Documents');
-    await ensureDirectoryExists(path.resolve(business.save_path));
-
-    // Find current folder candidate from documents DB
-    const docsAll = await db.getDocuments({ businessId });
-    const docs = (docsAll || []).filter(d => d && Number(d.jobsheet_id) === jobsheetId);
-    let currentFolder = '';
-    for (const d of docs) {
-      const fp = d?.file_path || '';
-      if (!fp) continue;
-      const dir = path.dirname(fp);
-      // Ignore files in the business root
-      if (dir && dir !== path.resolve(business.save_path)) {
-        currentFolder = dir; break;
-      }
-    }
-
-    // If we have an existing folder and it differs, move/merge it to the expected location
-    if (currentFolder && path.resolve(currentFolder) !== path.resolve(expectedFolder)) {
-      await ensureDirectoryExists(expectedFolder);
-      let movedViaRename = false;
-      try {
-        await fs.promises.rename(currentFolder, expectedFolder);
-        movedViaRename = true;
-      } catch (_) {
-        // Fall back: move files one by one
-        try {
-          const entries = await fs.promises.readdir(currentFolder, { withFileTypes: true });
-          for (const e of entries) {
-            if (!e.isFile()) continue;
-            const src = path.join(currentFolder, e.name);
-            let dst = path.join(expectedFolder, e.name);
-            let k = 2;
-            while (await pathExists(dst)) {
-              const base = path.basename(e.name, path.extname(e.name));
-              const ext = path.extname(e.name);
-              dst = path.join(expectedFolder, `${base} (${k})${ext}`);
-              k += 1; if (k > 1000) break;
-            }
-            try { await fs.promises.rename(src, dst); } catch (_) {}
-          }
-          // Attempt to remove old folder if empty
-          try { await fs.promises.rmdir(currentFolder); } catch (_) {}
-        } catch (_) {}
-      }
-
-      // Update DB paths for documents under the old folder
-      const prefix = path.resolve(currentFolder);
-      for (const d of docs) {
-        const fp = d?.file_path || '';
-        if (!fp) continue;
-        const abs = path.resolve(fp);
-        if (!abs.startsWith(prefix)) continue;
-        const remainder = abs.slice(prefix.length).replace(/^[/\\]+/, '');
-        const nextPath = path.join(expectedFolder, remainder);
-        try { await db.setDocumentFilePath(d.document_id, nextPath); } catch (_) {}
-      }
-    }
-
-    // Refresh docs (paths may have changed)
-    const docsUpdatedAll = await db.getDocuments({ businessId });
-    const docsUpdated = (docsUpdatedAll || []).filter(d => d && Number(d.jobsheet_id) === jobsheetId);
-
-    // Rename known files to match current naming conventions (skip locked)
-    const eventDateIso = formatDateISO(js.event_date || '');
-    const clientSafe = sanitizeFilenameSegment(js.client_name || '');
-    // Workbook (use the actual definition label for this document, not a generic "Workbook" label)
-    for (const d of docsUpdated) {
-      if ((d.doc_type || '').toLowerCase() !== 'workbook') continue;
-      if (d.is_locked) continue;
-      const cur = d.file_path || '';
-      if (!cur || !cur.toLowerCase().endsWith('.xlsx')) continue;
-      let def = null;
-      try {
-        def = await db.getDocumentDefinition(businessId, d.definition_key || 'workbook');
-      } catch (_) {
-        def = null;
-      }
-      const naming = buildFileName(context, payload, def || { label: 'Excel Workbook', key: d.definition_key || 'workbook' });
-      const dir = path.resolve(expectedFolder);
-      const expectedPath = path.join(dir, naming.fileName);
-      const curAbs = path.resolve(cur);
-      if (path.resolve(expectedPath) !== curAbs) {
-        try {
-          await ensureDirectoryExists(dir);
-          await fs.promises.rename(curAbs, expectedPath);
-          await db.setDocumentFilePath(d.document_id, expectedPath);
-        } catch (_) {}
-      }
-    }
-
-    const renameInvoicesToRoot = options.renameInvoicesToRoot === true;
-    if (renameInvoicesToRoot) {
-      // Invoice PDFs in business root
-      for (const d of docsUpdated) {
-        if ((d.doc_type || '').toLowerCase() !== 'invoice') continue;
-        if (d.is_locked) continue;
-        const num = d.number != null ? Number(d.number) : null;
-        if (!Number.isInteger(num)) continue;
-        const dir = path.resolve(business.save_path);
-        const dateToken = formatDateISO(d.document_date || js.event_date || new Date().toISOString());
-        const base = [
-          `INV-${num}`,
-          clientSafe || null,
-          dateToken || null
-        ].filter(Boolean).map(sanitizeFilenameSegment).join(' - ');
-        const ext = (d.file_path || '').toLowerCase().endsWith('.xlsx') ? '.xlsx' : '.pdf';
-        let expectedPath = path.join(dir, `${base}${ext}`);
-        let k = 2;
-        while (await pathExists(expectedPath)) {
-          expectedPath = path.join(dir, `${base} (${k})${ext}`);
-          k += 1; if (k > 1000) break;
-        }
-        const cur = d.file_path || '';
-        if (!cur) continue;
-        const curAbs = path.resolve(cur);
-        if (path.resolve(expectedPath) !== curAbs) {
-          try {
-            await fs.promises.rename(curAbs, expectedPath);
-            await db.setDocumentFilePath(d.document_id, expectedPath);
-          } catch (_) {}
-        }
-      }
-    }
-
-    return { ok: true };
+    // MCMS-only: no jobsheet data; cannot rename jobsheet artifacts
+    throw new Error('Not supported in MCMS (no jobsheet data).');
   },
   // Mail presets and signature (per business with global fallback)
   getMailPresets: async (options = {}) => {
@@ -5945,9 +5790,8 @@ module.exports = {
     const files = await walk(root);
     if (!files.length) return { imported: 0 };
 
-    // Preload jobsheets for matching
-    let sheets = [];
-    try { sheets = await db.getAhmenJobsheets({ businessId }); } catch (_) { sheets = []; }
+    // MCMS-only: no jobsheet data for matching
+    const sheets = [];
     const norm = s => (s || '').toString().trim().toLowerCase();
 
     const matchJobsheet = (filePath) => {
@@ -6257,9 +6101,8 @@ module.exports = {
       } catch (_) { return null; }
     };
 
-    // Load jobsheets for matching
-    let sheets = [];
-    try { sheets = await db.getAhmenJobsheets({ businessId }); } catch (_) { sheets = []; }
+    // MCMS-only: no jobsheet data
+    const sheets = [];
     const js = matchJobsheet(filePath);
 
     // Parse filename tokens
@@ -6354,7 +6197,8 @@ module.exports = {
 
     const doc = await db.getDocumentById(documentId);
     if (!doc) throw new Error('Document not found');
-    const js = await db.getAhmenJobsheet(jobsheetId);
+    // MCMS-only: no jobsheet data
+    const js = null;
     if (!js) throw new Error('Jobsheet not found');
 
     const lower = (v) => (v == null ? '' : String(v).toLowerCase());
@@ -6522,9 +6366,10 @@ module.exports = {
     const resolvedPath = path.resolve(rawPath);
     await ensureFileAccessible(resolvedPath);
 
+    // MCMS-only: no jobsheet data; pass null for jobsheet
     const [definition, jobsheet, allDocs] = await Promise.all([
       db.getDocumentDefinition(businessId, definitionKey),
-      db.getAhmenJobsheet(jobsheetId),
+      Promise.resolve(null),
       db.getDocuments({ businessId })
     ]);
 
