@@ -723,10 +723,10 @@ function App() {
               <button onClick={()=>setInvoiceModalOpen(false)} style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}>Close</button>
             </div>
             <div style={{ padding: 16, overflow: 'auto', flex: 1 }}>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'flex-end' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
                 <div style={{ display: 'flex', flexDirection: 'column', minWidth: 200, position: 'relative' }}>
-                  <label style={{ fontSize: 12, color: '#64748b' }}>Client</label>
-                  <input value={clientQuery} onChange={e=>setClientQuery(e.target.value)} onFocus={()=>setClientFocus(true)} onBlur={()=>setTimeout(()=>setClientFocus(false), 120)} placeholder="Type a client name…" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                  <label style={{ fontSize: 12, color: '#64748b', marginBottom: 4, display: 'block' }}>Client</label>
+                  <input value={clientQuery} onChange={e=>setClientQuery(e.target.value)} onFocus={()=>setClientFocus(true)} onBlur={()=>setTimeout(()=>setClientFocus(false), 120)} placeholder="Type a client name…" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, boxSizing: 'border-box' }} />
                   {(clientFocus && (clientQuery||'').trim()) ? (
                     <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: '#fff', border: '1px solid #e2e8f0', borderTop: 'none', borderRadius: '0 0 6px 6px', maxHeight: 180, overflow: 'auto', zIndex: 10 }}>
                       {clients.filter(c => !c.business_id || c.business_id === BUSINESS_ID).filter(c => String(c.name||'').toLowerCase().includes((clientQuery||'').trim().toLowerCase())).slice(0, 8).map(c => (
@@ -739,13 +739,21 @@ function App() {
                   ) : null}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <label style={{ fontSize: 12, color: '#64748b' }}>Invoice #</label>
-                  <input type="number" min="1" value={invoiceNumber} onChange={e=>{ setInvoiceNumber(e.target.value); setInvoiceNumTouched(true); }} placeholder="auto" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 100 }} />
-                  {invoiceNumError ? <span style={{ fontSize: 12, color: '#b91c1c' }}>{invoiceNumError}</span> : null}
-                  {invoiceNumber && !invoiceNumError && (invoiceNumTaken ? <span style={{ fontSize: 12, color: '#b91c1c' }}>Taken</span> : <span style={{ fontSize: 12, color: '#16a34a' }}>OK</span>)}
+                  <label style={{ fontSize: 12, color: '#64748b', marginBottom: 4, display: 'block' }}>Invoice #</label>
+                  <input type="number" min="1" value={invoiceNumber} onChange={e=>{ setInvoiceNumber(e.target.value); setInvoiceNumTouched(true); }} placeholder="auto" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, width: 100, boxSizing: 'border-box' }} />
+                  <div style={{ minHeight: 20, marginTop: 2 }}>
+                    {invoiceNumError ? <span style={{ fontSize: 12, color: '#b91c1c' }}>{invoiceNumError}</span> : null}
+                    {invoiceNumber && !invoiceNumError && (invoiceNumTaken ? <span style={{ fontSize: 12, color: '#b91c1c' }}>Taken</span> : <span style={{ fontSize: 12, color: '#16a34a' }}>OK</span>)}
+                  </div>
                 </div>
-                <div style={{ display: 'flex', flexDirection: 'column' }}><label style={{ fontSize: 12, color: '#64748b' }}>Invoice date</label><input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} /></div>
-                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}><label style={{ fontSize: 12, color: '#64748b' }}>Due date</label><input value={dueDate} onChange={e=>setDueDate(e.target.value)} placeholder="On receipt or 30 days" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} /></div>
+                <div style={{ display: 'flex', flexDirection: 'column' }}>
+                  <label style={{ fontSize: 12, color: '#64748b', marginBottom: 4, display: 'block' }}>Invoice date</label>
+                  <input type="date" value={invoiceDate} onChange={e=>setInvoiceDate(e.target.value)} style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, boxSizing: 'border-box' }} />
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', minWidth: 160 }}>
+                  <label style={{ fontSize: 12, color: '#64748b', marginBottom: 4, display: 'block' }}>Due date</label>
+                  <input value={dueDate} onChange={e=>setDueDate(e.target.value)} placeholder="On receipt or 30 days" style={{ fontSize: 14, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6, boxSizing: 'border-box' }} />
+                </div>
               </div>
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Line items</div>
