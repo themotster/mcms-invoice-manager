@@ -4581,7 +4581,13 @@ module.exports = {
     let workbookPath = stagingPath;
 
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(resolvedTemplate);
+    try {
+      await workbook.xlsx.readFile(resolvedTemplate);
+    } catch (readErr) {
+      // Fallback: readFile can fail in some environments (e.g. Jest stream); load from buffer
+      const buf = await fs.promises.readFile(resolvedTemplate);
+      await workbook.xlsx.load(buf);
+    }
 
     // Prepare placeholder mapping for invoice_code and client tokens
     const mergeFields = await db.getMergeFields();
