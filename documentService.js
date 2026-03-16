@@ -273,7 +273,7 @@ function broadcastDocumentChange(payload) {
     (ElectronBrowserWindow.getAllWindows() || []).forEach(win => {
       if (!win || win.isDestroyed()) return;
       try {
-        win.webContents.send('document-change', message);
+        win.webContents.send('documents-change', message);
       } catch (err) {
         console.warn('broadcastDocumentChange failed for a window', err);
       }
