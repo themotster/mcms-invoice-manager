@@ -2561,34 +2561,6 @@ module.exports = {
   getDbPath: () => dbPath,
   dbReady,
 
-  getInvoices: () => {
-    return new Promise((resolve, reject) => {
-      db.all(`
-        SELECT invoices.invoice_number, clients.name as client, invoices.amount, invoices.due_date, invoices.status
-        FROM invoices
-        LEFT JOIN clients ON invoices.client_id = clients.client_id
-        ORDER BY invoices.invoice_number
-      `, [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-  },
-
-  getStatus: () => {
-    return new Promise((resolve, reject) => {
-      db.all(`
-        SELECT invoices.status, COUNT(*) as count, SUM(invoices.amount) as total
-        FROM invoices
-        LEFT JOIN clients ON invoices.client_id = clients.client_id
-        GROUP BY invoices.status
-      `, [], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
-  },
-
   getClients: () => {
     return new Promise((resolve, reject) => {
       db.all(`SELECT * FROM clients ORDER BY name`, [], (err, rows) => {
@@ -2648,58 +2620,11 @@ module.exports = {
     });
   },
 
-  markPaid: (invoiceNumber) => {
-    return new Promise((resolve, reject) => {
-      db.run(
-        `UPDATE invoices SET status='Paid' WHERE invoice_number=?`,
-        [invoiceNumber],
-        function (err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
-  },
-
-  resetStatus: (invoiceNumber) => {
-    return new Promise((resolve, reject) => {
-      db.run(
-        `UPDATE invoices SET status='Issued' WHERE invoice_number=?`,
-        [invoiceNumber],
-        function (err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
-  },
-
-  deleteInvoice: (invoiceNumber) => {
-    return new Promise((resolve, reject) => {
-      db.run(
-        `DELETE FROM invoices WHERE invoice_number = ?`,
-        [invoiceNumber],
-        function (err) {
-          if (err) reject(err);
-          else resolve(this.changes);
-        }
-      );
-    });
-  },
-
-  addInvoice: (clientId, amount, dueDate) => {
-    return new Promise((resolve, reject) => {
-      db.run(
-        `INSERT INTO invoices (business_id, client_id, invoice_number, date_issued, due_date, amount, status)
-         VALUES (${DEFAULT_BUSINESS_ID}, ?, (SELECT IFNULL(MAX(invoice_number), 0) + 1 FROM invoices WHERE business_id=${DEFAULT_BUSINESS_ID}), date('now'), ?, ?, 'Issued')`,
-        [clientId, dueDate, amount],
-        function (err) {
-          if (err) reject(err);
-          else resolve(this.lastID);
-        }
-      );
-    });
-  },
+  // Legacy invoice table removed (MCMS uses documents); stubs for API compatibility.
+  markPaid: () => Promise.resolve(),
+  resetStatus: () => Promise.resolve(),
+  deleteInvoice: () => Promise.resolve(0),
+  addInvoice: () => Promise.resolve(null),
 
   addClient: (clientData) => {
     return new Promise((resolve, reject) => {

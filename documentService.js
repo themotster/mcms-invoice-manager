@@ -7,7 +7,8 @@ const ExcelJS = require('exceljs');
 const { PDFDocument, StandardFonts, TextAlignment, rgb } = require('pdf-lib');
 const db = require('./db');
 const msal = require('@azure/msal-node');
-const ahmenCosting = { loadPricingConfig: async () => ({}) };
+// Pricing/costing not used by MCMS; stub for any legacy callers.
+const pricingStub = { loadPricingConfig: async () => ({}) };
 const { BrowserWindow } = require('electron');
 const SETTINGS_PATH = path.join(__dirname, 'settings.json');
 function readSettings() {
@@ -28,6 +29,7 @@ const settings = readSettings();
 const os = require('os');
 
 const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
+// Key used in mergeFields.json bindings (template field); value unchanged for compatibility.
 const TEMPLATE_BINDING_KEY = 'ahmen_excel';
 const PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
 const MCMS_STAGING_FILENAME = '_staging.xlsx';
@@ -1585,7 +1587,7 @@ async function buildPersonnelLogHtml(options = {}) {
   // Build singer pool map for id->name lookups
   let poolMap = new Map();
   try {
-    const pricing = await ahmenCosting.loadPricingConfig();
+    const pricing = await pricingStub.loadPricingConfig();
     const pool = Array.isArray(pricing?.singerPool) ? pricing.singerPool : [];
     poolMap = new Map(pool.map(s => [String(s.id), String(s.name || s.id)]));
   } catch (_) {}
@@ -1747,7 +1749,7 @@ async function buildPersonnelLogText(options = {}) {
   // Pool lookup
   let poolMap = new Map();
   try {
-    const pricing = await ahmenCosting.loadPricingConfig();
+    const pricing = await pricingStub.loadPricingConfig();
     const pool = Array.isArray(pricing?.singerPool) ? pricing.singerPool : [];
     poolMap = new Map(pool.map(s => [String(s.id), String(s.name || s.id)]));
   } catch (_) {}
