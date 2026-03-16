@@ -51,7 +51,7 @@ This file is the **single source of truth** for current app behaviour. Any refac
 - **Business:** Single business (id 1) for MCMS. `business_settings` holds `save_path`, `last_invoice_number`; no deletion of existing business rows on seed.
 - **Documents:** `documents` table has `business_id`, `doc_type`, `number`, `file_path`, `invoice_snapshot` (TEXT JSON), `jobsheet_id` (nullable, unused for MCMS). Invoice log shows rows where `doc_type` (case-insensitive) is `invoice` and `business_id` is 1 **or** 2 (legacy).
 - **dbReady:** All reads/writes that the UI depends on (e.g. `getDocuments`, `getDocumentById`, `businessSettings`, `updateBusinessSettings`, `getBusinessById`) are gated on `dbReady` so they run only after DB init and migrations.
-- **Migration:** Existing DBs with `documents` table may be migrated to drop FK to `ahmen_jobsheets`; data is copied to new tables then renamed (no data loss). New DBs create tables without AhMen FKs.
+- **Migration:** Existing DBs with `documents` table may be migrated to drop jobsheet FK; data is copied to new tables then renamed (no data loss). New DBs create tables without jobsheet FKs.
 
 ---
 

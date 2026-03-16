@@ -29,8 +29,7 @@ const settings = readSettings();
 const os = require('os');
 
 const INVALID_FILENAME_CHARS = /[\\/:*?"<>|]/g;
-// Key used in mergeFields.json bindings (template field); value unchanged for compatibility.
-const TEMPLATE_BINDING_KEY = 'ahmen_excel';
+const TEMPLATE_BINDING_KEY = 'mcms_excel';
 const PLACEHOLDER_PATTERN = /{{\s*([a-zA-Z0-9_.-]+)\s*}}/g;
 const MCMS_STAGING_FILENAME = '_staging.xlsx';
 
@@ -39,7 +38,7 @@ const IS_MAIN_PROCESS = PROCESS_TYPE === 'browser' || PROCESS_TYPE === undefined
 const SCHEDULED_EMAIL_POLL_INTERVAL_MS = 60 * 1000;
 const SCHEDULED_EMAIL_BATCH_SIZE = 10;
 
-const SCHEDULED_WORKER_OVERRIDE = String(process.env.AHMEN_SCHEDULED_WORKER || '').trim() === '1';
+const SCHEDULED_WORKER_OVERRIDE = String(process.env.MCMS_SCHEDULED_WORKER || '').trim() === '1';
 const SCHEDULED_WORKER_ENABLED = (() => {
   if (!IS_MAIN_PROCESS) return false;
   if (SCHEDULED_WORKER_OVERRIDE) return true;
@@ -47,7 +46,6 @@ const SCHEDULED_WORKER_ENABLED = (() => {
   if (argv.includes('--background') || argv.includes('--helper')) return true;
   const execPath = process.execPath || '';
   if (execPath.includes(`${path.sep}LoginItems${path.sep}`)) return true;
-  if (/ahmen reminders/i.test(execPath)) return true;
   return false;
 })();
 
@@ -215,8 +213,6 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   venue_town: 'jobsheet.venue_town',
   venue_postcode: 'jobsheet.venue_postcode',
   caterer_name: 'jobsheet.caterer_name',
-  // AhMen singer fee should come from the jobsheet-sourced value
-  ahmen_fee: 'jobsheet.ahmen_fee',
   total_amount: 'context.totalAmount',
   extra_fees: 'context.extraFees',
   production_fees: 'context.productionFees',
@@ -267,7 +263,7 @@ function parseStoredAttachments(value) {
   }
 }
 
-function broadcastJobsheetChange(payload) {
+function broadcastDocumentChange(payload) {
   if (!IS_MAIN_PROCESS) return;
   try {
     if (!ElectronBrowserWindow) {
@@ -277,13 +273,13 @@ function broadcastJobsheetChange(payload) {
     (ElectronBrowserWindow.getAllWindows() || []).forEach(win => {
       if (!win || win.isDestroyed()) return;
       try {
-        win.webContents.send('jobsheet-change', message);
+        win.webContents.send('document-change', message);
       } catch (err) {
-        console.warn('broadcastJobsheetChange failed for a window', err);
+        console.warn('broadcastDocumentChange failed for a window', err);
       }
     });
   } catch (err) {
-    console.warn('Unable to broadcast jobsheet change', err);
+    console.warn('Unable to broadcast document change', err);
   }
 }
 
@@ -343,7 +339,7 @@ async function processScheduledEmail(entry) {
         body: `Scheduled email sent to ${escapeHtml(entry.to_address || '')}.<br>Subject: ${escapeHtml(entry.subject || '')}`
       });
     } catch (_) {}
-    broadcastJobsheetChange({
+    broadcastDocumentChange({
       type: 'email-log-updated',
       businessId: entry.business_id != null ? Number(entry.business_id) : null,
       jobsheetId: entry.jobsheet_id != null ? Number(entry.jobsheet_id) : null
@@ -356,7 +352,7 @@ async function processScheduledEmail(entry) {
     if (entry.email_log_id) {
       await db.updateEmailLogStatus({ id: entry.email_log_id, status: 'scheduled_error' });
     }
-    broadcastJobsheetChange({
+    broadcastDocumentChange({
       type: 'email-log-updated',
       businessId: entry.business_id != null ? Number(entry.business_id) : null,
       jobsheetId: entry.jobsheet_id != null ? Number(entry.jobsheet_id) : null
@@ -663,7 +659,7 @@ async function tryReadClientDataSheet(workbookPath) {
       venue_town: str('B23'),
       venue_postcode: str('B24'),
       // Financials (advisory; editor derives deposit/balance later)
-      ahmen_fee: num('B27'),
+      performance_fee: num('B27'),
       extra_fees: num('B28'),
       production_fees: num('B29'),
       total_amount: num('B30'),
@@ -713,7 +709,7 @@ async function extractJobsheetDataFromFolder(options = {}) {
 
   // Build suggested values excluding financial fields (manual entry in jobsheet)
   const FINANCIAL_KEYS = new Set([
-    'ahmen_fee','extra_fees','production_fees','total_amount','deposit_amount','balance_amount','balance_due_date','balance_reminder_date'
+    'performance_fee','extra_fees','production_fees','total_amount','deposit_amount','balance_amount','balance_due_date','balance_reminder_date'
   ]);
   const suggested = {};
   Object.entries(workbookFields || {}).forEach(([k, v]) => {
@@ -972,7 +968,7 @@ function replaceWorkbookPlaceholders(workbook, valueSources, context, placeholde
 
   // Keys that should be rendered as currency (GBP) when used as placeholders
   const CURRENCY_KEYS = new Set([
-    'ahmen_fee',
+    'performance_fee',
     'total_amount',
     'extra_fees',
     'production_fees',
@@ -1649,7 +1645,7 @@ async function buildPersonnelLogHtml(options = {}) {
     const totalNumber = (() => {
       const explicit = Number(js.pricing_total);
       if (Number.isFinite(explicit) && explicit > 0) return explicit;
-      const a = Number(js.ahmen_fee) || 0;
+      const a = Number(js.performance_fee) || 0;
       const p = Number(js.production_fees) || 0;
       const sum = a + p;
       return Number.isFinite(sum) ? sum : 0;
@@ -1784,7 +1780,7 @@ async function buildPersonnelLogText(options = {}) {
     const eventType = js.event_type || '';
     const venue = [js.venue_name || '', js.venue_town || '', js.venue_postcode || ''].filter(Boolean).join(', ');
     const singerCount = String(names.length);
-    const total = formatMoney((Number(js.pricing_total) && Number(js.pricing_total) > 0) ? Number(js.pricing_total) : (Number(js.ahmen_fee)||0) + (Number(js.production_fees)||0));
+    const total = formatMoney((Number(js.pricing_total) && Number(js.pricing_total) > 0) ? Number(js.pricing_total) : (Number(js.performance_fee)||0) + (Number(js.production_fees)||0));
     const notes = (js.notes || '').toString().trim().replace(/[\r\n]+/g, ' ').slice(0, 180);
 
     const base = { date, time, status, client, event: eventType, venue, personnel, singer_count: singerCount, total, notes };
@@ -2003,12 +1999,11 @@ async function createPdfDocument(payload = {}) {
   const totalAmount = parseAmount(derived.totalAmount ?? js.pricing_total ?? js.total_amount ?? payload.total_amount);
   const depositAmount = parseAmount(derived.depositAmount ?? js.deposit_amount ?? payload.deposit_amount);
   const balanceAmount = parseAmount(derived.balanceAmount ?? js.balance_amount ?? payload.balance_amount ?? derived.balanceDue);
-  const ahmenFee = parseAmount(js.ahmen_fee);
   const productionFees = parseAmount(derived.productionFees ?? js.production_fees ?? js.pricing_production_total);
   const vatEnabled = Boolean(js.vat_enabled);
   const vatAmount = parseAmount(js.vat_amount);
   const vatRate = 0.2;
-  const quoteSubtotal = Math.max((ahmenFee || 0) + (productionFees || 0), 0);
+  const quoteSubtotal = Math.max(productionFees || 0, 0);
   const computedVat = Math.max(quoteSubtotal * vatRate, 0);
   const effectiveVat = vatEnabled ? (vatAmount != null && vatAmount !== '' ? vatAmount : computedVat) : 0;
   const quoteTotal = Math.max(quoteSubtotal + (vatEnabled ? effectiveVat : 0), 0);
@@ -2214,7 +2209,6 @@ async function createPdfDocument(payload = {}) {
   setText('TOTAL_FEES', currencyOrEmpty(displayTotalFees), TextAlignment.Right);
   setText('DEPOSIT_AMOUNT', currencyOrEmpty(displayDepositAmount), TextAlignment.Right);
   setText('BALANCE_AMOUNT', currencyOrEmpty(displayBalanceAmount), TextAlignment.Right);
-  setText('AHMEN_FEE', currencyOrEmpty(ahmenFee), TextAlignment.Right);
   setText('PRODUCTION_FEES', currencyOrEmpty(productionFees), TextAlignment.Right);
   // Legacy typo fallback (template field PRODUCTION_)FEES)
   setText('PRODUCTION_)FEES', currencyOrEmpty(productionFees), TextAlignment.Right);
@@ -2251,7 +2245,6 @@ async function createPdfDocument(payload = {}) {
     // DATE_TODAY handled above with quote-specific alignment
     setText('EVENT_DATE', eventDateDisplay);
     setText('VENUE_NAME', js.venue_name || '');
-    setText('AHMEN_FEE', currencyOrEmpty(ahmenFee), TextAlignment.Right);
     setText('PRODUCTION_FEES', currencyOrEmpty(productionFees), TextAlignment.Right);
     setText('DEPOSIT_AMOUNT', currencyOrEmpty(displayDepositAmount), TextAlignment.Right);
     setText('BALANCE_AMOUNT', currencyOrEmpty(displayBalanceAmount), TextAlignment.Right);
@@ -2263,7 +2256,6 @@ async function createPdfDocument(payload = {}) {
   }
 
   const hasProduction = Boolean((parseAmount(productionFees) || 0) > 0 || prodLine1 || prodLine2);
-  setCheck('AhMen to provide SoundAV Please tick if appropriate', hasProduction);
   ['Tick', 'Tick_2', 'Tick_3', 'Tick_4', 'Tick_5'].forEach(name => setCheck(name, true));
 
   // For quote PDFs, preserve the template's own field appearances; otherwise rebuild with the selected font
@@ -3667,7 +3659,7 @@ async function sendMailViaGraph(options = {}) {
         status: 'sent',
         message_id: null
       });
-      broadcastJobsheetChange({
+      broadcastDocumentChange({
         type: 'email-log-updated',
         businessId: options.business_id != null ? Number(options.business_id) : null,
         jobsheetId: options.jobsheet_id != null ? Number(options.jobsheet_id) : null
@@ -3731,7 +3723,7 @@ async function scheduleMailViaGraph(options = {}) {
     send_at: sendAtDate
   });
 
-  broadcastJobsheetChange({
+  broadcastDocumentChange({
     type: 'email-log-updated',
     businessId: businessId != null ? Number(businessId) : null,
     jobsheetId: jobsheetId != null ? Number(jobsheetId) : null
@@ -4027,9 +4019,11 @@ async function sendInternalNotice(options = {}) {
   if (!subject && !body) return { ok: true };
   const businessId = options.businessId ?? options.business_id ?? null;
   const jobsheetId = options.jobsheetId ?? options.jobsheet_id ?? null;
+  const toAddress = process.env.MCMS_INTERNAL_NOTICE_EMAIL || '';
+  if (!toAddress) return { ok: true };
   await sendMailViaGraph({
-    to: 'motti@ahmen.co.uk',
-    subject: subject || 'AhMen reminder',
+    to: toAddress,
+    subject: subject || 'MCMS reminder',
     body: body || '',
     is_html: true,
     business_id: businessId,
@@ -4051,7 +4045,7 @@ async function updatePlannerAction(options = {}) {
 
   // MCMS-only: planner actions not used; no-op
   if (actionId != null) {
-    broadcastJobsheetChange({
+    broadcastDocumentChange({
       type: 'planner-updated',
       businessId: Number.isInteger(businessId) ? businessId : null,
       jobsheetId: Number.isInteger(jobsheetId) ? jobsheetId : null
@@ -4065,7 +4059,7 @@ async function updatePlannerAction(options = {}) {
     throw new Error('action_id or full planner key is required');
   }
   const result = {};
-  broadcastJobsheetChange({
+  broadcastDocumentChange({
     type: 'planner-updated',
     businessId,
     jobsheetId
@@ -4591,7 +4585,7 @@ module.exports = {
     const valueSources = await db.getMergeFieldValueSources(Array.from(fieldKeySet)) || {};
     // Inject a contextPath source for invoice_code -> context.invoiceCode
     valueSources['invoice_code'] = { source_type: 'contextPath', source_path: 'invoiceCode' };
-    // Ensure MCMS-relevant placeholders point to context paths (override AhMen defaults)
+    // Ensure MCMS placeholders point to context paths
     const ensure = (key, path) => { if (!valueSources[key]) valueSources[key] = { source_type: 'contextPath', source_path: path }; };
     ensure('client_name', 'client.name');
     ensure('client', 'client.name'); // template may use {{Client}}
@@ -6414,7 +6408,7 @@ module.exports = {
       if (Number.isInteger(parsedNumber) && docType === 'invoice') {
         try { await db.setDocumentNumber(existingForDef.document_id, parsedNumber); } catch (_) {}
       }
-      broadcastJobsheetChange({
+      broadcastDocumentChange({
         type: 'documents-updated',
         businessId,
         jobsheetId,
@@ -6429,7 +6423,7 @@ module.exports = {
       if (Number.isInteger(parsedNumber) && docType === 'invoice') {
         try { await db.setDocumentNumber(existingByPath.document_id, parsedNumber); } catch (_) {}
       }
-      broadcastJobsheetChange({
+      broadcastDocumentChange({
         type: 'documents-updated',
         businessId,
         jobsheetId,
@@ -6458,7 +6452,7 @@ module.exports = {
     if (insertedId != null && Number.isInteger(parsedNumber) && docType === 'invoice') {
       try { await db.setDocumentNumber(insertedId, parsedNumber); } catch (_) {}
     }
-    broadcastJobsheetChange({
+    broadcastDocumentChange({
       type: 'documents-updated',
       businessId,
       jobsheetId,

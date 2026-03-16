@@ -207,7 +207,6 @@ const DEFAULT_FIELD_VALUE_SOURCES = {
   venue_town: 'jobsheet.venue_town',
   venue_postcode: 'jobsheet.venue_postcode',
   caterer_name: 'jobsheet.caterer_name',
-  ahmen_fee: 'jobsheet.ahmen_fee',
   vat_amount: 'jobsheet.vat_amount',
   total_amount: 'context.totalAmount',
   production_fees: 'context.productionFees',
@@ -230,93 +229,6 @@ const BUSINESS_SETTINGS_MUTABLE_FIELDS = new Set([
   'last_quote_number'
 ]);
 
-const AHMEN_JOBSHEET_FIELDS = [
-  'business_id',
-  'status',
-  'client_name',
-  'client_email',
-  'client_phone',
-  'client_address',
-  'client_address1',
-  'client_address2',
-  'client_address3',
-  'client_town',
-  'client_postcode',
-  'event_type',
-  'event_date',
-  'event_start',
-  'event_end',
-  'venue_id',
-  'venue_name',
-  'venue_address',
-  'venue_address1',
-  'venue_address2',
-  'venue_address3',
-  'venue_town',
-  'venue_postcode',
-  'venue_same_as_client',
-  'ahmen_fee',
-  'production_fees',
-  'vat_enabled',
-  'vat_amount',
-  'deposit_amount',
-  'balance_amount',
-  'balance_due_date',
-  'balance_reminder_date',
-  'service_types',
-  'specialist_singers',
-  'special_conditions',
-  'gig_info',
-  'notes',
-  'pricing_service_id',
-  'pricing_selected_singers',
-  'pricing_discount',
-  'pricing_discount_type',
-  'pricing_discount_value',
-  'pricing_production_items',
-  'pricing_production_subtotal',
-  'pricing_production_discount',
-  'pricing_production_discount_type',
-  'pricing_production_discount_value',
-  'pricing_production_total',
-  'pricing_total'
-];
-
-const AHMEN_JOBSHEET_NUMERIC_FIELDS = new Set([
-  'ahmen_fee',
-  'production_fees',
-  'vat_amount',
-  'deposit_amount',
-  'balance_amount',
-  'pricing_discount',
-  'pricing_discount_value',
-  'pricing_production_subtotal',
-  'pricing_production_discount_value',
-  'pricing_production_total',
-  'pricing_total'
-]);
-
-const AHMEN_JOBSHEET_BOOLEAN_FIELDS = new Set([
-  'venue_same_as_client',
-  'vat_enabled'
-]);
-
-const AHMEN_JOBSHEET_INTEGER_FIELDS = new Set([
-  'venue_id'
-]);
-
-const AHMEN_JOBSHEET_STATUS_VALUES = new Set(['enquiry', 'quoted', 'contracting', 'confirmed', 'completed']);
-
-const AHMEN_VENUE_FIELDS = [
-  'business_id',
-  'name',
-  'address1',
-  'address2',
-  'address3',
-  'town',
-  'postcode',
-  'is_private'
-];
 
 const MERGE_FIELD_TABLE = 'merge_fields';
 const MERGE_FIELD_BINDINGS_TABLE = 'merge_field_bindings';
@@ -330,7 +242,7 @@ function logDuplicateColumn(err) {
   console.error('SQLite schema migration error:', err.message || err);
 }
 
-// MCMS-only: recreate documents/email_log/scheduled_emails without FK to ahmen_jobsheets (no data loss).
+// MCMS-only: recreate documents/email_log/scheduled_emails without jobsheet FK (no data loss).
 function migrateDropAhmenFk(done) {
   db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'", (err, row) => {
     if (err || !row) return done();
@@ -2453,76 +2365,6 @@ function getCounterColumn(docType) {
   return null;
 }
 
-function sanitizeAhmenJobsheetValue(field, value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    value = trimmed;
-  }
-  if (AHMEN_JOBSHEET_BOOLEAN_FIELDS.has(field)) {
-    if (value === true || value === 'true' || value === '1' || value === 1 || value === 'on') return 1;
-    return 0;
-  }
-  if (AHMEN_JOBSHEET_INTEGER_FIELDS.has(field)) {
-    const intVal = parseInt(value, 10);
-    return Number.isInteger(intVal) ? intVal : null;
-  }
-  if (AHMEN_JOBSHEET_NUMERIC_FIELDS.has(field)) {
-    const num = Number(value);
-    return Number.isFinite(num) ? num : null;
-  }
-  return value;
-}
-
-function buildAhmenJobsheetValues(data) {
-  return AHMEN_JOBSHEET_FIELDS.map(field => sanitizeAhmenJobsheetValue(field, data?.[field]));
-}
-
-function normalizeAhmenStatus(value) {
-  if (typeof value !== 'string') return 'enquiry';
-  const normalized = value.trim().toLowerCase();
-  return AHMEN_JOBSHEET_STATUS_VALUES.has(normalized) ? normalized : 'enquiry';
-}
-
-function mapAhmenJobsheetRow(row) {
-  if (!row) return row;
-  const mapped = { ...row };
-  AHMEN_JOBSHEET_FIELDS.forEach(field => {
-    if (AHMEN_JOBSHEET_NUMERIC_FIELDS.has(field) && mapped[field] !== null && mapped[field] !== undefined) {
-      mapped[field] = Number(mapped[field]);
-    }
-    if (AHMEN_JOBSHEET_BOOLEAN_FIELDS.has(field)) {
-      mapped[field] = mapped[field] ? 1 : 0;
-    }
-    if (AHMEN_JOBSHEET_INTEGER_FIELDS.has(field) && mapped[field] !== null && mapped[field] !== undefined) {
-      mapped[field] = Number(mapped[field]);
-    }
-  });
-  return mapped;
-}
-
-function sanitizeAhmenVenueValue(field, value) {
-  if (value === undefined || value === null) return null;
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    value = trimmed;
-  }
-  if (field === 'is_private') {
-    return value === true || value === 'true' || value === '1' || value === 1 || value === 'on' ? 1 : 0;
-  }
-  return value;
-}
-
-function mapAhmenVenueRow(row) {
-  if (!row) return row;
-  return {
-    ...row,
-    is_private: row.is_private ? 1 : 0
-  };
-}
-
 module.exports = {
   getDbPath: () => dbPath,
   dbReady,
@@ -3565,14 +3407,7 @@ module.exports = {
           if (existingInvoice) { resolve({ id: existingInvoice.document_id, number: existingInvoice.number }); return; }
 
           const jobsheetId = doc.jobsheet_id != null ? Number(doc.jobsheet_id) : null;
-          let js = null;
-          if (Number.isInteger(jobsheetId)) {
-            try {
-              js = await new Promise((res, rej) => {
-                db.get(`SELECT * FROM ahmen_jobsheets WHERE jobsheet_id = ?`, [jobsheetId], (e, r) => e ? rej(e) : res(r || null));
-              });
-            } catch (_) { js = null; }
-          }
+          const js = null; // MCMS-only: no jobsheet table
 
           const lower = (v) => (v == null ? '' : String(v).toLowerCase());
           const inferVariant = () => {
