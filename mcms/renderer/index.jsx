@@ -140,6 +140,11 @@ function App() {
   const [invoiceDate, setInvoiceDate] = useState(todayISO);
   const [dueDate, setDueDate] = useState('On receipt');
   const [lineItems, setLineItems] = useState([{ date: todayISO, description: '', amount: '' }]);
+  const [timesheetSource, setTimesheetSource] = useState(null);
+  const [timesheetViewMode, setTimesheetViewMode] = useState('detailed');
+  const [includeDurationInDescription, setIncludeDurationInDescription] = useState(true);
+  const [timesheetSummaryDescription, setTimesheetSummaryDescription] = useState('Professional services');
+  const [timesheetMeta, setTimesheetMeta] = useState(null);
   const [totalOverride, setTotalOverride] = useState('');
   const [amountReceived, setAmountReceived] = useState('');
   const [discountDescription, setDiscountDescription] = useState('');
@@ -156,6 +161,33 @@ function App() {
   const [contactDetails, setContactDetails] = useState({ client: null, emails: [], phones: [], addresses: [] });
   const [contactBusy, setContactBusy] = useState(false);
   const [contactModalOpen, setContactModalOpen] = useState(false);
+
+  const resetTimesheetImport = useCallback(() => {
+    setTimesheetSource(null);
+    setTimesheetViewMode('detailed');
+    setIncludeDurationInDescription(true);
+    setTimesheetSummaryDescription('Professional services');
+    setTimesheetMeta(null);
+  }, []);
+
+  useEffect(() => {
+    if (!timesheetSource || !timesheetSource.length || !window.api?.deriveTimesheetLineItems) return;
+    (async () => {
+      try {
+        const derived = await window.api.deriveTimesheetLineItems(timesheetSource, {
+          include_duration_in_description: includeDurationInDescription,
+          view_mode: timesheetViewMode,
+          summary_description: timesheetSummaryDescription,
+          fallback_date: invoiceDate || todayISO
+        });
+        setLineItems(derived.map(it => ({
+          date: it.date || invoiceDate || todayISO,
+          description: it.description || '',
+          amount: it.amount != null && it.amount !== '' ? it.amount : ''
+        })));
+      } catch (_) {}
+    })();
+  }, [timesheetSource, includeDurationInDescription, timesheetViewMode, timesheetSummaryDescription, invoiceDate, todayISO]);
 
   const refreshClients = useCallback(async () => {
     setLoading(true); setError('');
@@ -343,6 +375,7 @@ function App() {
         const doc = await window.api?.getDocumentById?.(editingDocument.document_id);
         if (doc?.invoice_snapshot) {
           const snap = JSON.parse(doc.invoice_snapshot);
+          resetTimesheetImport();
           setClientQuery(snap.client_name || '');
           setInvoiceDate(snap.invoice_date || todayISO);
           setDueDate(snap.due_date != null ? snap.due_date : 'On receipt');
@@ -357,6 +390,7 @@ function App() {
           setDiscountAmount(snap.discount_amount != null && snap.discount_amount !== '' ? String(snap.discount_amount) : '');
           if (snap.invoice_number != null) { setInvoiceNumber(String(snap.invoice_number)); setInvoiceNumTouched(true); }
         } else {
+          resetTimesheetImport();
           setClientQuery(doc?.client_name || '');
           setInvoiceDate(doc?.document_date ? doc.document_date.slice(0, 10) : todayISO);
           setDueDate(doc?.due_date || 'On receipt');
@@ -376,7 +410,7 @@ function App() {
         }
       } catch (_) {}
     })();
-  }, [invoiceModalOpen, invoiceModalMode, editingDocument?.document_id]);
+  }, [invoiceModalOpen, invoiceModalMode, editingDocument?.document_id, resetTimesheetImport]);
 
   return (
     <div style={{ minHeight: '100vh', background: '#f1f5f9', color: '#0f172a' }}>
@@ -402,6 +436,7 @@ function App() {
               onClick={() => {
                 setInvoiceModalMode('new');
                 setEditingDocument(null);
+                resetTimesheetImport();
                 setClientQuery('');
                 setSelectedClient(null);
                 setInvoiceDate(todayISO);
@@ -787,7 +822,61 @@ function App() {
                 </div>
               </div>
               <div style={{ marginTop: 12 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>Line items</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Line items</div>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      try {
+                        if (!window.api?.chooseFile || !window.api?.parseTimesheetForInvoice) return;
+                        const file = await window.api.chooseFile({ title: 'Select timesheet (xlsx)', filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }] });
+                        if (!file) return;
+                        const hasExisting = lineItems.some(it => (it.description || '').trim() || (it.amount !== '' && it.amount != null));
+                        if (hasExisting && typeof window.confirm === 'function' && !window.confirm('Replace existing line items with timesheet data?')) return;
+                        const res = await window.api.parseTimesheetForInvoice(file, {
+                          include_duration_in_description: includeDurationInDescription,
+                          fallback_date: invoiceDate || todayISO
+                        });
+                        const parts = file.split(/[/\\]/);
+                        const folderName = parts.length >= 2 ? parts[parts.length - 2] : parts[parts.length - 1].replace(/\.xlsx$/i, '');
+                        setTimesheetSummaryDescription(folderName || 'Professional services');
+                        setTimesheetSource(res.source_rows || []);
+                        setTimesheetMeta(res.meta || null);
+                        setTimesheetViewMode('detailed');
+                        let msg = `Imported ${res.meta?.row_count || 0} lines · total £${Number(res.meta?.imported_total || 0).toFixed(2)}`;
+                        if (res.meta?.totals_match === false) msg += ' — check: total does not match timesheet Total Due';
+                        setMessage(msg);
+                        setTimeout(() => setMessage(''), 5000);
+                      } catch (err) { setError(err?.message || 'Unable to import timesheet'); }
+                    }}
+                    style={{ fontSize: 12, padding: '6px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}
+                  >Import from timesheet…</button>
+                </div>
+                {timesheetSource ? (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', marginBottom: 10, padding: 10, background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+                    <label style={{ fontSize: 12, color: '#475569', display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input type="checkbox" checked={includeDurationInDescription} onChange={e => setIncludeDurationInDescription(e.target.checked)} />
+                      Include duration in description (Xh Ym)
+                    </label>
+                    <label style={{ fontSize: 12, color: '#475569' }}>
+                      View{' '}
+                      <select value={timesheetViewMode} onChange={e => setTimesheetViewMode(e.target.value)} style={{ fontSize: 12, padding: '4px 6px', borderRadius: 6, border: '1px solid #cbd5e1' }}>
+                        <option value="detailed">Detailed</option>
+                        <option value="single">Single line</option>
+                        <option value="by_date">By date</option>
+                      </select>
+                    </label>
+                    {timesheetViewMode === 'single' ? (
+                      <input value={timesheetSummaryDescription} onChange={e => setTimesheetSummaryDescription(e.target.value)} placeholder="Summary description" style={{ flex: 1, minWidth: 200, fontSize: 12, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />
+                    ) : null}
+                    {timesheetViewMode !== 'detailed' ? (
+                      <button type="button" onClick={() => setTimesheetViewMode('detailed')} style={{ fontSize: 12, padding: '4px 8px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#475569' }}>Restore detailed</button>
+                    ) : null}
+                    {timesheetMeta ? (
+                      <span style={{ fontSize: 11, color: '#64748b' }}>{timesheetMeta.row_count} rows · £{Number(timesheetMeta.imported_total || 0).toFixed(2)}</span>
+                    ) : null}
+                  </div>
+                ) : null}
                 {lineItems.map((item, idx) => (
                   <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
                     <input type="date" value={item.date||''} onChange={e=>setLineItems(prev=>{ const n=[...prev]; n[idx]={ ...n[idx], date: e.target.value }; return n; })} style={{ width: 130, fontSize: 13, padding: '6px 8px', border: '1px solid #cbd5e1', borderRadius: 6 }} />

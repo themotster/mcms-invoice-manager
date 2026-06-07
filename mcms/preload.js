@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('api', {
   watchTemplateFile: (options) => documentService.watchTemplateFile(options || {}),
   unwatchTemplateFile: () => documentService.unwatchTemplateFile(),
   getInvoiceLineItemsFromFile: async (filePath) => await documentService.getInvoiceLineItemsFromFile(filePath),
+  parseTimesheetForInvoice: async (filePath, options) => await documentService.parseTimesheetForInvoice(filePath, options || {}),
+  deriveTimesheetLineItems: async (sourceRows, options) => documentService.deriveTimesheetLineItems(sourceRows, options || {}),
   deleteDocument: async (documentId, options) => await documentService.deleteDocument(documentId, options || {}),
   getMergeFields: async () => await db.getMergeFields(),
   saveMergeField: async (field) => await db.saveMergeField(field || {}),

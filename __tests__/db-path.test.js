@@ -5,6 +5,18 @@
 const path = require('path');
 const os = require('os');
 
+jest.mock('fs', () => {
+  const actualFs = jest.requireActual('fs');
+  const mockPath = jest.requireActual('path');
+  return {
+    ...actualFs,
+    readFileSync: (filePath, options) => {
+      if (mockPath.basename(String(filePath)) === 'settings.json') return '{}';
+      return actualFs.readFileSync(filePath, options);
+    }
+  };
+});
+
 describe('DB path', () => {
   beforeEach(() => {
     delete process.env.MCMS_DB_PATH;

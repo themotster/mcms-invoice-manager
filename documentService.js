@@ -4230,6 +4230,248 @@ async function getInvoiceLineItemsFromFile(filePath) {
 }
 
 ensureScheduledMailWorker();
+
+const TIMESHEET_DATA_START_ROW = 3;
+const TIMESHEET_COL = { DATE: 1, START: 2, END: 3, MINS: 4, CHARGE: 5, COMMENTS: 6 };
+
+function excelCellScalar(value) {
+  if (value == null) return null;
+  if (typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Date)) {
+    if (value.result != null) return value.result;
+    if (value.text != null) return value.text;
+  }
+  return value;
+}
+
+function roundMoney(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100) / 100;
+}
+
+function formatDurationMinutes(minutes) {
+  const m = Math.round(Number(minutes));
+  if (!Number.isFinite(m) || m <= 0) return '';
+  const h = Math.floor(m / 60);
+  const r = m % 60;
+  return `${h}h ${r}m`;
+}
+
+function appendDurationToDescription(description, minutes, includeDuration) {
+  const base = (description || '').toString().trim();
+  if (!includeDuration) return base;
+  const dur = formatDurationMinutes(minutes);
+  if (!dur) return base;
+  return `${base} (${dur})`;
+}
+
+function parseTimesheetExcelDate(value) {
+  const v = excelCellScalar(value);
+  if (v == null || v === '') return null;
+  if (v instanceof Date && !Number.isNaN(v.valueOf())) {
+    return v.toISOString().slice(0, 10);
+  }
+  if (typeof v === 'number' && Number.isFinite(v) && v > 1) {
+    const d = new Date(Math.round((v - 25569) * 86400 * 1000));
+    if (!Number.isNaN(d.valueOf())) return d.toISOString().slice(0, 10);
+  }
+  const s = String(v).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return null;
+}
+
+function timeOfDayMinutes(value) {
+  const v = excelCellScalar(value);
+  if (v == null || v === '') return null;
+  if (v instanceof Date && !Number.isNaN(v.valueOf())) {
+    return v.getHours() * 60 + v.getMinutes();
+  }
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    const frac = v >= 0 && v < 1 ? v : (v - Math.floor(v));
+    if (frac >= 0 && frac < 1) return Math.round(frac * 24 * 60);
+  }
+  return null;
+}
+
+function crossedMidnight(prevEndMin, startMin) {
+  if (prevEndMin == null || startMin == null) return false;
+  return startMin < prevEndMin;
+}
+
+function deriveTimesheetLineItems(sourceRows, options = {}) {
+  const includeDuration = options.include_duration_in_description !== false;
+  const viewMode = (options.view_mode || options.viewMode || 'detailed').toString().toLowerCase();
+  const fallbackDate = options.fallback_date || options.fallbackDate || new Date().toISOString().slice(0, 10);
+  const summaryDescription = (options.summary_description || options.summaryDescription || 'Professional services').toString().trim();
+
+  if (!Array.isArray(sourceRows) || !sourceRows.length) {
+    return [{ date: fallbackDate, description: '', amount: '' }];
+  }
+
+  const detailed = sourceRows.map(row => ({
+    date: row.date || fallbackDate,
+    description: appendDurationToDescription(row.description_base, row.minutes, includeDuration),
+    amount: row.amount != null ? row.amount : ''
+  }));
+
+  if (viewMode === 'single') {
+    const total = sourceRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+    return [{
+      date: fallbackDate,
+      description: summaryDescription,
+      amount: roundMoney(total)
+    }];
+  }
+
+  if (viewMode === 'by_date') {
+    const byDate = new Map();
+    sourceRows.forEach(row => {
+      const d = row.date || fallbackDate;
+      const prev = byDate.get(d) || { amount: 0 };
+      prev.amount += Number(row.amount) || 0;
+      byDate.set(d, prev);
+    });
+    return [...byDate.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([d, agg]) => ({
+        date: d,
+        description: `Studio work – ${formatDateDDMMYYYY(d)}`,
+        amount: roundMoney(agg.amount)
+      }));
+  }
+
+  return detailed;
+}
+
+function readTimesheetMetaFromSheet(ws) {
+  let totalFromSheet = null;
+  let hourlyRate = null;
+  try {
+    ws.eachRow((row, r) => {
+      if (r > 25) return;
+      row.eachCell({ includeEmpty: false }, (cell, c) => {
+        const raw = excelCellScalar(cell.value);
+        const label = raw != null ? String(raw).trim().toLowerCase() : '';
+        if (label === 'total due') {
+          const valCell = ws.getRow(r).getCell(c + 1);
+          const val = excelCellScalar(valCell?.value);
+          const num = typeof val === 'number' ? val : Number(val);
+          if (Number.isFinite(num)) totalFromSheet = roundMoney(num);
+        }
+        if (label === 'hourly rate') {
+          const valCell = ws.getRow(r).getCell(c + 1);
+          const val = excelCellScalar(valCell?.value);
+          const num = typeof val === 'number' ? val : Number(val);
+          if (Number.isFinite(num)) hourlyRate = num;
+        }
+      });
+    });
+    if (totalFromSheet == null) {
+      const h7 = excelCellScalar(ws.getCell('H7')?.value);
+      const n = typeof h7 === 'number' ? h7 : Number(h7);
+      if (Number.isFinite(n)) totalFromSheet = roundMoney(n);
+    }
+  } catch (_) {}
+  return { totalFromSheet, hourlyRate };
+}
+
+async function parseTimesheetForInvoice(filePath, options = {}) {
+  const resolved = path.resolve(String(filePath || '').trim());
+  if (!resolved) throw new Error('Timesheet path is required');
+  if (!fs.existsSync(resolved)) throw new Error('Timesheet file not found');
+
+  const includeDuration = options.include_duration_in_description !== false;
+  const fallbackDate = options.fallback_date || options.fallbackDate || new Date().toISOString().slice(0, 10);
+
+  const wb = new ExcelJS.Workbook();
+  try {
+    await wb.xlsx.readFile(resolved);
+  } catch (readErr) {
+    const buf = await fs.promises.readFile(resolved);
+    await wb.xlsx.load(buf);
+  }
+
+  const ws = wb.worksheets[0];
+  if (!ws) throw new Error('Timesheet workbook has no sheets');
+
+  const sourceRows = [];
+  let currentDate = null;
+  let prevEndMin = null;
+  const maxRow = Math.min(ws.rowCount || 200, 200);
+
+  for (let r = TIMESHEET_DATA_START_ROW; r <= maxRow; r += 1) {
+    const row = ws.getRow(r);
+    const dateRaw = row.getCell(TIMESHEET_COL.DATE).value;
+    const startRaw = row.getCell(TIMESHEET_COL.START).value;
+    const endRaw = row.getCell(TIMESHEET_COL.END).value;
+    const minsRaw = excelCellScalar(row.getCell(TIMESHEET_COL.MINS).value);
+    const chargeRaw = excelCellScalar(row.getCell(TIMESHEET_COL.CHARGE).value);
+    const commentRaw = excelCellScalar(row.getCell(TIMESHEET_COL.COMMENTS).value);
+
+    const comment = commentRaw != null ? String(commentRaw).trim() : '';
+    const hasComment = Boolean(comment);
+    const chargeNum = typeof chargeRaw === 'number' ? chargeRaw : Number(chargeRaw);
+    const hasCharge = chargeRaw != null && chargeRaw !== '' && Number.isFinite(chargeNum);
+
+    if (!hasComment && !hasCharge) {
+      if (sourceRows.length > 0) break;
+      continue;
+    }
+
+    const startMin = timeOfDayMinutes(startRaw);
+    const endMin = timeOfDayMinutes(endRaw);
+    const explicitDate = parseTimesheetExcelDate(dateRaw);
+
+    if (explicitDate) {
+      currentDate = explicitDate;
+      if (endMin != null) prevEndMin = endMin;
+    } else if (currentDate) {
+      if (crossedMidnight(prevEndMin, startMin)) {
+        currentDate = addDaysISO(currentDate, 1);
+      }
+      if (endMin != null) prevEndMin = endMin;
+    }
+
+    const minsNum = typeof minsRaw === 'number' ? minsRaw : Number(minsRaw);
+    const minutes = Number.isFinite(minsNum) && minsNum > 0 ? Math.round(minsNum) : null;
+
+    sourceRows.push({
+      date: currentDate || fallbackDate,
+      description_base: comment || 'Work',
+      minutes,
+      amount: hasCharge ? roundMoney(chargeNum) : 0,
+      inferred_date: !explicitDate
+    });
+  }
+
+  if (!sourceRows.length) {
+    throw new Error('No timesheet rows found (expected DATE / CHARGE / COMMENTS from row 3).');
+  }
+
+  const metaExtra = readTimesheetMetaFromSheet(ws);
+  const importedTotal = roundMoney(sourceRows.reduce((s, row) => s + (Number(row.amount) || 0), 0));
+  const lineItems = deriveTimesheetLineItems(sourceRows, {
+    include_duration_in_description: includeDuration,
+    view_mode: 'detailed',
+    fallback_date: fallbackDate
+  });
+
+  return {
+    ok: true,
+    source_rows: sourceRows,
+    line_items: lineItems,
+    meta: {
+      row_count: sourceRows.length,
+      imported_total: importedTotal,
+      total_from_sheet: metaExtra.totalFromSheet,
+      hourly_rate: metaExtra.hourlyRate,
+      totals_match: metaExtra.totalFromSheet == null
+        ? null
+        : Math.abs(importedTotal - metaExtra.totalFromSheet) < 0.02
+    }
+  };
+}
+
 function setDatabasePath(filePath) {
   const resolved = filePath ? path.resolve(String(filePath).trim()) : '';
   const s = readSettings();
@@ -4241,6 +4483,9 @@ function setDatabasePath(filePath) {
 
 module.exports = {
   setDatabasePath,
+  formatDurationMinutes,
+  deriveTimesheetLineItems,
+  parseTimesheetForInvoice,
   createDocument,
   getInvoiceLineItemsFromFile,
   buildMCMSDocumentHtml,

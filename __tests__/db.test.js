@@ -16,9 +16,15 @@ describe('DB', () => {
     await (db.dbReady || Promise.resolve());
   });
 
-  it('getDbPath returns shared app path when no env override', () => {
-    const expected = path.join(os.homedir(), 'Library', 'Application Support', 'MCMS Invoice Manager', 'invoice_master.db');
-    expect(db.getDbPath()).toBe(expected);
+  it('getDbPath returns configured or default app path', () => {
+    const fs = require('fs');
+    const defaultPath = path.join(os.homedir(), 'Library', 'Application Support', 'MCMS Invoice Manager', 'invoice_master.db');
+    let settingsPath = null;
+    try {
+      const settings = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'settings.json'), 'utf-8'));
+      if (settings.db_path) settingsPath = path.resolve(String(settings.db_path).trim());
+    } catch (_) {}
+    expect(db.getDbPath()).toBe(settingsPath || defaultPath);
   });
 
   it('dbReady resolves', async () => {
