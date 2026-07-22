@@ -236,15 +236,7 @@ function logDuplicateColumn(err) {
   console.error('SQLite schema migration error:', err.message || err);
 }
 
-// MCMS-only: recreate documents/email_log/scheduled_emails without jobsheet FK (no data loss).
-function migrateDropAhmenFk(done) {
-  db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents'", (err, row) => {
-    if (err || !row) return done();
-
-    const steps = [
-      (next) => { db.run('DROP TABLE IF EXISTS documents_new', next); },
-      (next) => {
-        db.run(`CREATE TABLE documents_new (
+const DOCUMENTS_TABLE_SQL = `CREATE TABLE documents (
           document_id INTEGER PRIMARY KEY AUTOINCREMENT,
           event_id INTEGER,
           jobsheet_id INTEGER,
@@ -271,79 +263,208 @@ function migrateDropAhmenFk(done) {
           invoice_snapshot TEXT,
           FOREIGN KEY (event_id) REFERENCES events(event_id),
           FOREIGN KEY (business_id) REFERENCES business_settings(id)
-        )`, next);
-      },
-      (next) => { db.run(`INSERT INTO documents_new SELECT document_id, event_id, jobsheet_id, business_id, doc_type, number, status, total_amount, balance_due, due_date, file_path, created_at, updated_at,
-        client_name, event_name, event_date, document_date, definition_key, invoice_variant, reminder_date, reminder_sent_at, paid_at, is_locked, invoice_snapshot FROM documents`, next); },
-      (next) => { db.run('DROP TABLE documents', next); },
-      (next) => { db.run('ALTER TABLE documents_new RENAME TO documents', next); },
-      (next) => { db.run('DROP TABLE IF EXISTS email_log_new', next); },
-      (next) => {
-        db.run(`CREATE TABLE email_log_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          business_id INTEGER,
-          jobsheet_id INTEGER,
-          to_address TEXT NOT NULL,
-          cc_address TEXT,
-          bcc_address TEXT,
-          subject TEXT,
-          body TEXT,
-          attachments TEXT,
-          provider TEXT DEFAULT 'graph',
-          status TEXT DEFAULT 'sent',
-          message_id TEXT,
-          sent_at TEXT DEFAULT (datetime('now')),
-          FOREIGN KEY (business_id) REFERENCES business_settings(id)
-        )`, next);
-      },
-      (next) => {
-        db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='email_log'", (err, row) => {
-          if (err || !row) return next();
-          db.run('INSERT INTO email_log_new SELECT id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at FROM email_log', next);
-        });
-      },
-      (next) => { db.run('DROP TABLE IF EXISTS email_log', next); },
-      (next) => { db.run('ALTER TABLE email_log_new RENAME TO email_log', next); },
-      (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails_new', next); },
-      (next) => {
-        db.run(`CREATE TABLE scheduled_emails_new (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          email_log_id INTEGER,
-          business_id INTEGER,
-          jobsheet_id INTEGER,
-          to_address TEXT NOT NULL,
-          cc_address TEXT,
-          bcc_address TEXT,
-          subject TEXT,
-          body TEXT,
-          attachments TEXT,
-          is_html INTEGER DEFAULT 1,
-          send_at TEXT NOT NULL,
-          status TEXT DEFAULT 'pending',
-          attempt_count INTEGER DEFAULT 0,
-          last_error TEXT,
-          sent_at TEXT,
-          created_at TEXT DEFAULT (datetime('now')),
-          updated_at TEXT DEFAULT (datetime('now')),
-          FOREIGN KEY (email_log_id) REFERENCES email_log(id) ON DELETE SET NULL,
-          FOREIGN KEY (business_id) REFERENCES business_settings(id)
-        )`, next);
-      },
-      (next) => {
-        db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_emails'", (err, row) => {
-          if (err || !row) return next();
-          db.run('INSERT INTO scheduled_emails_new SELECT id, email_log_id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, is_html, send_at, status, attempt_count, last_error, sent_at, created_at, updated_at FROM scheduled_emails', next);
-        });
-      },
-      (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails', next); },
-      (next) => { db.run('ALTER TABLE scheduled_emails_new RENAME TO scheduled_emails', next); }
-    ];
+        )`;
 
-    const run = (i) => {
-      if (i >= steps.length) return done();
-      steps[i]((err) => { if (err) { console.error('migrateDropAhmenFk error:', err); return done(); } run(i + 1); });
-    };
-    run(0);
+function tableHasJobsheetFk(sql) {
+  return /references\s+jobsheets?\b/i.test(String(sql || ''));
+}
+
+function countTableRows(tableName, cb) {
+  db.get(`SELECT COUNT(*) AS n FROM ${tableName}`, (err, row) => {
+    if (err) return cb(err, 0);
+    cb(null, Number(row?.n) || 0);
+  });
+}
+
+// If a previous failed migration left data only in documents_new / documents_old, restore it.
+function recoverDocumentsFromMigrationArtifacts(done) {
+  db.all(
+    "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('documents','documents_new','documents_old')",
+    (err, rows) => {
+      if (err) return done();
+      const names = new Set((rows || []).map(r => r.name));
+      const finish = () => done();
+
+      const restoreFrom = (src) => {
+        if (!names.has(src)) return finish();
+        countTableRows(src, (e1, srcCount) => {
+          if (e1 || srcCount <= 0) return finish();
+          const docsExist = names.has('documents');
+          const afterEmptyCheck = (docsCount) => {
+            if (docsCount > 0) return finish();
+            console.warn(`Recovering documents from ${src} (${srcCount} rows)`);
+            const steps = [];
+            if (docsExist) {
+              steps.push((next) => db.run('DROP TABLE documents', next));
+            }
+            steps.push((next) => db.run(`ALTER TABLE ${src} RENAME TO documents`, next));
+            const run = (i) => {
+              if (i >= steps.length) return finish();
+              steps[i]((stepErr) => {
+                if (stepErr) {
+                  console.error(`recoverDocumentsFromMigrationArtifacts(${src}) error:`, stepErr);
+                  return finish();
+                }
+                run(i + 1);
+              });
+            };
+            run(0);
+          };
+          if (!docsExist) return afterEmptyCheck(0);
+          countTableRows('documents', (e2, docsCount) => afterEmptyCheck(e2 ? 0 : docsCount));
+        });
+      };
+
+      // Prefer documents_new (in-progress migration) then documents_old.
+      if (names.has('documents_new')) return restoreFrom('documents_new');
+      if (names.has('documents_old')) return restoreFrom('documents_old');
+      finish();
+    }
+  );
+}
+
+// MCMS-only: recreate documents/email_log/scheduled_emails without jobsheet FK (no data loss).
+// Idempotent: skips when jobsheet FKs are already gone. Never drops a populated staging table
+// while documents is empty (that path previously wiped invoice history).
+function migrateDropAhmenFk(done) {
+  recoverDocumentsFromMigrationArtifacts(() => {
+    db.get("SELECT sql FROM sqlite_master WHERE type='table' AND name='documents'", (err, row) => {
+      if (err || !row) return done();
+      if (!tableHasJobsheetFk(row.sql)) return done();
+
+      const abort = (stepErr) => {
+        console.error('migrateDropAhmenFk error (aborted; source tables left intact):', stepErr);
+        done();
+      };
+
+      const steps = [
+        (next) => {
+          // Never destroy a populated documents_new if documents is empty/missing.
+          db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='documents_new'", (e1, exists) => {
+            if (e1 || !exists) return next();
+            countTableRows('documents_new', (e2, newCount) => {
+              if (e2) return next(e2);
+              countTableRows('documents', (e3, docsCount) => {
+                const liveCount = e3 ? 0 : docsCount;
+                if (newCount > 0 && liveCount === 0) {
+                  return next(new Error('Refusing to DROP documents_new: it has data and documents is empty'));
+                }
+                if (newCount === 0) return db.run('DROP TABLE IF EXISTS documents_new', next);
+                // Staging leftover with data while documents also has data — keep backup name.
+                db.run('ALTER TABLE documents_new RENAME TO documents_new_backup_' + Date.now(), next);
+              });
+            });
+          });
+        },
+        (next) => { db.run(DOCUMENTS_TABLE_SQL.replace('CREATE TABLE documents', 'CREATE TABLE documents_new'), next); },
+        (next) => {
+          countTableRows('documents', (e1, beforeCount) => {
+            if (e1) return next(e1);
+            db.run(`INSERT INTO documents_new SELECT document_id, event_id, jobsheet_id, business_id, doc_type, number, status, total_amount, balance_due, due_date, file_path, created_at, updated_at,
+              client_name, event_name, event_date, document_date, definition_key, invoice_variant, reminder_date, reminder_sent_at, paid_at, is_locked, invoice_snapshot FROM documents`, (insErr) => {
+              if (insErr) return next(insErr);
+              countTableRows('documents_new', (e2, afterCount) => {
+                if (e2) return next(e2);
+                if (afterCount !== beforeCount) {
+                  return next(new Error(`documents copy mismatch: ${beforeCount} -> ${afterCount}`));
+                }
+                next();
+              });
+            });
+          });
+        },
+        // Swap safely: rename live table aside, then promote staging. On rename failure, restore.
+        (next) => { db.run('ALTER TABLE documents RENAME TO documents_old_migrate', next); },
+        (next) => {
+          db.run('ALTER TABLE documents_new RENAME TO documents', (renameErr) => {
+            if (!renameErr) return next();
+            db.run('ALTER TABLE documents_old_migrate RENAME TO documents', () => next(renameErr));
+          });
+        },
+        (next) => { db.run('DROP TABLE IF EXISTS documents_old_migrate', next); },
+        (next) => { db.run('DROP TABLE IF EXISTS email_log_new', next); },
+        (next) => {
+          db.run(`CREATE TABLE email_log_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            business_id INTEGER,
+            jobsheet_id INTEGER,
+            to_address TEXT NOT NULL,
+            cc_address TEXT,
+            bcc_address TEXT,
+            subject TEXT,
+            body TEXT,
+            attachments TEXT,
+            provider TEXT DEFAULT 'graph',
+            status TEXT DEFAULT 'sent',
+            message_id TEXT,
+            sent_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (business_id) REFERENCES business_settings(id)
+          )`, next);
+        },
+        (next) => {
+          db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='email_log'", (err2, row2) => {
+            if (err2 || !row2) return next();
+            db.run('INSERT INTO email_log_new SELECT id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, provider, status, message_id, sent_at FROM email_log', next);
+          });
+        },
+        (next) => { db.run('ALTER TABLE email_log RENAME TO email_log_old_migrate', (e) => (e ? next() : next())); },
+        (next) => {
+          db.run('ALTER TABLE email_log_new RENAME TO email_log', (renameErr) => {
+            if (!renameErr) return next();
+            db.run('ALTER TABLE email_log_old_migrate RENAME TO email_log', () => next(renameErr));
+          });
+        },
+        (next) => { db.run('DROP TABLE IF EXISTS email_log_old_migrate', next); },
+        (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails_new', next); },
+        (next) => {
+          db.run(`CREATE TABLE scheduled_emails_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_log_id INTEGER,
+            business_id INTEGER,
+            jobsheet_id INTEGER,
+            to_address TEXT NOT NULL,
+            cc_address TEXT,
+            bcc_address TEXT,
+            subject TEXT,
+            body TEXT,
+            attachments TEXT,
+            is_html INTEGER DEFAULT 1,
+            send_at TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            attempt_count INTEGER DEFAULT 0,
+            last_error TEXT,
+            sent_at TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (email_log_id) REFERENCES email_log(id) ON DELETE SET NULL,
+            FOREIGN KEY (business_id) REFERENCES business_settings(id)
+          )`, next);
+        },
+        (next) => {
+          db.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='scheduled_emails'", (err2, row2) => {
+            if (err2 || !row2) return next();
+            db.run('INSERT INTO scheduled_emails_new SELECT id, email_log_id, business_id, jobsheet_id, to_address, cc_address, bcc_address, subject, body, attachments, is_html, send_at, status, attempt_count, last_error, sent_at, created_at, updated_at FROM scheduled_emails', next);
+          });
+        },
+        (next) => { db.run('ALTER TABLE scheduled_emails RENAME TO scheduled_emails_old_migrate', (e) => (e ? next() : next())); },
+        (next) => {
+          db.run('ALTER TABLE scheduled_emails_new RENAME TO scheduled_emails', (renameErr) => {
+            if (!renameErr) return next();
+            db.run('ALTER TABLE scheduled_emails_old_migrate RENAME TO scheduled_emails', () => next(renameErr));
+          });
+        },
+        (next) => { db.run('DROP TABLE IF EXISTS scheduled_emails_old_migrate', next); }
+      ];
+
+      const run = (i) => {
+        if (i >= steps.length) return done();
+        steps[i]((stepErr) => {
+          if (stepErr) return abort(stepErr);
+          run(i + 1);
+        });
+      };
+      run(0);
+    });
   });
 }
 
